@@ -2451,3 +2451,157 @@ class WindowsGuiBackend(GuiBackend):
             "results": results,
             "state_level": StateLevel.PLANNED.value if dry_run else StateLevel.EXECUTED.value,
         }
+
+    def attach_ip_phone_power(
+        self,
+        *,
+        device_name: str = "IP_PHONE1",
+        pt_device_title: str | None = None,
+        canvas_x: float = 500.0,
+        canvas_y: float = 180.0,
+        close_dialog: bool = True,
+        restore_focus: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Drag the 7960 external AC power adapter brick onto its Physical-tab DC socket."""
+        self._require_windows()
+        self.safety.check_safe_to_act(live_input=not dry_run)
+        win, dialogs = self._require_main_window()
+        if win.client_rect.width < 400 or win.client_rect.height < 300:
+            if dry_run:
+                raise AdapterUnavailableError(
+                    "Packet Tracer main window client bounds are too small/minimized.",
+                    details={"client_rect": win.client_rect.model_dump()},
+                    remediation="Restore/maximize Packet Tracer before running GUI power attach.",
+                )
+            win, dialogs = self._ensure_usable_window(win, dialogs, background=False)
+
+        scale = max(1.0, float(win.scale_factor or 1.0))
+        click_sx = int(win.client_rect.left + round(float(canvas_x) + 3.0 * scale))
+        click_sy = int(win.client_rect.top + round(float(canvas_y) + 100.0 * scale))
+        brick_rel = (0.9194, 0.8640)
+        socket_rel = (0.3606, 0.3378)
+        title_needle = str(pt_device_title or device_name).strip()
+        if not title_needle:
+            raise ValidationError("device_name / pt_device_title must not be empty.")
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "device_name": device_name,
+                "pt_device_title": title_needle,
+                "hwnd": int(win.hwnd),
+                "dpi": int(win.dpi),
+                "scale_factor": float(win.scale_factor),
+                "canvas_xy": [float(canvas_x), float(canvas_y)],
+                "planned_canvas_click": [click_sx, click_sy],
+                "power_brick_rel": list(brick_rel),
+                "dc_socket_rel": list(socket_rel),
+                "close_dialog": bool(close_dialog),
+                "state_level": StateLevel.PLANNED.value,
+            }
+
+        if platform.system() == "Windows" and int(ctypes.windll.user32.GetForegroundWindow()) == 0:
+            raise AdapterUnavailableError(
+                "No active foreground desktop window (GetForegroundWindow() == 0: desktop is "
+                "locked, asleep, or running inside a non-interactive/isolated desktop session); "
+                "Physical-tab power-adapter drag requires an unlocked interactive Windows desktop.",
+                details={"hwnd": int(win.hwnd), "dpi": int(win.dpi)},
+                remediation=(
+                    "Run inside an unlocked interactive Windows desktop session (not a "
+                    "locked screen or isolated sandbox desktop) and retry."
+                ),
+            )
+
+        existing_dlg = self._find_dialog_by_title(dialogs, title_needle)
+        if existing_dlg is None:
+            open_res = self.execute_batch(
+                [
+                    {"op": "click", "x": click_sx, "y": click_sy, "background": True},
+                    {"op": "wait_dialog", "title_contains": title_needle, "timeout_s": 4.0},
+                ],
+                background=True,
+                restore_focus=restore_focus,
+            )
+            _ = open_res
+            _, fresh_dialogs = self._require_main_window()
+            existing_dlg = self._find_dialog_by_title(fresh_dialogs, title_needle)
+            if existing_dlg is None:
+                raise AdapterUnavailableError(
+                    f"Device dialog matching '{title_needle}' did not open after canvas click.",
+                    details={"click": [click_sx, click_sy]},
+                )
+
+        dlg = self._refresh_dialog_info(existing_dlg)
+        if dlg.rect is None or dlg.rect.width < 200 or dlg.rect.height < 200:
+            raise AdapterUnavailableError(
+                f"Device dialog '{dlg.title}' lacks valid geometry.",
+                details={"rect": dlg.rect.model_dump() if dlg.rect else None},
+            )
+
+        from_ox = int(round(dlg.rect.width * brick_rel[0]))
+        from_oy = int(round(dlg.rect.height * brick_rel[1]))
+        to_ox = int(round(dlg.rect.width * socket_rel[0]))
+        to_oy = int(round(dlg.rect.height * socket_rel[1]))
+
+        before_img = None
+        with suppress(Exception):
+            before_img = _capture_window_printwindow(
+                int(dlg.hwnd), dlg.rect, dlg.rect, full_window=True
+            )
+
+        drag_res = self.execute_batch(
+            [
+                {
+                    "op": "drag_dialog",
+                    "title_contains": title_needle,
+                    "from_x": from_ox,
+                    "from_y": from_oy,
+                    "to_x": to_ox,
+                    "to_y": to_oy,
+                    "steps": 24,
+                    "duration_ms": 420,
+                    "delay_ms": 250,
+                    "background": False,
+                },
+            ],
+            background=False,
+            restore_focus=restore_focus,
+        )
+
+        socket_roi_diff = None
+        with suppress(Exception):
+            after_img = _capture_window_printwindow(
+                int(dlg.hwnd), dlg.rect, dlg.rect, full_window=True
+            )
+            if before_img is not None and after_img is not None:
+                from netforge.gui.vision import image_diff_ratio
+
+                bw, bh = before_img.size
+                box = (int(bw * 0.31), int(bh * 0.29), int(bw * 0.43), int(bh * 0.41))
+                socket_roi_diff = image_diff_ratio(before_img.crop(box), after_img.crop(box))
+
+        if close_dialog:
+            with suppress(Exception):
+                self.execute_batch(
+                    [{"op": "close_dialog", "title_contains": title_needle, "background": True}],
+                    background=True,
+                    restore_focus=restore_focus,
+                )
+
+        return {
+            "dry_run": False,
+            "device_name": device_name,
+            "pt_device_title": dlg.title,
+            "hwnd": int(win.hwnd),
+            "dialog_hwnd": int(dlg.hwnd),
+            "dpi": int(win.dpi),
+            "scale_factor": float(win.scale_factor),
+            "canvas_click": [click_sx, click_sy],
+            "dialog_rect": dlg.rect.model_dump(),
+            "drag_offsets": {"from": [from_ox, from_oy], "to": [to_ox, to_oy]},
+            "socket_roi_diff_ratio": socket_roi_diff,
+            "closed_dialog": bool(close_dialog),
+            "elapsed_ms": drag_res.get("elapsed_ms"),
+            "state_level": StateLevel.EXECUTED.value,
+        }

@@ -32,7 +32,7 @@
       "phase_5_public_release": "completed"
     }
   },
-  "tool_count": 72,
+  "tool_count": 74,
   "categories": {
     "project": 7,
     "topology": 6,
@@ -41,9 +41,9 @@
     "ipam": 5,
     "configuration": 14,
     "cli": 5,
-    "gui": 9,
+    "gui": 10,
     "simulation": 6,
-    "diagnostics": 9
+    "diagnostics": 10
   },
   "tools": [
     {
@@ -560,6 +560,15 @@
       "destructive": false
     },
     {
+      "name": "gui_attach_ip_phone_power",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
       "name": "simulation_mode",
       "category": "simulation",
       "permission_tier": "gui_control",
@@ -690,6 +699,15 @@
       "category": "diagnostics",
       "permission_tier": "read_only",
       "description": "Verify live Packet Tracer lab state against declarative requirements with evidence.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "grade_lab",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Read native `.pka` activity score and unmet comparator leaves fail-closed.",
       "status": "stable",
       "read_only": true,
       "destructive": false

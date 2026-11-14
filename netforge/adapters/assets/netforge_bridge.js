@@ -444,6 +444,29 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                 }
                 return;
             }
+            case "open_file": {
+                var openPath = String(params.path || "");
+                if (!openPath) {
+                    sendBridgeResult(requestId, false, {}, "Missing path parameter.");
+                    return;
+                }
+                ipc.appWindow().fileOpen(openPath);
+                var openedFile = ipc.appWindow().getActiveFile();
+                var savedFilename = "";
+                try {
+                    if (openedFile && typeof openedFile.getSavedFilename === "function") {
+                        savedFilename = String(openedFile.getSavedFilename() || "");
+                    }
+                } catch (fnErr) {}
+                sendBridgeResult(requestId, true, {
+                    path: openPath,
+                    saved_filename: savedFilename,
+                    is_activity_file: Boolean(
+                        openedFile && typeof openedFile.isActivityFile === "function" && openedFile.isActivityFile()
+                    )
+                }, null);
+                return;
+            }
             default:
                 sendBridgeResult(requestId, false, {}, "Unsupported opcode: " + String(opcode));
                 return;

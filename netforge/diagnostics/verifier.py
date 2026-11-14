@@ -75,6 +75,7 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
     """Evaluate one parsed requirement strictly against captured CLI evidence."""
     base: dict[str, Any] = {
         "id": req.id,
+        "task_id": req.task_id,
         "type": req.type,
         "device": req.source if isinstance(req, ReachableRequirement) else req.device,
         "command": read.command,
@@ -362,6 +363,52 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
     raise TypeError(f"Unsupported requirement type: {type(req)!r}")
 
 
+def _build_task_coverage(
+    expected_task_ids: list[str] | None,
+    requirements: list[LabRequirement],
+) -> dict[str, Any] | None:
+    """Compute requirement-to-task coverage against declared `task_ids`."""
+    if expected_task_ids is None:
+        return None
+    normalized_expected: list[str] = []
+    seen: set[str] = set()
+    for tid in expected_task_ids:
+        cleaned = str(tid).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            normalized_expected.append(cleaned)
+
+    by_task: dict[str, list[str]] = {tid: [] for tid in normalized_expected}
+    extra_task_ids: list[str] = []
+    untagged_requirements = 0
+    for idx, req in enumerate(requirements, start=1):
+        req_key = req.id or f"req_{idx}"
+        if req.task_id is None or not req.task_id.strip():
+            untagged_requirements += 1
+            continue
+        tid = req.task_id.strip()
+        if tid in by_task:
+            by_task[tid].append(req_key)
+        else:
+            by_task.setdefault(tid, []).append(req_key)
+            if tid not in extra_task_ids:
+                extra_task_ids.append(tid)
+
+    covered = [tid for tid in normalized_expected if by_task.get(tid)]
+    uncovered = [tid for tid in normalized_expected if not by_task.get(tid)]
+    total = len(normalized_expected)
+    return {
+        "expected_tasks": normalized_expected,
+        "covered_tasks": covered,
+        "uncovered_tasks": uncovered,
+        "extra_task_ids": extra_task_ids,
+        "untagged_requirements": untagged_requirements,
+        "requirements_by_task": by_task,
+        "coverage_ratio": round(len(covered) / total, 3) if total else 1.0,
+        "all_tasks_covered": len(uncovered) == 0,
+    }
+
+
 class LabVerifier:
     """Evaluates declarative lab requirements strictly from live PT CLI read-backs."""
 
@@ -454,9 +501,12 @@ class LabVerifier:
         *,
         timeout_seconds: float = 25.0,
         include_activity_grade: bool = True,
+        task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run live CLI verification across all declared requirements and keep raw evidence."""
         spec = normalize_requirements_payload(requirements)
+        expected_tasks = task_ids if task_ids is not None else spec.task_ids
+        task_coverage = _build_task_coverage(expected_tasks, spec.requirements)
         has_script = self.router.has_live_script()
         exec_backend: ExecutionBackend = "script_backend" if has_script else "offline_model"
 
@@ -552,5 +602,6 @@ class LabVerifier:
                 "errors": error_count,
             },
             "results": results,
+            "task_coverage": task_coverage,
             "activity_grade": activity_grade,
         }

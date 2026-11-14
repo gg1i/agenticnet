@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -332,6 +333,74 @@ def register_gui_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             _run,
         )
 
+    def gui_attach_ip_phone_power(
+        device_name: str = "IP_PHONE1",
+        canvas_x: float | None = None,
+        canvas_y: float | None = None,
+        close_dialog: bool = True,
+        restore_focus: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab."""
+
+        def _run() -> OperationResult:
+            fn = getattr(runtime.gui, "attach_ip_phone_power", None)
+            if fn is None:
+                raise ValidationError(
+                    "Configured GUI backend does not support IP Phone power-adapter attachment."
+                )
+
+            resolved_x, resolved_y = canvas_x, canvas_y
+            pt_title = device_name
+            with suppress(Exception):
+                pt_title = runtime.router.resolve_pt_device_name(device_name)
+
+            if resolved_x is None or resolved_y is None:
+                with suppress(Exception):
+                    _, topo, _, _ = runtime.manager.require_active()
+                    node = topo.model.devices.get(device_name)
+                    if node is not None:
+                        if resolved_x is None:
+                            resolved_x = float(node.position.x)
+                        if resolved_y is None:
+                            resolved_y = float(node.position.y)
+
+            data = fn(
+                device_name=device_name,
+                pt_device_title=pt_title,
+                canvas_x=500.0 if resolved_x is None else float(resolved_x),
+                canvas_y=180.0 if resolved_y is None else float(resolved_y),
+                close_dialog=close_dialog,
+                restore_focus=restore_focus,
+                dry_run=dry_run,
+            )
+            lvl = StateLevel(data.get("state_level", StateLevel.EXECUTED.value))
+            verb = "Planned dry-run" if dry_run else "Dragged 7960 AC power adapter onto"
+            return OperationResult.ok(
+                "gui_attach_ip_phone_power",
+                f"{verb} '{data.get('pt_device_title', device_name)}' Physical-tab DC socket.",
+                data=data,
+                state_level=lvl,
+                execution_backend="gui_backend",
+                evidence=[
+                    f"HWND={data.get('hwnd')}, DPI={data.get('dpi')}, "
+                    f"socket_roi_diff={data.get('socket_roi_diff_ratio')}."
+                ],
+            )
+
+        return runtime.execute(
+            "gui_attach_ip_phone_power",
+            PermissionTier.GUI_CONTROL,
+            {
+                "device_name": device_name,
+                "canvas_x": canvas_x,
+                "canvas_y": canvas_y,
+                "close_dialog": close_dialog,
+                "dry_run": dry_run,
+            },
+            _run,
+        )
+
     specs = [
         ("packet_tracer_detect", packet_tracer_detect, PermissionTier.READ_ONLY, True),
         ("packet_tracer_launch", packet_tracer_launch, PermissionTier.GUI_CONTROL, False),
@@ -342,6 +411,12 @@ def register_gui_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         ("gui_state_inspect", gui_state_inspect, PermissionTier.READ_ONLY, True),
         ("gui_recover", gui_recover, PermissionTier.GUI_CONTROL, False),
         ("gui_batch", gui_batch, PermissionTier.GUI_CONTROL, False),
+        (
+            "gui_attach_ip_phone_power",
+            gui_attach_ip_phone_power,
+            PermissionTier.GUI_CONTROL,
+            False,
+        ),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(

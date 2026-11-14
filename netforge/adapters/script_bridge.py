@@ -28,6 +28,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "create_link",
         "cli_exec",
         "get_activity_status",
+        "open_file",
     }
 )
 
@@ -698,6 +699,25 @@ class HttpScriptBridgeBackend(ScriptBackend):
             "readable": True,
         }
 
+    def open_file(
+        self,
+        path: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Open a `.pkt`/`.pka` file inside PT via `ipc.appWindow().fileOpen()`."""
+        self.safety.check_safe_to_act(live_input=False, count_action=False)
+        data = self.server.enqueue_command(
+            "open_file",
+            {"path": str(path)},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
     def backend_status(self) -> BackendStatus:
         """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
         return BackendStatus(
@@ -714,6 +734,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 "create_link",
                 "cli_exec",
                 "get_activity_status",
+                "open_file",
             ],
             notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
         )

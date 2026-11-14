@@ -57,7 +57,7 @@ netforge/
 - Python **3.11+**
 - Optional (for live Packet Tracer `8.2.2` automation):
   - Cisco Packet Tracer installed locally (e.g., `C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe`) with the NetForge Script Module installed via `netforge install-module`.
-  - **Unlocked interactive Windows desktop session** for the GUI fallback (`gui_*` foreground `SendInput` / `ImageGrab` screen captures fail on locked or asleep desktops; the `ScriptBackend` HTTP bridge continues to operate after initial registration).
+  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power`) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
 
 ### Installation
 

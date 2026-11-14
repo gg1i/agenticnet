@@ -10,6 +10,7 @@ from pydantic import ValidationError as PydanticValidationError
 from netforge.core.enums import PermissionTier, StateLevel
 from netforge.core.exceptions import ValidationError
 from netforge.core.models import OperationResult
+from netforge.diagnostics.grader import grade_open_activity
 from netforge.diagnostics.verifier import LabVerifier
 from netforge.diagnostics.verify_schema import get_verify_requirements_schema
 from netforge.mcp.registry import NetForgeRuntime
@@ -46,6 +47,7 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         requirements: dict[str, Any] | list[dict[str, Any]],
         timeout_seconds: float = 25.0,
         include_activity_grade: bool = True,
+        task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Verify live Packet Tracer lab state against declarative requirements with evidence."""
 
@@ -55,6 +57,7 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
                     requirements,
                     timeout_seconds=timeout_seconds,
                     include_activity_grade=include_activity_grade,
+                    task_ids=task_ids,
                 )
             except (PydanticValidationError, TypeError, ValueError) as exc:
                 raise ValidationError(
@@ -68,6 +71,11 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
                 for r in report["results"]
                 if r["status"] != "pass" and r.get("reason")
             ]
+            cov = report.get("task_coverage")
+            if cov and cov.get("uncovered_tasks"):
+                warnings.append(
+                    f"Uncovered task IDs with no requirement attached: {cov['uncovered_tasks']}."
+                )
             ev = [
                 (
                     f"[{r['status']}] {r['device']}:{r['command']} "
@@ -96,13 +104,63 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             {
                 "timeout_seconds": timeout_seconds,
                 "include_activity_grade": include_activity_grade,
+                "task_ids": task_ids,
             },
             _run,
         )
 
+    def grade_lab() -> dict[str, Any]:
+        """Read native `.pka` activity score and unmet comparator leaves fail-closed."""
+
+        def _run() -> OperationResult:
+            grade = grade_open_activity(runtime.router)
+            state = grade["state"]
+            if state == "available":
+                pct = grade["percentage_complete"]
+                unmet = len(grade["unmet_items"])
+                summary_msg = (
+                    f"grade_lab {pct:.1f}% complete "
+                    f"({grade['correct_items_count']}/{grade['items_count']} items, "
+                    f"{unmet} unmet leaf item(s))."
+                )
+                warnings = [
+                    (
+                        f"[unmet] {item['path']}: "
+                        f"{item['incorrect_feedback'] or item['value'] or 'incomplete'}"
+                    )
+                    for item in grade["unmet_items"][:20]
+                ]
+                evidence = [
+                    (
+                        f"PT ActivityFile score={pct:.1f}% "
+                        f"leaves={grade['total_leaves']} unmet={unmet}"
+                    )
+                ]
+            else:
+                summary_msg = (
+                    f"grade_lab unavailable ({grade.get('raw_state', 'unavailable')}): "
+                    f"{grade.get('reason')}"
+                )
+                warnings = [
+                    str(grade.get("reason") or "Activity grade unavailable; use verify_lab.")
+                ]
+                evidence = [f"Fail-closed fallback -> {grade.get('fallback', 'verify_lab')}."]
+            return OperationResult.ok(
+                "grade_lab",
+                summary_msg,
+                data=grade,
+                state_level=StateLevel(grade["state_level"]),
+                execution_backend=grade["execution_backend"],
+                warnings=warnings,
+                evidence=evidence,
+            )
+
+        return runtime.execute("grade_lab", PermissionTier.READ_ONLY, {}, _run)
+
     specs = [
         ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
         ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
+        ("grade_lab", grade_lab, PermissionTier.READ_ONLY, True),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(

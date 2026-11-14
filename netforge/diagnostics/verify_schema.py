@@ -14,6 +14,12 @@ class _BaseRequirement(BaseModel):
         default=None,
         description="Optional caller-assigned requirement identifier.",
     )
+    task_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional lab task identifier attached to this requirement for coverage tracking."
+        ),
+    )
     description: str | None = Field(
         default=None,
         description="Optional human-readable explanation of what this requirement checks.",
@@ -152,6 +158,10 @@ class VerifyLabRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     lab_name: str | None = Field(default=None, description="Optional descriptive lab title.")
+    task_ids: list[str] | None = Field(
+        default=None,
+        description="Optional ordered list of expected task IDs for requirement coverage checks.",
+    )
     requirements: list[LabRequirement] = Field(min_length=1)
 
 
