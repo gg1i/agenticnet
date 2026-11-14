@@ -173,6 +173,15 @@ class BackendRouter:
             return ("offline_model", {}, [], [])
 
         cat_str = category.value if isinstance(category, DeviceCategory) else str(category)
+        model_key = model.strip().lower()
+        if model_key in {"7960", "ip_phone", "cisco ip phone"}:
+            cat_str = "ip_phone"
+        elif model_key.startswith("laptop"):
+            cat_str = "laptop"
+        elif model_key.startswith("server"):
+            cat_str = "server"
+        elif model_key.startswith("printer"):
+            cat_str = "printer"
         try:
             dev_type = resolve_device_type(cat_str)
         except Exception:

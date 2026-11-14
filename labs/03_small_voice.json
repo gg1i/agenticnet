@@ -1,0 +1,161 @@
+{
+  "lab_name": "Sample Lab 03 — Minimal CME Voice Lab",
+  "description": "Original CallManager Express lab: R_VOICE (2811) + SW_VOICE (3560-24PS PoE) + IP_PHONE1 (7960) on voice VLAN 100.",
+  "devices": [
+    {"name": "R_VOICE", "model": "2811", "category": "router", "x": 180, "y": 180},
+    {"name": "SW_VOICE", "model": "3560-24PS", "category": "l3_switch", "x": 340, "y": 180},
+    {"name": "IP_PHONE1", "model": "7960", "category": "ip_phone", "x": 500, "y": 180}
+  ],
+  "links": [
+    {
+      "device1": "R_VOICE",
+      "port1": "FastEthernet0/0",
+      "device2": "SW_VOICE",
+      "port2": "GigabitEthernet0/1",
+      "conn_type": "straight_through"
+    },
+    {
+      "device1": "SW_VOICE",
+      "port1": "FastEthernet0/1",
+      "device2": "IP_PHONE1",
+      "port2": "Switch",
+      "conn_type": "straight_through"
+    }
+  ],
+  "configs": {
+    "SW_VOICE": [
+      "enable",
+      "configure terminal",
+      "hostname SW_VOICE",
+      "spanning-tree mode rapid-pvst",
+      "vlan 100",
+      "name VOICE",
+      "exit",
+      "interface GigabitEthernet0/1",
+      "switchport trunk encapsulation dot1q",
+      "switchport mode trunk",
+      "spanning-tree portfast trunk",
+      "no shutdown",
+      "exit",
+      "interface FastEthernet0/1",
+      "switchport mode access",
+      "switchport voice vlan 100",
+      "spanning-tree portfast",
+      "no shutdown",
+      "end"
+    ],
+    "R_VOICE": [
+      "enable",
+      "configure terminal",
+      "hostname R_VOICE",
+      "no ip domain-lookup",
+      "ip dhcp excluded-address 10.50.100.1 10.50.100.10",
+      "ip dhcp pool VOICE_POOL",
+      "network 10.50.100.0 255.255.255.0",
+      "default-router 10.50.100.1",
+      "option 150 ip 10.50.100.1",
+      "exit",
+      "interface FastEthernet0/0",
+      "no ip address",
+      "no shutdown",
+      "exit",
+      "interface FastEthernet0/0.100",
+      "encapsulation dot1Q 100",
+      "ip address 10.50.100.1 255.255.255.0",
+      "exit",
+      "telephony-service",
+      "max-ephones 5",
+      "max-dn 10",
+      "ip source-address 10.50.100.1 port 2000",
+      "auto assign 1 to 5",
+      "auto-reg-ephone",
+      "create cnf-files",
+      "exit",
+      "ephone-dn 1",
+      "number 1001",
+      "exit",
+      "ephone 1",
+      "mac-address 0001.1111.2222",
+      "type 7960",
+      "button 1:1",
+      "end"
+    ]
+  },
+  "settle_seconds": 3,
+  "requirements": {
+    "lab_name": "Sample Lab 03 — Minimal CME Voice Lab",
+    "requirements": [
+      {
+        "id": "sw_voice_vlan100",
+        "type": "vlan_exists",
+        "device": "SW_VOICE",
+        "vlan_id": 100,
+        "name": "VOICE"
+      },
+      {
+        "id": "r_voice_subif_ip",
+        "type": "ip_assigned",
+        "device": "R_VOICE",
+        "interface": "FastEthernet0/0.100",
+        "ip": "10.50.100.1"
+      },
+      {
+        "id": "r_voice_option150",
+        "type": "config_contains",
+        "device": "R_VOICE",
+        "section": "ip dhcp pool VOICE_POOL",
+        "contains": ["network 10.50.100.0 255.255.255.0", "option 150 ip 10.50.100.1"]
+      },
+      {
+        "id": "r_voice_telephony",
+        "type": "telephony_service",
+        "device": "R_VOICE",
+        "source_address": "10.50.100.1",
+        "source_port": 2000,
+        "min_ephones": 5
+      },
+      {
+        "id": "r_voice_ephone1",
+        "type": "ephone_registered",
+        "device": "R_VOICE",
+        "ephone_id": 1,
+        "number": "1001",
+        "mac_address": "0001.1111.2222",
+        "require_registered": false
+      }
+    ]
+  },
+  "break_step": {
+    "device": "R_VOICE",
+    "commands": [
+      "configure terminal",
+      "no ephone 1",
+      "no telephony-service",
+      "end"
+    ],
+    "expected_failing_ids": ["r_voice_telephony", "r_voice_ephone1"]
+  },
+  "fix_step": {
+    "device": "R_VOICE",
+    "commands": [
+      "configure terminal",
+      "telephony-service",
+      "max-ephones 5",
+      "max-dn 10",
+      "ip source-address 10.50.100.1 port 2000",
+      "auto assign 1 to 5",
+      "auto-reg-ephone",
+      "create cnf-files",
+      "exit",
+      "ephone-dn 1",
+      "number 1001",
+      "exit",
+      "ephone 1",
+      "mac-address 0001.1111.2222",
+      "type 7960",
+      "button 1:1",
+      "end"
+    ],
+    "settle_seconds": 3
+  }
+}

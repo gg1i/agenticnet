@@ -21,6 +21,7 @@ from netforge.mcp.tools_ipam import register_ipam_tools
 from netforge.mcp.tools_project import register_project_tools
 from netforge.mcp.tools_simulation import register_simulation_tools
 from netforge.mcp.tools_topology import register_topology_tools
+from netforge.mcp.tools_verify import register_verify_tools
 
 
 def create_mcp_server(
@@ -65,6 +66,7 @@ def create_mcp_server(
     register_gui_tools(server, runtime)
     register_simulation_tools(server, runtime)
     register_diagnostics_tools(server, runtime)
+    register_verify_tools(server, runtime)
     register_resources(server, runtime)
     register_prompts(server, runtime)
 

@@ -29,7 +29,7 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
             manifest_res = await client.read_resource("netforge://manifest")
             manifest_json = json.loads(manifest_res.contents[0].text)
             assert len(tools_res.tools) == manifest_json["tool_count"]
-            assert len(tools_res.tools) == 70
+            assert len(tools_res.tools) == 72
 
             prompt_res = await client.get_prompt(
                 "plan_network_architecture",
@@ -63,7 +63,7 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
             assert client.server_info is not None
             assert client.server_info.name == "netforge-mcp"
             tools_res = await client.list_tools()
-            assert len(tools_res.tools) == 70
+            assert len(tools_res.tools) == 72
             sub_res = await client.call_tool("subnet_calculate", {"cidr": "192.168.50.0/26"})
             assert not sub_res.is_error
             data = json.loads(sub_res.content[0].text)

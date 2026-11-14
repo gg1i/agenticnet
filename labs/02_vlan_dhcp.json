@@ -1,0 +1,161 @@
+{
+  "lab_name": "Sample Lab 02 — Router-on-a-Stick VLAN and DHCP",
+  "description": "GW (2911) serving VLAN 20 DHCP pool via trunk to SW1 (2960-24TT) with CLIENT (2911) receiving DHCP lease.",
+  "devices": [
+    {"name": "GW", "model": "2911", "category": "router", "x": 180, "y": 180},
+    {"name": "SW1", "model": "2960-24TT", "category": "l2_switch", "x": 340, "y": 180},
+    {"name": "CLIENT", "model": "2911", "category": "router", "x": 500, "y": 180}
+  ],
+  "links": [
+    {
+      "device1": "GW",
+      "port1": "GigabitEthernet0/0",
+      "device2": "SW1",
+      "port2": "GigabitEthernet0/1",
+      "conn_type": "straight_through"
+    },
+    {
+      "device1": "SW1",
+      "port1": "FastEthernet0/2",
+      "device2": "CLIENT",
+      "port2": "GigabitEthernet0/0",
+      "conn_type": "straight_through"
+    }
+  ],
+  "configs": {
+    "SW1": [
+      "enable",
+      "configure terminal",
+      "hostname SW1",
+      "spanning-tree mode rapid-pvst",
+      "vlan 20",
+      "name WORKSTATIONS",
+      "exit",
+      "interface GigabitEthernet0/1",
+      "switchport mode trunk",
+      "spanning-tree portfast trunk",
+      "no shutdown",
+      "exit",
+      "interface FastEthernet0/2",
+      "switchport mode access",
+      "switchport access vlan 20",
+      "spanning-tree portfast",
+      "no shutdown",
+      "end"
+    ],
+    "GW": [
+      "enable",
+      "configure terminal",
+      "hostname GW",
+      "no ip domain-lookup",
+      "ip dhcp excluded-address 172.16.20.1 172.16.20.10",
+      "ip dhcp pool WORKSTATIONS",
+      "network 172.16.20.0 255.255.255.0",
+      "default-router 172.16.20.1",
+      "exit",
+      "interface GigabitEthernet0/0",
+      "no ip address",
+      "no shutdown",
+      "exit",
+      "interface GigabitEthernet0/0.20",
+      "encapsulation dot1Q 20",
+      "ip address 172.16.20.1 255.255.255.0",
+      "end"
+    ],
+    "CLIENT": [
+      "enable",
+      "configure terminal",
+      "hostname CLIENT",
+      "no ip domain-lookup",
+      "interface GigabitEthernet0/0",
+      "no shutdown",
+      "end"
+    ]
+  },
+  "pre_settle_seconds": 8,
+  "post_configs": {
+    "CLIENT": [
+      "configure terminal",
+      "interface GigabitEthernet0/0",
+      "ip address dhcp",
+      "end"
+    ]
+  },
+  "settle_seconds": 10,
+  "requirements": {
+    "lab_name": "Sample Lab 02 — Router-on-a-Stick VLAN and DHCP",
+    "requirements": [
+      {
+        "id": "sw1_vlan20",
+        "type": "vlan_exists",
+        "device": "SW1",
+        "vlan_id": 20,
+        "name": "WORKSTATIONS",
+        "ports": ["FastEthernet0/2"]
+      },
+      {
+        "id": "gw_subif_ip",
+        "type": "ip_assigned",
+        "device": "GW",
+        "interface": "GigabitEthernet0/0.20",
+        "ip": "172.16.20.1"
+      },
+      {
+        "id": "gw_dhcp_pool_cfg",
+        "type": "config_contains",
+        "device": "GW",
+        "section": "ip dhcp pool WORKSTATIONS",
+        "contains": ["network 172.16.20.0 255.255.255.0", "default-router 172.16.20.1"]
+      },
+      {
+        "id": "gw_dhcp_lease",
+        "type": "dhcp_binding",
+        "device": "GW",
+        "ip": "172.16.20.11",
+        "min_bindings": 1
+      },
+      {
+        "id": "client_ping_gw",
+        "type": "reachable",
+        "from": "CLIENT",
+        "to": "172.16.20.1"
+      }
+    ]
+  },
+  "break_step": {
+    "device": "SW1",
+    "commands": [
+      "configure terminal",
+      "interface FastEthernet0/2",
+      "no switchport access vlan 20",
+      "shutdown",
+      "end"
+    ],
+    "secondary": {
+      "device": "GW",
+      "commands": ["clear ip dhcp binding *"]
+    },
+    "expected_failing_ids": ["sw1_vlan20", "client_ping_gw"]
+  },
+  "fix_step": {
+    "device": "SW1",
+    "commands": [
+      "configure terminal",
+      "interface FastEthernet0/2",
+      "switchport access vlan 20",
+      "no shutdown",
+      "end"
+    ],
+    "secondary": {
+      "device": "CLIENT",
+      "commands": [
+        "configure terminal",
+        "interface GigabitEthernet0/0",
+        "no ip address",
+        "ip address dhcp",
+        "end"
+      ]
+    },
+    "settle_seconds": 10
+  }
+}

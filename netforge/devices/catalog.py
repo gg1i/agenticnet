@@ -552,8 +552,8 @@ def _build_default_profiles() -> list[DeviceProfile]:
             aliases=["cisco 7960", "ip phone", "ipphone", "7960"],
             interfaces=[
                 InterfaceTemplate(
-                    name="FastEthernet0",
-                    short_name="Fa0",
+                    name="Switch",
+                    short_name="Switch",
                     media=PortMedia.FAST_ETHERNET,
                     speed_mbps=100,
                     supports_switchport=False,

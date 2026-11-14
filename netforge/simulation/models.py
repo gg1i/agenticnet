@@ -137,6 +137,58 @@ class ParsedOspfNeighbor(BaseModel):
     interface: str
 
 
+class ParsedDhcpBinding(BaseModel):
+    """Single DHCP lease binding row parsed from `show ip dhcp binding`."""
+
+    ip_address: str
+    client_id: str
+    lease_expiration: str = ""
+    binding_type: str = ""
+    raw_line: str = ""
+
+
+class ParsedTelephonyStatus(BaseModel):
+    """Structured summary parsed from Cisco CME `show telephony-service`."""
+
+    configured: bool = False
+    version: str | None = None
+    max_ephones: int | None = None
+    max_dn: int | None = None
+    source_address: str | None = None
+    source_port: int | None = None
+    auto_assign_ranges: list[str] = Field(default_factory=list)
+    raw_summary: str = ""
+
+
+class ParsedEphoneButton(BaseModel):
+    """Button/extension mapping parsed inside a `show ephone` block."""
+
+    button: int
+    dn: int | None = None
+    number: str | None = None
+    state: str = ""
+
+
+class ParsedEphoneEntry(BaseModel):
+    """Single SCCP ephone registration block parsed from `show ephone`."""
+
+    ephone_id: int
+    mac_address: str | None = None
+    status: str = "unknown"
+    ip_address: str | None = None
+    device_model: str | None = None
+    buttons: list[ParsedEphoneButton] = Field(default_factory=list)
+    raw_lines: list[str] = Field(default_factory=list)
+
+
+class ParsedConfigSection(BaseModel):
+    """Single top-level section extracted from `show running-config`."""
+
+    header: str
+    lines: list[str] = Field(default_factory=list)
+    text: str = ""
+
+
 class ConnectivityCheckReport(BaseModel):
     """Comprehensive connectivity check report separating PT evidence from offline estimates."""
 

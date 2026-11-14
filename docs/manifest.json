@@ -32,7 +32,7 @@
       "phase_5_public_release": "completed"
     }
   },
-  "tool_count": 69,
+  "tool_count": 72,
   "categories": {
     "project": 7,
     "topology": 6,
@@ -41,9 +41,9 @@
     "ipam": 5,
     "configuration": 14,
     "cli": 5,
-    "gui": 8,
+    "gui": 9,
     "simulation": 6,
-    "diagnostics": 7
+    "diagnostics": 9
   },
   "tools": [
     {
@@ -257,7 +257,7 @@
       "name": "interface_status",
       "category": "connections",
       "permission_tier": "read_only",
-      "description": "Inspect or update planned administrative status and description for an interface.",
+      "description": "Inspect or update interface status (supports live show interfaces when live=True).",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -419,7 +419,7 @@
       "name": "configuration_backup",
       "category": "configuration",
       "permission_tier": "configuration",
-      "description": "Save an immutable device configuration snapshot (secrets automatically redacted).",
+      "description": "Save a device config snapshot (reads live running-config if omitted or fetch_live).",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -500,7 +500,7 @@
       "name": "gui_screenshot",
       "category": "gui",
       "permission_tier": "read_only",
-      "description": "Capture a screenshot of Packet Tracer and inspect brightness/layout regions.",
+      "description": "Capture a screenshot of Packet Tracer or a dialog offscreen and inspect layout.",
       "status": "stable",
       "read_only": true,
       "destructive": false
@@ -546,6 +546,15 @@
       "category": "gui",
       "permission_tier": "gui_control",
       "description": "Recover from modal dialogs or arm/reset emergency automation stop.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "gui_batch",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Execute a sequence of calibrated GUI actions in one low-latency batch.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -666,6 +675,24 @@
       "status": "stable",
       "read_only": true,
       "destructive": false
+    },
+    {
+      "name": "verify_requirements_schema",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Return the declarative JSON schema and worked examples for `verify_lab`.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "verify_lab",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Verify live Packet Tracer lab state against declarative requirements with evidence.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
     }
   ],
   "resources": [
@@ -717,6 +744,18 @@
       "model": "Laptop-PT",
       "display_name": "Packet Tracer Laptop",
       "category": "laptop",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "7960",
+      "display_name": "Cisco IP Phone 7960",
+      "category": "pc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "Home-VOIP-PT",
+      "display_name": "Home VoIP ATA Adapter",
+      "category": "pc",
       "supports_ios_cli": false
     },
     {

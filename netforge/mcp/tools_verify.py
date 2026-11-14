@@ -1,0 +1,117 @@
+"""MCP tools exposing declarative lab verification requirements schema and `verify_lab`."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from mcp.server.mcpserver import MCPServer
+from pydantic import ValidationError as PydanticValidationError
+
+from netforge.core.enums import PermissionTier, StateLevel
+from netforge.core.exceptions import ValidationError
+from netforge.core.models import OperationResult
+from netforge.diagnostics.verifier import LabVerifier
+from netforge.diagnostics.verify_schema import get_verify_requirements_schema
+from netforge.mcp.registry import NetForgeRuntime
+
+
+def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
+    """Register Phase 3 live verification schema and `verify_lab` MCP tools."""
+
+    def verify_requirements_schema() -> dict[str, Any]:
+        """Return the declarative JSON schema and worked examples for `verify_lab`."""
+
+        def _run() -> OperationResult:
+            schema_doc = get_verify_requirements_schema()
+            return OperationResult.ok(
+                "verify_requirements_schema",
+                (
+                    "Returned declarative verification schema covering "
+                    f"{len(schema_doc['supported_types'])} requirement types."
+                ),
+                data=schema_doc,
+                state_level=StateLevel.PLANNED,
+                execution_backend="offline_model",
+                evidence=["Static JSON schema and examples generated from Pydantic models."],
+            )
+
+        return runtime.execute(
+            "verify_requirements_schema",
+            PermissionTier.READ_ONLY,
+            {},
+            _run,
+        )
+
+    def verify_lab(
+        requirements: dict[str, Any] | list[dict[str, Any]],
+        timeout_seconds: float = 25.0,
+        include_activity_grade: bool = True,
+    ) -> dict[str, Any]:
+        """Verify live Packet Tracer lab state against declarative requirements with evidence."""
+
+        def _run() -> OperationResult:
+            try:
+                report = LabVerifier(runtime.router).verify(
+                    requirements,
+                    timeout_seconds=timeout_seconds,
+                    include_activity_grade=include_activity_grade,
+                )
+            except (PydanticValidationError, TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"Invalid verify_lab requirements payload: {exc}",
+                    remediation="Call verify_requirements_schema to inspect the expected schema.",
+                ) from exc
+
+            summary_counts = report["summary"]
+            warnings = [
+                f"[{r['status']}] {r['type']} ({r['device']}): {r['reason']}"
+                for r in report["results"]
+                if r["status"] != "pass" and r.get("reason")
+            ]
+            ev = [
+                (
+                    f"[{r['status']}] {r['device']}:{r['command']} "
+                    f"-> {len(str(r.get('evidence', '')))}c"
+                )
+                for r in report["results"]
+            ]
+            verdict = "PASSED" if report["passed"] else "FAILED"
+            summary_msg = (
+                f"verify_lab {verdict}: {summary_counts['passed']}/{summary_counts['total']} "
+                f"passed, {summary_counts['failed']} failed, {summary_counts['errors']} error(s)."
+            )
+            return OperationResult.ok(
+                "verify_lab",
+                summary_msg,
+                data=report,
+                state_level=StateLevel(report["state_level"]),
+                execution_backend=report["execution_backend"],
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "verify_lab",
+            PermissionTier.READ_ONLY,
+            {
+                "timeout_seconds": timeout_seconds,
+                "include_activity_grade": include_activity_grade,
+            },
+            _run,
+        )
+
+    specs = [
+        ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
+        ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
+    ]
+    for name, fn, tier, ro in specs:
+        runtime.registry.register_tool(
+            server,
+            name=name,
+            category="diagnostics",
+            permission_tier=tier,
+            description=(fn.__doc__ or name).strip(),
+            fn=fn,
+            read_only=ro,
+            idempotent=ro,
+        )

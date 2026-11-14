@@ -1,0 +1,93 @@
+{
+  "lab_name": "Sample Lab 01 — Two-Router Static Routing",
+  "description": "Two 2911 routers connected back-to-back with Loopback LANs and bidirectional static routes.",
+  "devices": [
+    {"name": "R1", "model": "2911", "category": "router", "x": 180, "y": 200},
+    {"name": "R2", "model": "2911", "category": "router", "x": 440, "y": 200}
+  ],
+  "links": [
+    {
+      "device1": "R1",
+      "port1": "GigabitEthernet0/0",
+      "device2": "R2",
+      "port2": "GigabitEthernet0/0",
+      "conn_type": "crossover"
+    }
+  ],
+  "configs": {
+    "R1": [
+      "enable",
+      "configure terminal",
+      "hostname R1",
+      "no ip domain-lookup",
+      "interface GigabitEthernet0/0",
+      "ip address 10.10.12.1 255.255.255.252",
+      "no shutdown",
+      "exit",
+      "interface Loopback0",
+      "ip address 10.10.1.1 255.255.255.0",
+      "exit",
+      "ip route 10.10.2.0 255.255.255.0 10.10.12.2",
+      "end"
+    ],
+    "R2": [
+      "enable",
+      "configure terminal",
+      "hostname R2",
+      "no ip domain-lookup",
+      "interface GigabitEthernet0/0",
+      "ip address 10.10.12.2 255.255.255.252",
+      "no shutdown",
+      "exit",
+      "interface Loopback0",
+      "ip address 10.10.2.1 255.255.255.0",
+      "exit",
+      "ip route 10.10.1.0 255.255.255.0 10.10.12.1",
+      "end"
+    ]
+  },
+  "requirements": {
+    "lab_name": "Sample Lab 01 — Two-Router Static Routing",
+    "requirements": [
+      {"id": "r1_gi00_up", "type": "interface_up", "device": "R1", "interface": "GigabitEthernet0/0"},
+      {"id": "r1_lo0_ip", "type": "ip_assigned", "device": "R1", "interface": "Loopback0", "ip": "10.10.1.1"},
+      {"id": "r2_gi00_up", "type": "interface_up", "device": "R2", "interface": "GigabitEthernet0/0"},
+      {"id": "r2_lo0_ip", "type": "ip_assigned", "device": "R2", "interface": "Loopback0", "ip": "10.10.2.1"},
+      {
+        "id": "r1_static_route",
+        "type": "route_exists",
+        "device": "R1",
+        "network": "10.10.2.0/24",
+        "next_hop": "10.10.12.2",
+        "protocol_code": "S"
+      },
+      {
+        "id": "r2_static_route",
+        "type": "route_exists",
+        "device": "R2",
+        "network": "10.10.1.0/24",
+        "next_hop": "10.10.12.1",
+        "protocol_code": "S"
+      },
+      {"id": "r1_ping_r2_lan", "type": "reachable", "from": "R1", "to": "10.10.2.1"},
+      {"id": "r2_ping_r1_lan", "type": "reachable", "from": "R2", "to": "10.10.1.1"}
+    ]
+  },
+  "break_step": {
+    "device": "R1",
+    "commands": [
+      "configure terminal",
+      "no ip route 10.10.2.0 255.255.255.0 10.10.12.2",
+      "end"
+    ],
+    "expected_failing_ids": ["r1_static_route", "r1_ping_r2_lan"]
+  },
+  "fix_step": {
+    "device": "R1",
+    "commands": [
+      "configure terminal",
+      "ip route 10.10.2.0 255.255.255.0 10.10.12.2",
+      "end"
+    ]
+  }
+}
