@@ -32,6 +32,7 @@ from netforge.gui.calibration import CalibrationManager
 from netforge.gui.safety import EmergencyStopController
 from netforge.gui.windows_backend import WindowsGuiBackend
 from netforge.ios.generators import IOSGenerator
+from netforge.mcp.profiles import TOOL_PROFILE_NAMES, resolve_tool_profile
 from netforge.security.permissions import PermissionGuard, PermissionPolicy
 from netforge.security.redaction import redact_secrets
 from netforge.simulation.engine import SimulationEngine
@@ -55,10 +56,11 @@ class ToolDescriptor(BaseModel):
 class ToolRegistry:
     """Tracks registered tools, resources, and prompts to emit a capability manifest."""
 
-    def __init__(self) -> None:
+    def __init__(self, allowed_tool_names: frozenset[str] | None = None) -> None:
         self.tools: list[ToolDescriptor] = []
         self.resource_uris: list[str] = []
         self.prompt_names: list[str] = []
+        self._allowed_tool_names = allowed_tool_names
 
     def register_tool(
         self,
@@ -75,6 +77,8 @@ class ToolRegistry:
         idempotent: bool = False,
     ) -> None:
         """Register a tool on both the MCPServer and the NetForge manifest registry."""
+        if self._allowed_tool_names is not None and name not in self._allowed_tool_names:
+            return
         annotations = ToolAnnotations(
             title=name,
             readOnlyHint=read_only,
@@ -162,7 +166,9 @@ class NetForgeRuntime:
                 require_destructive_confirmation=self.settings.require_destructive_confirmation,
             )
         )
-        self.registry = ToolRegistry()
+        self.registry = ToolRegistry(
+            allowed_tool_names=resolve_tool_profile(self.settings.tool_profile)
+        )
 
     def execute(
         self,
@@ -282,6 +288,8 @@ class NetForgeRuntime:
                     "phase_5_public_release": "completed",
                 },
             },
+            "tool_profile": self.settings.tool_profile,
+            "available_tool_profiles": list(TOOL_PROFILE_NAMES),
             "tool_count": len(self.registry.tools),
             "categories": categories,
             "tools": [t.model_dump(mode="json") for t in self.registry.tools],

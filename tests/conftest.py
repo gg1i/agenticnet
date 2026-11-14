@@ -18,6 +18,7 @@ def isolated_settings(tmp_path: Path) -> NetForgeSettings:
         db_filename="test_netforge.sqlite",
         log_level="WARNING",
         permission_profile="standard",
+        tool_profile="advanced",
         require_destructive_confirmation=True,
     )
 

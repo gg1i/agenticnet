@@ -4,7 +4,9 @@ This document defines the standardized evaluation protocol and JSON output forma
 
 ## 1. Architecture & Blind Scoring Principles
 - **No embedded LLM in NetForge:** NetForge exposes deterministic MCP tools, prompts, and resources (`solve_lab`, `lab_open`, `lab_status`, `lab_save`). The external MCP client agent performs all planning and reasoning.
+- **Process & Workspace Isolation (Mandatory):** Benchmark runs MUST launch the client agent inside a **separate, clean working directory containing only the installed `netforge-mcp` server** (no repo checkout, no `benchmarks/reference/`, no source tests or answer keys on disk). Official evaluation and scoring are performed afterward by a **separate harness process** with read access to `benchmarks/reference/`.
 - **Hidden Human-Authored Reference Scoring:** Every benchmarked lab has a human-authored reference requirement set stored in `benchmarks/reference/<lab_id>.json` (`"authored_by": "human_reference"`, `"agent_visible": false`). The client agent **never** sees this reference requirement set (use `extract_agent_lab_brief()` when preparing prompts; MCP resources and prompts never expose `benchmarks/reference/`).
+- **Public Demo Set vs. Held-Out Evaluation:** The 3 sample labs under `labs/` (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) are a **public demo set** for smoke-testing and harness reproducibility, **not a held-out test**; held-out unseen labs are required for generalization claims.
 - **Agent Self-Report Never Counts as Score:** During a run, the client agent writes its own requirements JSON and `task_ids` for iterative debugging via `lab_status`. That agent self-report (`verify_summary`, `task_coverage`) may be recorded under `agent_self_report` (`"counts_toward_score": false`), and **never** counts toward `score_pct` or `passed`. Only `reference_score` (and native `.pka` `grade_lab` when available) determines pass/fail.
 - **Unmistakable Mock Labeling:** Offline harness dry-runs must set `"mock": true`, `"mode": "offline_mock"`, and `"comparability_notice"` stating that synthesized mock results are **not comparable** to live Packet Tracer runs. Public README benchmark tables must show **only live results** (`"mock": false`, `"mode": "live_pt"`).
 
@@ -72,8 +74,8 @@ If budgets expire (`iterations >= max_iterations` or `elapsed_seconds > time_bud
 }
 ```
 
-## 4. Reference Sample Labs & Runner CLI (`scripts/run_benchmark.py`)
-Human-authored hidden reference sets implemented under `benchmarks/reference/`:
+## 4. Public Demo Sample Labs & Runner CLI (`scripts/run_benchmark.py`)
+Public demo reference sets implemented under `benchmarks/reference/` (**public demo set, not a held-out test**):
 - [01_static_routing.json](../benchmarks/reference/01_static_routing.json)
 - [02_vlan_dhcp.json](../benchmarks/reference/02_vlan_dhcp.json)
 - [03_small_voice.json](../benchmarks/reference/03_small_voice.json)

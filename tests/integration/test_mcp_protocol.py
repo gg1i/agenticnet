@@ -42,7 +42,7 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
 
 @pytest.mark.integration
 def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
-    """Launch `python -m netforge serve --transport stdio` and verify JSON-RPC handshake."""
+    """Launch `python -m netforge serve --transport stdio` and verify default curated profile."""
     repo_root = Path(__file__).resolve().parents[2]
     server_params = StdioServerParameters(
         command=sys.executable,
@@ -63,7 +63,12 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
             assert client.server_info is not None
             assert client.server_info.name == "netforge-mcp"
             tools_res = await client.list_tools()
-            assert len(tools_res.tools) == 74
+            tool_names = {t.name for t in tools_res.tools}
+            assert "verify_lab" in tool_names
+            assert "grade_lab" in tool_names
+            assert "gui_attach_ip_phone_power" in tool_names
+            assert "gui_click" not in tool_names
+            assert "configure_ospf" not in tool_names
             sub_res = await client.call_tool("subnet_calculate", {"cidr": "192.168.50.0/26"})
             assert not sub_res.is_error
             data = json.loads(sub_res.content[0].text)

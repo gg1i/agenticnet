@@ -238,6 +238,7 @@ class HttpScriptBridgeServer:
                 self.send_response(status)
                 if not self._write_cors_headers():
                     self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
                 if body is not None:
@@ -302,8 +303,17 @@ class HttpScriptBridgeServer:
 
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
+            def _drain_post_body(self) -> None:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if 0 < length <= 4 * 1024 * 1024:
+                    self.rfile.read(length)
+
             def do_POST(self) -> None:  # noqa: N802
                 if not self._authorize():
+                    self._drain_post_body()
                     return
                 parsed = urlparse(self.path)
                 if parsed.path != "/v1/commands/result":

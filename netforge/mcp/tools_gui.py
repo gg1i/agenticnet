@@ -341,7 +341,10 @@ def register_gui_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         restore_focus: bool = True,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab."""
+        """Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab.
+
+        Status: experimental: not yet validated by the 5-attempt live protocol.
+        """
 
         def _run() -> OperationResult:
             fn = getattr(runtime.gui, "attach_ip_phone_power", None)

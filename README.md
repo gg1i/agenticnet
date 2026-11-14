@@ -57,7 +57,7 @@ netforge/
 - Python **3.11+**
 - Optional (for live Packet Tracer `8.2.2` automation):
   - Cisco Packet Tracer installed locally (e.g., `C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe`) with the NetForge Script Module installed via `netforge install-module`.
-  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power`) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
+  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power` — **experimental: not yet validated by the 5-attempt live protocol**) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
 
 ### Installation
 
@@ -141,7 +141,7 @@ Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offl
 
 | Evaluation Track | Mode | Result (Live Only) | Reference |
 |---|---|---|---|
-| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading, Physical-tab PoE/power drag) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
+| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading; `gui_attach_ip_phone_power` **experimental: not yet validated by the 5-attempt live protocol**) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
 | Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Pending live run** (awaiting live Phase 5 gate; zero live AI-agent benchmark runs recorded yet) | [BENCHMARK.md](docs/BENCHMARK.md) |
 
 ---

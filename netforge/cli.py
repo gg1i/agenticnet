@@ -92,6 +92,7 @@ def build_doctor_report(settings: NetForgeSettings) -> dict[str, object]:
         "data_dir": redact_path_home(settings.data_dir),
         "data_dir_writable": data_writable,
         "permission_profile": settings.permission_profile,
+        "tool_profile": settings.tool_profile,
         "packet_tracer_detected": pt_exe is not None,
         "packet_tracer_path": redact_path_home(pt_exe),
         "packet_tracer_running": pt_running,
@@ -187,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Permission profile limiting active tool tiers.",
     )
     serve_p.add_argument(
+        "--tool-profile",
+        choices=["solve_lab", "advanced"],
+        default=None,
+        help="Tool exposure profile: 'solve_lab' (default curated loop) or 'advanced' (all tools).",
+    )
+    serve_p.add_argument(
         "--json-logs", action="store_true", help="Emit JSON-formatted logs to stderr."
     )
 
@@ -195,6 +202,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     manifest_p.add_argument(
         "--output", default=None, help="Optional file path to write manifest JSON."
+    )
+    manifest_p.add_argument(
+        "--tool-profile",
+        choices=["solve_lab", "advanced"],
+        default=None,
+        help="Tool exposure profile to emit in the manifest.",
     )
 
     sub.add_parser(
@@ -265,6 +278,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if command == "manifest":
+        if getattr(args, "tool_profile", None):
+            settings.tool_profile = args.tool_profile
         configure_logging(settings.log_level)
         _, runtime = create_mcp_server(settings)
         manifest_json = json.dumps(runtime.build_manifest(), indent=2)
@@ -277,6 +292,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "serve":
         if getattr(args, "data_dir", None):
             settings.data_dir = Path(args.data_dir).expanduser().resolve()
+        if getattr(args, "tool_profile", None):
+            settings.tool_profile = args.tool_profile
         if getattr(args, "profile", None):
             from netforge.security.permissions import PermissionPolicy
 

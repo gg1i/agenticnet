@@ -58,13 +58,15 @@ def test_mcp_tool_resource_prompt_discovery_and_manifest(mcp_bundle) -> None:
         "verify_requirements_schema",
         "verify_lab",
     } <= tool_names
-    assert len(resources) == 6
-    assert len(prompts) == 4
+    assert len(resources) == 7
+    assert len(prompts) == 5
     assert {str(r.uri) for r in resources} >= {
         "netforge://manifest",
+        "netforge://workflows/solve_lab",
         "netforge://devices/catalog",
     }
     assert {p.name for p in prompts} >= {
+        "solve_lab",
         "plan_network_architecture",
         "design_campus_vlan_network",
     }

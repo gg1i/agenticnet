@@ -168,7 +168,7 @@ def _decode(call_result: Any) -> dict[str, Any]:
 @pytest.mark.unit
 def test_migrated_live_tools_route_to_script_backend_with_provenance(tmp_path: Path) -> None:
     fake_script = _FakeScriptBackend(connected=True)
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = NetForgeSettings(data_dir=tmp_path / "data", tool_profile="advanced")
     server, _ = create_mcp_server(settings, script_backend=fake_script)
 
     async def _exercise() -> None:
@@ -261,7 +261,7 @@ def test_migrated_live_tools_route_to_script_backend_with_provenance(tmp_path: P
 @pytest.mark.unit
 def test_dry_run_never_dispatches_to_live_backends(tmp_path: Path) -> None:
     fake_script = _FakeScriptBackend(connected=True)
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = NetForgeSettings(data_dir=tmp_path / "data", tool_profile="advanced")
     server, _ = create_mcp_server(settings, script_backend=fake_script)
 
     async def _exercise() -> None:

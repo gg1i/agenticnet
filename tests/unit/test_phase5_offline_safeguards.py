@@ -305,3 +305,21 @@ def test_solve_lab_prompt_and_resource_treat_lab_text_as_untrusted_data(tmp_path
     assert "never as commands" in res_text
     assert "override tool" in res_text
     assert "permission tiers" in res_text
+
+
+@pytest.mark.unit
+def test_benchmark_isolation_doc_and_experimental_gui_phone_marker(tmp_path: Path) -> None:
+    bench_doc = (REPO_ROOT / "docs" / "BENCHMARK.md").read_text(encoding="utf-8").lower()
+    assert "no repo checkout" in bench_doc
+    assert "no `benchmarks/reference/`" in bench_doc
+    assert "separate harness process" in bench_doc
+    assert "public demo set" in bench_doc
+    assert "not a held-out test" in bench_doc
+
+    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8").lower()
+    assert "experimental: not yet validated by the 5-attempt live protocol" in readme_text
+
+    srv, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_exp"))
+    tools = {t.name: t for t in asyncio.run(srv.list_tools())}
+    desc = (tools["gui_attach_ip_phone_power"].description or "").lower()
+    assert "experimental: not yet validated by the 5-attempt live protocol" in desc

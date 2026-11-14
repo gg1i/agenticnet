@@ -42,6 +42,7 @@ class NetForgeSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
     permission_profile: str = "standard"
+    tool_profile: str = "solve_lab"
     require_destructive_confirmation: bool = True
     allowed_tiers: set[PermissionTier] = Field(
         default_factory=lambda: {
@@ -89,6 +90,9 @@ class NetForgeSettings(BaseModel):
             },
         }
         allowed_tiers = tier_map.get(profile, tier_map["standard"])
+        tool_profile = os.environ.get("NETFORGE_TOOL_PROFILE", "solve_lab").strip().lower()
+        if tool_profile not in {"solve_lab", "advanced"}:
+            tool_profile = "solve_lab"
         require_confirm_raw = os.environ.get("NETFORGE_REQUIRE_CONFIRM", "true").strip().lower()
         require_confirm = require_confirm_raw not in {"0", "false", "no"}
 
@@ -100,6 +104,7 @@ class NetForgeSettings(BaseModel):
             host=os.environ.get("NETFORGE_HOST", "127.0.0.1"),
             port=int(os.environ.get("NETFORGE_PORT", "8765")),
             permission_profile=profile,
+            tool_profile=tool_profile,
             require_destructive_confirmation=require_confirm,
             allowed_tiers=allowed_tiers,
             max_devices_per_project=int(os.environ.get("NETFORGE_MAX_DEVICES", "250")),

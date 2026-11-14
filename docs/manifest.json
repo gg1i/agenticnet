@@ -32,6 +32,11 @@
       "phase_5_public_release": "completed"
     }
   },
+  "tool_profile": "advanced",
+  "available_tool_profiles": [
+    "solve_lab",
+    "advanced"
+  ],
   "tool_count": 74,
   "categories": {
     "project": 7,
@@ -563,7 +568,7 @@
       "name": "gui_attach_ip_phone_power",
       "category": "gui",
       "permission_tier": "gui_control",
-      "description": "Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab.",
+      "description": "Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab.\n\n        Status: experimental: not yet validated by the 5-attempt live protocol.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -715,6 +720,7 @@
   ],
   "resources": [
     "netforge://manifest",
+    "netforge://workflows/solve_lab",
     "netforge://project/current",
     "netforge://project/topology",
     "netforge://project/ipam",
@@ -722,6 +728,7 @@
     "netforge://logs/recent"
   ],
   "prompts": [
+    "solve_lab",
     "plan_network_architecture",
     "design_campus_vlan_network",
     "review_network_configurations",
