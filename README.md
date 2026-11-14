@@ -127,10 +127,22 @@ netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
 
 - [Architecture Guide](docs/ARCHITECTURE.md)
 - [Capabilities & Live Probe Log](docs/CAPABILITIES.md)
+- [Benchmark Protocol & Reference Scoring](docs/BENCHMARK.md)
 - [Stranger Test Release-Gate Checklist](docs/STRANGER_TEST.md)
 - [MCP Tool, Resource & Prompt Reference](docs/mcp-tools.md)
 - [Windows Setup Guide](docs/windows-setup.md)
 - [Linux & macOS Compatibility Roadmap](docs/cross-platform-roadmap.md)
+
+---
+
+## Live Verification & Benchmark Results
+
+Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offline mocked runs (`"mock": true` / `mode: "offline_mock"`) are synthetic harness checks and are never reported as benchmark scores (see [Benchmark Protocol](docs/BENCHMARK.md)).
+
+| Evaluation Track | Mode | Result (Live Only) | Reference |
+|---|---|---|---|
+| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading, Physical-tab PoE/power drag) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
+| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Pending live run** (awaiting live Phase 5 gate; zero live AI-agent benchmark runs recorded yet) | [BENCHMARK.md](docs/BENCHMARK.md) |
 
 ---
 

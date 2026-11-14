@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "lab_id": "03_small_voice",
+  "lab_name": "Sample Lab 03 — Minimal CME Voice Lab (Human-Authored Reference)",
+  "authored_by": "human_reference",
+  "agent_visible": false,
+  "task_ids": [
+    "sw_voice_vlan100",
+    "r_voice_subif_ip",
+    "r_voice_option150",
+    "r_voice_telephony",
+    "r_voice_ephone1"
+  ],
+  "requirements": [
+    {
+      "id": "sw_voice_vlan100",
+      "task_id": "sw_voice_vlan100",
+      "type": "vlan_exists",
+      "device": "SW_VOICE",
+      "vlan_id": 100,
+      "name": "VOICE"
+    },
+    {
+      "id": "r_voice_subif_ip",
+      "task_id": "r_voice_subif_ip",
+      "type": "ip_assigned",
+      "device": "R_VOICE",
+      "interface": "FastEthernet0/0.100",
+      "ip": "10.50.100.1"
+    },
+    {
+      "id": "r_voice_option150",
+      "task_id": "r_voice_option150",
+      "type": "config_contains",
+      "device": "R_VOICE",
+      "section": "ip dhcp pool VOICE_POOL",
+      "contains": ["network 10.50.100.0 255.255.255.0", "option 150 ip 10.50.100.1"]
+    },
+    {
+      "id": "r_voice_telephony",
+      "task_id": "r_voice_telephony",
+      "type": "telephony_service",
+      "device": "R_VOICE",
+      "source_address": "10.50.100.1",
+      "source_port": 2000,
+      "min_ephones": 5
+    },
+    {
+      "id": "r_voice_ephone1",
+      "task_id": "r_voice_ephone1",
+      "type": "ephone_registered",
+      "device": "R_VOICE",
+      "ephone_id": 1,
+      "number": "1001",
+      "mac_address": "0001.1111.2222",
+      "require_registered": false
+    }
+  ]
+}

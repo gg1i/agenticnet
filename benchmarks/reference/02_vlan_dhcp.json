@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0.0",
+  "lab_id": "02_vlan_dhcp",
+  "lab_name": "Sample Lab 02 — Router-on-a-Stick VLAN and DHCP (Human-Authored Reference)",
+  "authored_by": "human_reference",
+  "agent_visible": false,
+  "task_ids": [
+    "sw1_vlan20",
+    "gw_subif_ip",
+    "gw_dhcp_pool_cfg",
+    "gw_dhcp_lease",
+    "client_ping_gw"
+  ],
+  "requirements": [
+    {
+      "id": "sw1_vlan20",
+      "task_id": "sw1_vlan20",
+      "type": "vlan_exists",
+      "device": "SW1",
+      "vlan_id": 20,
+      "name": "WORKSTATIONS",
+      "ports": ["FastEthernet0/2"]
+    },
+    {
+      "id": "gw_subif_ip",
+      "task_id": "gw_subif_ip",
+      "type": "ip_assigned",
+      "device": "GW",
+      "interface": "GigabitEthernet0/0.20",
+      "ip": "172.16.20.1"
+    },
+    {
+      "id": "gw_dhcp_pool_cfg",
+      "task_id": "gw_dhcp_pool_cfg",
+      "type": "config_contains",
+      "device": "GW",
+      "section": "ip dhcp pool WORKSTATIONS",
+      "contains": ["network 172.16.20.0 255.255.255.0", "default-router 172.16.20.1"]
+    },
+    {
+      "id": "gw_dhcp_lease",
+      "task_id": "gw_dhcp_lease",
+      "type": "dhcp_binding",
+      "device": "GW",
+      "ip": "172.16.20.11",
+      "min_bindings": 1
+    },
+    {
+      "id": "client_ping_gw",
+      "task_id": "client_ping_gw",
+      "type": "reachable",
+      "from": "CLIENT",
+      "to": "172.16.20.1"
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0.0",
+  "lab_id": "01_static_routing",
+  "lab_name": "Sample Lab 01 — Two-Router Static Routing (Human-Authored Reference)",
+  "authored_by": "human_reference",
+  "agent_visible": false,
+  "task_ids": [
+    "r1_gi00_up",
+    "r1_lo0_ip",
+    "r2_gi00_up",
+    "r2_lo0_ip",
+    "r1_static_route",
+    "r2_static_route",
+    "r1_ping_r2_lan",
+    "r2_ping_r1_lan"
+  ],
+  "requirements": [
+    {
+      "id": "r1_gi00_up",
+      "task_id": "r1_gi00_up",
+      "type": "interface_up",
+      "device": "R1",
+      "interface": "GigabitEthernet0/0"
+    },
+    {
+      "id": "r1_lo0_ip",
+      "task_id": "r1_lo0_ip",
+      "type": "ip_assigned",
+      "device": "R1",
+      "interface": "Loopback0",
+      "ip": "10.10.1.1"
+    },
+    {
+      "id": "r2_gi00_up",
+      "task_id": "r2_gi00_up",
+      "type": "interface_up",
+      "device": "R2",
+      "interface": "GigabitEthernet0/0"
+    },
+    {
+      "id": "r2_lo0_ip",
+      "task_id": "r2_lo0_ip",
+      "type": "ip_assigned",
+      "device": "R2",
+      "interface": "Loopback0",
+      "ip": "10.10.2.1"
+    },
+    {
+      "id": "r1_static_route",
+      "task_id": "r1_static_route",
+      "type": "route_exists",
+      "device": "R1",
+      "network": "10.10.2.0/24",
+      "next_hop": "10.10.12.2",
+      "protocol_code": "S"
+    },
+    {
+      "id": "r2_static_route",
+      "task_id": "r2_static_route",
+      "type": "route_exists",
+      "device": "R2",
+      "network": "10.10.1.0/24",
+      "next_hop": "10.10.12.1",
+      "protocol_code": "S"
+    },
+    {
+      "id": "r1_ping_r2_lan",
+      "task_id": "r1_ping_r2_lan",
+      "type": "reachable",
+      "from": "R1",
+      "to": "10.10.2.1"
+    },
+    {
+      "id": "r2_ping_r1_lan",
+      "task_id": "r2_ping_r1_lan",
+      "type": "reachable",
+      "from": "R2",
+      "to": "10.10.1.1"
+    }
+  ]
+}
