@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Testing & linting
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# NetForge local runtime data
+.netforge/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Packet Tracer artifacts / local captures / course-owned files
+*.pkt
+*.pka
+*.png
+screenshots/
+captures/
+*_solution/
+dock_debug/
+.obsidian/
+scratch/
+tmp/
+temp/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

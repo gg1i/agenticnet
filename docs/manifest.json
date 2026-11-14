@@ -1,0 +1,777 @@
+{
+  "name": "netforge-mcp",
+  "version": "0.1.0",
+  "schema_version": "1.0.0",
+  "disclaimer": "NetForge MCP is an independent open-source project and is not affiliated with or endorsed by Cisco Systems, Inc.",
+  "transports": {
+    "default": "stdio",
+    "supported": [
+      "stdio",
+      "streamable-http",
+      "sse"
+    ]
+  },
+  "security": {
+    "permission_profile": "standard",
+    "allowed_tiers": [
+      "configuration",
+      "destructive",
+      "gui_control",
+      "planning",
+      "read_only"
+    ],
+    "require_destructive_confirmation": true
+  },
+  "roadmap": {
+    "current_phase": "Phase 5 \u2014 Full Multi-Engine Platform Release",
+    "phases": {
+      "phase_1_core_foundation": "completed",
+      "phase_2_packet_tracer_adapter": "completed",
+      "phase_3_live_network_automation": "completed",
+      "phase_4_intelligent_diagnostics": "completed",
+      "phase_5_public_release": "completed"
+    }
+  },
+  "tool_count": 69,
+  "categories": {
+    "project": 7,
+    "topology": 6,
+    "devices": 6,
+    "connections": 5,
+    "ipam": 5,
+    "configuration": 14,
+    "cli": 5,
+    "gui": 8,
+    "simulation": 6,
+    "diagnostics": 7
+  },
+  "tools": [
+    {
+      "name": "project_create",
+      "category": "project",
+      "permission_tier": "planning",
+      "description": "Create and activate a new NetForge project backed by SQLite storage.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "project_open",
+      "category": "project",
+      "permission_tier": "read_only",
+      "description": "Open an existing NetForge project from SQLite and make it active.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "project_save",
+      "category": "project",
+      "permission_tier": "planning",
+      "description": "Persist the active NetForge project to SQLite and optionally create a JSON backup.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "project_close",
+      "category": "project",
+      "permission_tier": "planning",
+      "description": "Close the currently active NetForge project cleanly.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "project_export",
+      "category": "project",
+      "permission_tier": "read_only",
+      "description": "Export the active project (topology, IPAM, snapshots, metadata) to JSON or YAML.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "project_import",
+      "category": "project",
+      "permission_tier": "planning",
+      "description": "Import and schema-validate a portable JSON/YAML project bundle into SQLite.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "project_status",
+      "category": "project",
+      "permission_tier": "read_only",
+      "description": "Return active project status, stored projects, and Planned/Executed/Verified counts.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "topology_create",
+      "category": "topology",
+      "permission_tier": "planning",
+      "description": "Build a multi-device topology atomically from device and connection lists.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "topology_inspect",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Inspect all devices, links, coordinates, and state levels in the topology.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "topology_validate",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Validate topology graph integrity, serial clocking, link media, and switching loops.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "topology_export",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Export the active topology graph (devices, interfaces, connections) as JSON or YAML.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "topology_visualize",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Generate Mermaid diagram and ASCII adjacency summary of the active topology.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "topology_analyze",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Analyze topology with NetworkX: components, SPOFs/bridges, STP cycles, shortest path.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "device_add",
+      "category": "devices",
+      "permission_tier": "planning",
+      "description": "Add a network device using a verified Packet Tracer model from the DeviceCatalog.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "device_remove",
+      "category": "devices",
+      "permission_tier": "destructive",
+      "description": "Remove a device, its links, and its IPAM allocations from the active topology.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": true
+    },
+    {
+      "name": "device_inspect",
+      "category": "devices",
+      "permission_tier": "read_only",
+      "description": "Inspect a device's interfaces, IP allocations, capabilities, and config snapshots.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "device_move",
+      "category": "devices",
+      "permission_tier": "planning",
+      "description": "Move a specific device to (x, y) or run auto-layout on the whole topology.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "device_list",
+      "category": "devices",
+      "permission_tier": "read_only",
+      "description": "List devices in the active project, optionally filtered by category.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "device_capabilities",
+      "category": "devices",
+      "permission_tier": "read_only",
+      "description": "Query verified Packet Tracer models, interfaces, capabilities, and restrictions.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "connection_create",
+      "category": "connections",
+      "permission_tier": "planning",
+      "description": "Connect two device interfaces with media validation and automatic cable selection.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "connection_remove",
+      "category": "connections",
+      "permission_tier": "destructive",
+      "description": "Disconnect a link by connection_id and free both endpoint interfaces.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": true
+    },
+    {
+      "name": "connection_inspect",
+      "category": "connections",
+      "permission_tier": "read_only",
+      "description": "Inspect one connection by ID or list all connections in the active topology.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "interface_list",
+      "category": "connections",
+      "permission_tier": "read_only",
+      "description": "List physical interfaces of a device with occupancy, peer, and IP status.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "interface_status",
+      "category": "connections",
+      "permission_tier": "read_only",
+      "description": "Inspect or update planned administrative status and description for an interface.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "subnet_calculate",
+      "category": "ipam",
+      "permission_tier": "read_only",
+      "description": "Calculate IPv4 or IPv6 subnet metrics (network, netmask, wildcard, usable range).",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "vlsm_plan",
+      "category": "ipam",
+      "permission_tier": "read_only",
+      "description": "Design a non-overlapping VLSM plan and optionally register pools in the project.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "address_allocate",
+      "category": "ipam",
+      "permission_tier": "planning",
+      "description": "Allocate and validate an IP address for a device interface in project IPAM.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "address_validate",
+      "category": "ipam",
+      "permission_tier": "read_only",
+      "description": "Validate all IPAM pools and allocations for conflicts, overlaps, and gateway errors.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "ipam_report",
+      "category": "ipam",
+      "permission_tier": "read_only",
+      "description": "Generate IPAM utilization summary and exportable addressing table.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "configure_interface",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Cisco IOS interface, SVI, loopback, or 802.1Q subinterface config.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_vlan",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated VLAN definitions and optional switch access-port assignments.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_trunk",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate 802.1Q trunk config tailored to switch model (2960 vs. 3560/3650).",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_routing",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate static routes, RIPv2 routing, or L2 switch ip default-gateway commands.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_ospf",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated OSPFv2 router configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_eigrp",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated EIGRP routing configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_dhcp",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated Cisco IOS DHCP server pool and excluded addresses.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_nat",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated Cisco IOS NAT/PAT configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_acl",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated Standard or Extended IPv4 ACLs and optional interface binding.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_ssh",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate SSHv2 configuration with automatic secret redaction in logs/snapshots.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_stp",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Spanning Tree Protocol mode and root bridge priority commands.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_etherchannel",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate LACP/PAgP/Static EtherChannel and Port-channel configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configuration_backup",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Save an immutable device configuration snapshot (secrets automatically redacted).",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configuration_compare",
+      "category": "configuration",
+      "permission_tier": "read_only",
+      "description": "Compare two stored configuration snapshots using unified diff.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "command_validate",
+      "category": "cli",
+      "permission_tier": "read_only",
+      "description": "Validate raw IOS commands against device capabilities or parse CLI error output.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "console_open",
+      "category": "cli",
+      "permission_tier": "gui_control",
+      "description": "Attach to an open Packet Tracer device CLI window and stabilize its prompt.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "console_execute",
+      "category": "cli",
+      "permission_tier": "configuration",
+      "description": "Execute commands inside a device CLI console with prompt tracking and error detection.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "console_capture",
+      "category": "cli",
+      "permission_tier": "read_only",
+      "description": "Capture current CLI buffer output for `device_name` and detect prompt/errors.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "console_inspect",
+      "category": "cli",
+      "permission_tier": "read_only",
+      "description": "Inspect console session state, active IOS mode, hostname, and interaction profile.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "packet_tracer_detect",
+      "category": "gui",
+      "permission_tier": "read_only",
+      "description": "Detect Cisco Packet Tracer installation, running process, DPI, window, and dialogs.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "packet_tracer_launch",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Launch Cisco Packet Tracer (or attach if already running) and wait for window.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "gui_screenshot",
+      "category": "gui",
+      "permission_tier": "read_only",
+      "description": "Capture a screenshot of Packet Tracer and inspect brightness/layout regions.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "gui_calibrate",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Calibrate normalized Packet Tracer UI coordinates against live window geometry/DPI.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "gui_click",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Click an anchor, normalized `(nx, ny)`, or screen `(x, y)` inside Packet Tracer.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "gui_keypress",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Send a key chord (e.g. 'ctrl+s', 'enter') or text input to Packet Tracer.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "gui_state_inspect",
+      "category": "gui",
+      "permission_tier": "read_only",
+      "description": "Inspect live Packet Tracer window state, open modal dialogs, calibration, and abort.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "gui_recover",
+      "category": "gui",
+      "permission_tier": "gui_control",
+      "description": "Recover from modal dialogs or arm/reset emergency automation stop.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "simulation_mode",
+      "category": "simulation",
+      "permission_tier": "gui_control",
+      "description": "Switch Packet Tracer between 'realtime' and 'simulation' clock modes.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "simulation_start",
+      "category": "simulation",
+      "permission_tier": "gui_control",
+      "description": "Activate Simulation Mode in Packet Tracer.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "simulation_stop",
+      "category": "simulation",
+      "permission_tier": "gui_control",
+      "description": "Return Packet Tracer to Realtime Mode.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "packet_create",
+      "category": "simulation",
+      "permission_tier": "planning",
+      "description": "Create and track a test PDU packet specification for Simulation Mode.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "packet_inspect",
+      "category": "simulation",
+      "permission_tier": "read_only",
+      "description": "Inspect tracked test packets and optionally parse Simulation Event List output.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "connectivity_test",
+      "category": "simulation",
+      "permission_tier": "read_only",
+      "description": "Run connectivity check via device CLI ping or offline topology path analysis.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "network_diagnose",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Run a full diagnostic audit across addressing, interfaces, VLANs, and routing.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "routing_diagnose",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Inspect routing tables, static routes, and OSPF adjacencies for routing errors.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "vlan_diagnose",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Audit VLAN assignments, trunk links, and native VLAN consistency.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "interface_diagnose",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Audit physical and logical interface status (shutdown vs up/up, duplex, IPs).",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "network_repair_propose",
+      "category": "diagnostics",
+      "permission_tier": "planning",
+      "description": "Generate safe, ranked self-repair proposals for all detected network findings.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "network_repair_execute",
+      "category": "diagnostics",
+      "permission_tier": "configuration",
+      "description": "Execute an approved self-repair proposal and sync repaired state.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "network_verify",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Run post-repair verification checks and return overall health status.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    }
+  ],
+  "resources": [
+    "netforge://manifest",
+    "netforge://project/current",
+    "netforge://project/topology",
+    "netforge://project/ipam",
+    "netforge://devices/catalog",
+    "netforge://logs/recent"
+  ],
+  "prompts": [
+    "plan_network_architecture",
+    "design_campus_vlan_network",
+    "review_network_configurations",
+    "troubleshoot_network_workflow"
+  ],
+  "supported_device_models": [
+    {
+      "model": "AccessPoint-PT",
+      "display_name": "Generic Wireless Access Point",
+      "category": "access_point",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "2960-24TT",
+      "display_name": "Cisco Catalyst 2960-24TT",
+      "category": "l2_switch",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "Switch-PT",
+      "display_name": "Generic Packet Tracer Switch",
+      "category": "l2_switch",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "3560-24PS",
+      "display_name": "Cisco Catalyst 3560-24PS Multilayer Switch",
+      "category": "l3_switch",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "3650-24PS",
+      "display_name": "Cisco Catalyst 3650-24PS Multilayer Switch",
+      "category": "l3_switch",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "Laptop-PT",
+      "display_name": "Packet Tracer Laptop",
+      "category": "laptop",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "PC-PT",
+      "display_name": "Packet Tracer PC",
+      "category": "pc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "Printer-PT",
+      "display_name": "Packet Tracer Network Printer",
+      "category": "printer",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "1941",
+      "display_name": "Cisco 1941 ISR",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "2811",
+      "display_name": "Cisco 2811 ISR",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "2911",
+      "display_name": "Cisco 2911 ISR",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "4321",
+      "display_name": "Cisco 4321 ISR",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "Router-PT",
+      "display_name": "Generic Packet Tracer Router",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
+      "model": "Server-PT",
+      "display_name": "Packet Tracer Server",
+      "category": "server",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "WRT300N",
+      "display_name": "Linksys WRT300N Wireless Router",
+      "category": "wireless_router",
+      "supports_ios_cli": false
+    }
+  ]
+}

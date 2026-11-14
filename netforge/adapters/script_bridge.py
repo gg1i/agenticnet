@@ -1,0 +1,806 @@
+"""Localhost HTTP + token-authenticated Script Module bridge for Packet Tracer 8.2.2."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
+
+from netforge.adapters.base import AdapterConnectionState, BackendStatus, ScriptBackend
+from netforge.core.exceptions import AdapterUnavailableError, ValidationError
+from netforge.gui.safety import EmergencyStopController
+
+ALLOWED_OPCODES: frozenset[str] = frozenset(
+    {
+        "ping",
+        "add_device",
+        "create_link",
+        "cli_exec",
+        "get_activity_status",
+    }
+)
+
+# Verified verbatim from PT 8.2.2 IpcAPI (`class_logical_workspace.html`).
+PT_DEVICE_TYPES: dict[str, int] = {
+    "router": 0,
+    "l2_switch": 1,
+    "switch": 1,
+    "cloud": 2,
+    "bridge": 3,
+    "hub": 4,
+    "repeater": 5,
+    "access_point": 7,
+    "pc": 8,
+    "server": 9,
+    "printer": 10,
+    "wireless_router": 11,
+    "ip_phone": 12,
+    "l3_switch": 16,
+    "multilayer_switch": 16,
+    "laptop": 17,
+    "home_voip": 23,
+    "analog_phone": 24,
+}
+
+# Verified verbatim from PT 8.2.2 IpcAPI (`class_logical_workspace.html`).
+PT_CONNECT_TYPES: dict[str, int] = {
+    "straight_through": 8100,
+    "straight": 8100,
+    "crossover": 8101,
+    "cross": 8101,
+    "rollover": 8102,
+    "fiber": 8103,
+    "phone": 8104,
+    "cable": 8105,
+    "serial": 8106,
+    "serial_dce": 8106,
+    "serial_dte": 8106,
+    "auto": 8107,
+    "console": 8108,
+    "wireless": 8109,
+    "coaxial": 8110,
+    "octal": 8111,
+    "usb": 8113,
+}
+
+
+class ScriptBridgeError(AdapterUnavailableError):
+    """Raised when the Packet Tracer Script Module bridge fails or times out."""
+
+    error_code = "SCRIPT_BRIDGE_ERROR"
+
+
+def resolve_device_type(device_type: int | str) -> int:
+    """Resolve a NetForge category name or integer into a Packet Tracer DeviceType ID."""
+    if isinstance(device_type, bool):
+        raise ValidationError("device_type must be an integer or category string.")
+    if isinstance(device_type, int):
+        if device_type < 0:
+            raise ValidationError("device_type must be non-negative.")
+        return device_type
+    key = device_type.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in PT_DEVICE_TYPES:
+        return PT_DEVICE_TYPES[key]
+    raise ValidationError(
+        f"Unsupported device_type '{device_type}'.",
+        details={"supported_categories": sorted(PT_DEVICE_TYPES)},
+    )
+
+
+def resolve_connect_type(conn_type: int | str) -> int:
+    """Resolve a cable name or integer into a Packet Tracer CONNECT_TYPES constant."""
+    if isinstance(conn_type, bool):
+        raise ValidationError("conn_type must be an integer or cable type string.")
+    if isinstance(conn_type, int):
+        if conn_type < 8100 or conn_type > 8114:
+            raise ValidationError(f"Unsupported PT connection type code: {conn_type}")
+        return conn_type
+    key = conn_type.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in PT_CONNECT_TYPES:
+        return PT_CONNECT_TYPES[key]
+    raise ValidationError(
+        f"Unsupported conn_type '{conn_type}'.",
+        details={"supported_cables": sorted(PT_CONNECT_TYPES)},
+    )
+
+
+def is_allowed_bridge_origin(origin: str) -> bool:
+    """Allow requests only from PT Script Module WebViews or explicit loopback origins."""
+    cleaned = origin.strip()
+    if not cleaned or cleaned == "null":
+        return True
+    # PT 8.2.2 WebViews send the opaque origin "pt-sm:" (observed live, no "//").
+    if cleaned.startswith("pt-sm:") or cleaned.startswith("file://"):
+        return True
+    parsed = urlparse(cleaned)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost"}
+
+
+def _require_non_empty(value: str, field_name: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValidationError(f"{field_name} must not be empty.")
+    return cleaned
+
+
+@dataclass
+class _PendingCommand:
+    """Tracks one queued Script Module command waiting for a result callback."""
+
+    request_id: str
+    opcode: str
+    params: dict[str, Any]
+    event: threading.Event = field(default_factory=threading.Event)
+    result_payload: dict[str, Any] | None = None
+
+    def to_wire_dict(self) -> dict[str, Any]:
+        """Serialize command for the PT WebView poller."""
+        return {
+            "request_id": self.request_id,
+            "opcode": self.opcode,
+            "params": self.params,
+        }
+
+
+class HttpScriptBridgeServer:
+    """Loopback-only authenticated HTTP RPC bridge consumed by PT's WebView extension."""
+
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        auth_token: str | None = None,
+        session_file: Path | None = None,
+        connection_ttl_seconds: float = 10.0,
+    ) -> None:
+        if host != "127.0.0.1":
+            raise ValidationError(
+                "Script bridge must bind to 127.0.0.1 only.",
+                details={"requested_host": host},
+                remediation="Use 127.0.0.1 to prevent remote network exposure.",
+            )
+        self.host = host
+        self._requested_port = port
+        self._token = auth_token or secrets.token_hex(24)
+        self.session_file = session_file
+        self.connection_ttl_seconds = connection_ttl_seconds
+
+        self._cond = threading.Condition()
+        self._queue: list[_PendingCommand] = []
+        self._inflight: dict[str, _PendingCommand] = {}
+        self._last_seen_monotonic: float | None = None
+        self._last_origin: str | None = None
+        self._stopped = False
+
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def port(self) -> int:
+        """Return the bound localhost TCP port (raises if not started)."""
+        if self._httpd is None:
+            raise ScriptBridgeError("HttpScriptBridgeServer has not been started.")
+        return int(self._httpd.server_address[1])
+
+    @property
+    def base_url(self) -> str:
+        """Return the loopback HTTP URL for the active bridge."""
+        return f"http://{self.host}:{self.port}"
+
+    def token_matches(self, candidate: str) -> bool:
+        """Constant-time validation against the ephemeral bridge auth token."""
+        if not candidate:
+            return False
+        return secrets.compare_digest(candidate, self._token)
+
+    def start(self) -> None:
+        """Start the 127.0.0.1 HTTP server in a daemon thread and emit session descriptor."""
+        if self._httpd is not None:
+            return
+        with self._cond:
+            self._stopped = False
+
+        bridge = self
+
+        class _BridgeHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return
+
+            def _origin_header(self) -> str:
+                return str(self.headers.get("Origin", "")).strip()
+
+            def _write_cors_headers(self) -> bool:
+                origin = self._origin_header()
+                if not is_allowed_bridge_origin(origin):
+                    return False
+                if origin:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-NetForge-Token")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                return True
+
+            def _send_json(self, status: int, body: dict[str, Any] | None = None) -> None:
+                raw = json.dumps(body).encode("utf-8") if body is not None else b""
+                self.send_response(status)
+                if not self._write_cors_headers():
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    return
+                if body is not None:
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                if raw:
+                    self.wfile.write(raw)
+
+            def _authorize(self) -> bool:
+                origin = self._origin_header()
+                if not is_allowed_bridge_origin(origin):
+                    self._send_json(403, {"ok": False, "error": "origin_forbidden"})
+                    return False
+                token = str(self.headers.get("X-NetForge-Token", ""))
+                if not bridge.token_matches(token):
+                    self._send_json(401, {"ok": False, "error": "unauthorized"})
+                    return False
+                return True
+
+            def do_OPTIONS(self) -> None:  # noqa: N802
+                origin = self._origin_header()
+                if not is_allowed_bridge_origin(origin):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                self.send_response(204)
+                self._write_cors_headers()
+                self.end_headers()
+
+            def do_GET(self) -> None:  # noqa: N802
+                if not self._authorize():
+                    return
+                parsed = urlparse(self.path)
+                if parsed.path == "/v1/health":
+                    self._send_json(
+                        200,
+                        {
+                            "ok": True,
+                            "connected": bridge.is_connected(),
+                            "bridge_version": "1",
+                        },
+                    )
+                    return
+
+                if parsed.path == "/v1/commands/next":
+                    qs = parse_qs(parsed.query)
+                    try:
+                        wait_ms = int(qs.get("wait_ms", ["0"])[0])
+                    except ValueError:
+                        wait_ms = 0
+                    wait_sec = min(max(wait_ms, 0), 2000) / 1000.0
+                    cmd = bridge._pop_next_command(
+                        wait_seconds=wait_sec,
+                        client_origin=self._origin_header() or None,
+                    )
+                    if cmd is None:
+                        self._send_json(204, None)
+                    else:
+                        self._send_json(200, {"ok": True, "command": cmd.to_wire_dict()})
+                    return
+
+                self._send_json(404, {"ok": False, "error": "not_found"})
+
+            def do_POST(self) -> None:  # noqa: N802
+                if not self._authorize():
+                    return
+                parsed = urlparse(self.path)
+                if parsed.path != "/v1/commands/result":
+                    self._send_json(404, {"ok": False, "error": "not_found"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if length <= 0 or length > 4 * 1024 * 1024:
+                    self._send_json(400, {"ok": False, "error": "invalid_content_length"})
+                    return
+                raw = self.rfile.read(length).decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._send_json(400, {"ok": False, "error": "invalid_json"})
+                    return
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("request_id"), str
+                ):
+                    self._send_json(400, {"ok": False, "error": "missing_request_id"})
+                    return
+                matched = bridge._complete_command(
+                    payload,
+                    client_origin=self._origin_header() or None,
+                )
+                if not matched:
+                    self._send_json(404, {"ok": False, "error": "unknown_request_id"})
+                    return
+                self._send_json(200, {"ok": True})
+
+        self._httpd = ThreadingHTTPServer((self.host, self._requested_port), _BridgeHandler)
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever,
+            name="netforge-script-bridge",
+            daemon=True,
+        )
+        self._thread.start()
+        self._write_session_descriptor()
+
+    def stop(self) -> None:
+        """Stop the HTTP server cleanly and remove ephemeral session descriptor."""
+        with self._cond:
+            self._stopped = True
+            for pending in list(self._queue) + list(self._inflight.values()):
+                pending.result_payload = {
+                    "request_id": pending.request_id,
+                    "ok": False,
+                    "data": {},
+                    "error": "Script bridge server stopped.",
+                }
+                pending.event.set()
+            self._queue.clear()
+            self._inflight.clear()
+            self._cond.notify_all()
+
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        self._remove_session_descriptor()
+
+    def is_connected(self, *, max_idle_seconds: float | None = None) -> bool:
+        """Return True if a PT Script Module polled recently while the bridge is running."""
+        if self._httpd is None or self._stopped:
+            return False
+        limit = (
+            max_idle_seconds if max_idle_seconds is not None else self.connection_ttl_seconds
+        )
+        with self._cond:
+            if self._last_seen_monotonic is None:
+                return False
+            return (time.monotonic() - self._last_seen_monotonic) <= limit
+
+    def enqueue_command(
+        self,
+        opcode: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> dict[str, Any]:
+        """Queue a typed opcode for Packet Tracer and wait synchronously for its result."""
+        if opcode not in ALLOWED_OPCODES:
+            raise ValidationError(
+                f"Disallowed script opcode '{opcode}'.",
+                details={"allowed_opcodes": sorted(ALLOWED_OPCODES)},
+            )
+        if self._httpd is None:
+            raise ScriptBridgeError(
+                "Script bridge HTTP server is not running.",
+                remediation="Start HttpScriptBridgeServer before dispatching PT script calls.",
+            )
+
+        pending = _PendingCommand(
+            request_id=f"req_{uuid4().hex[:12]}",
+            opcode=opcode,
+            params=dict(params or {}),
+        )
+        with self._cond:
+            if self._stopped:
+                raise ScriptBridgeError("Script bridge server is stopping.")
+            self._queue.append(pending)
+            self._inflight[pending.request_id] = pending
+            self._cond.notify_all()
+
+        if not pending.event.wait(timeout=timeout_seconds):
+            with self._cond:
+                if pending in self._queue:
+                    self._queue.remove(pending)
+                self._inflight.pop(pending.request_id, None)
+            raise ScriptBridgeError(
+                f"Timed out waiting for Packet Tracer Script Module response ({opcode}).",
+                details={"opcode": opcode, "timeout_seconds": timeout_seconds},
+                remediation="Ensure Packet Tracer is running with the NetForge bridge active.",
+            )
+
+        payload = pending.result_payload or {}
+        if not payload.get("ok"):
+            raise ScriptBridgeError(
+                str(payload.get("error") or f"Script opcode '{opcode}' failed in Packet Tracer."),
+                details={"opcode": opcode, "data": payload.get("data", {})},
+            )
+        data = payload.get("data", {})
+        return dict(data) if isinstance(data, dict) else {"value": data}
+
+    def _pop_next_command(
+        self,
+        *,
+        wait_seconds: float = 0.0,
+        client_origin: str | None = None,
+    ) -> _PendingCommand | None:
+        deadline = time.monotonic() + wait_seconds
+        with self._cond:
+            self._last_seen_monotonic = time.monotonic()
+            if client_origin:
+                self._last_origin = client_origin
+            while not self._queue and not self._stopped:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(timeout=remaining)
+            if self._stopped or not self._queue:
+                return None
+            self._last_seen_monotonic = time.monotonic()
+            return self._queue.pop(0)
+
+    def _complete_command(
+        self,
+        payload: dict[str, Any],
+        *,
+        client_origin: str | None = None,
+    ) -> bool:
+        request_id = str(payload["request_id"])
+        with self._cond:
+            self._last_seen_monotonic = time.monotonic()
+            if client_origin:
+                self._last_origin = client_origin
+            pending = self._inflight.pop(request_id, None)
+            if pending is None:
+                return False
+            pending.result_payload = payload
+            pending.event.set()
+            return True
+
+    def _write_session_descriptor(self) -> None:
+        if self.session_file is None:
+            return
+        self.session_file.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = {
+            "url": self.base_url,
+            "token": self._token,
+            "pid": os.getpid(),
+            "bridge_version": "1",
+        }
+        tmp = self.session_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(descriptor, indent=2), encoding="utf-8")
+        tmp.replace(self.session_file)
+        if os.name == "posix":
+            os.chmod(self.session_file, 0o600)
+
+    def _remove_session_descriptor(self) -> None:
+        if self.session_file is not None and self.session_file.exists():
+            self.session_file.unlink()
+
+
+class HttpScriptBridgeBackend(ScriptBackend):
+    """Concrete `ScriptBackend` executing typed opcodes via `HttpScriptBridgeServer`."""
+
+    def __init__(
+        self,
+        server: HttpScriptBridgeServer | None = None,
+        *,
+        safety: EmergencyStopController | None = None,
+        default_timeout_seconds: float = 25.0,
+    ) -> None:
+        self._owns_server = server is None
+        self.server = server or HttpScriptBridgeServer()
+        self.safety = safety or EmergencyStopController(
+            corner_failsafe=False,
+            escape_failsafe=False,
+            max_actions_per_minute=300,
+        )
+        self.default_timeout_seconds = default_timeout_seconds
+
+    def start(self) -> None:
+        """Start the underlying HTTP bridge server."""
+        self.server.start()
+
+    def stop(self) -> None:
+        """Stop the underlying HTTP bridge server."""
+        self.server.stop()
+
+    def is_connected(self) -> bool:
+        """Return True if a live Packet Tracer extension client is connected."""
+        return self.server.is_connected()
+
+    def ping(self) -> dict[str, Any]:
+        """Run an authenticated end-to-end ping through Packet Tracer's Script Module."""
+        self.safety.check_safe_to_act(live_input=False, count_action=False)
+        data = self.server.enqueue_command(
+            "ping",
+            {},
+            timeout_seconds=min(self.default_timeout_seconds, 5.0),
+        )
+        return {"ok": True, "backend": "script_http", "response": data}
+
+    def add_device(
+        self,
+        model: str,
+        *,
+        device_type: int | str = 0,
+        x: float = 100.0,
+        y: float = 100.0,
+    ) -> dict[str, Any]:
+        """Create a device on the active Packet Tracer logical workspace."""
+        cleaned_model = _require_non_empty(model, "model")
+        resolved_type = resolve_device_type(device_type)
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "add_device",
+            {
+                "device_type": resolved_type,
+                "model": cleaned_model,
+                "x": float(x),
+                "y": float(y),
+            },
+            timeout_seconds=self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            "device_name": str(data.get("device_name", "")),
+            "model": cleaned_model,
+            "device_type": resolved_type,
+            "x": float(x),
+            "y": float(y),
+        }
+
+    def create_link(
+        self,
+        device1: str,
+        port1: str,
+        device2: str,
+        port2: str,
+        *,
+        conn_type: int | str = 8107,
+    ) -> dict[str, Any]:
+        """Link two device interfaces in Packet Tracer's logical workspace."""
+        d1 = _require_non_empty(device1, "device1")
+        p1 = _require_non_empty(port1, "port1")
+        d2 = _require_non_empty(device2, "device2")
+        p2 = _require_non_empty(port2, "port2")
+        resolved_conn = resolve_connect_type(conn_type)
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "create_link",
+            {
+                "device1": d1,
+                "port1": p1,
+                "device2": d2,
+                "port2": p2,
+                "conn_type": resolved_conn,
+            },
+            timeout_seconds=self.default_timeout_seconds,
+        )
+        return {
+            "ok": bool(data.get("linked", True)),
+            "backend": "script_http",
+            "device1": d1,
+            "port1": p1,
+            "device2": d2,
+            "port2": p2,
+            "conn_type": resolved_conn,
+        }
+
+    def execute_cli(
+        self,
+        device_name: str,
+        commands: list[str],
+        *,
+        wait_for_prompt: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Run IOS CLI commands via PT TerminalLine and return captured raw output."""
+        dev = _require_non_empty(device_name, "device_name")
+        if not commands:
+            raise ValidationError("commands must contain at least one CLI command string.")
+        normalized_cmds = [str(cmd) for cmd in commands]
+        effective_timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else max(float(self.default_timeout_seconds), 25.0)
+        )
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "cli_exec",
+            {
+                "device_name": dev,
+                "commands": normalized_cmds,
+                "wait_for_prompt": bool(wait_for_prompt),
+                "timeout_ms": int(max(effective_timeout, 1.0) * 1000),
+            },
+            timeout_seconds=effective_timeout + 2.0,
+        )
+        statuses = list(data.get("command_statuses", []))
+        non_fatal_commands = list(data.get("non_fatal_commands", []))
+        if not non_fatal_commands:
+            non_fatal_commands = [
+                str(entry.get("command", ""))
+                for entry in statuses
+                if isinstance(entry, dict)
+                and entry.get("status", 0) != 0
+                and str(entry.get("command", "")).strip().lower().startswith("terminal length 0")
+            ]
+        return {
+            "ok": True,
+            "backend": "script_http",
+            "device_name": dev,
+            "commands": normalized_cmds,
+            "raw_output": str(data.get("raw_output", "")),
+            "prompt": str(data.get("prompt", "")),
+            "mode": str(data.get("mode", "")),
+            "command_statuses": statuses,
+            "non_fatal_commands": non_fatal_commands,
+            "more_pages_advanced": int(data.get("more_pages_advanced", 0)),
+            "timed_out": bool(data.get("timed_out", False)),
+        }
+
+    def read_activity_status(self) -> dict[str, Any]:
+        """Read `.pka` score and comparator tree without bypassing locks/passwords."""
+        self.safety.check_safe_to_act(live_input=False, count_action=False)
+        data = self.server.enqueue_command(
+            "get_activity_status",
+            {},
+            timeout_seconds=self.default_timeout_seconds,
+        )
+        is_act = bool(data.get("is_activity_file", False))
+        pct = data.get("percentage_complete")
+        raw_state = data.get("state")
+        if not is_act:
+            return {
+                "ok": True,
+                "backend": "script_http",
+                **data,
+                "state": str(raw_state or "not_activity"),
+                "readable": False,
+                "fallback": "cli_verification",
+            }
+        pct_valid = isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct >= 0
+        if raw_state == "unavailable" or not pct_valid:
+            return {
+                "ok": True,
+                "backend": "script_http",
+                **data,
+                "is_activity_file": True,
+                "state": "unavailable",
+                "readable": False,
+                "fallback": "cli_verification",
+                "reason": str(
+                    data.get("reason")
+                    or "Activity completion score is unreadable, locked, or Assessment-restricted."
+                ),
+            }
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+            "state": "available",
+            "readable": True,
+        }
+
+    def backend_status(self) -> BackendStatus:
+        """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
+        return BackendStatus(
+            backend_name="HttpScriptBridgeBackend",
+            connection_state=(
+                AdapterConnectionState.CONNECTED
+                if self.is_connected()
+                else AdapterConnectionState.DETECTED_IDLE
+            ),
+            platform="loopback_http",
+            capabilities=[
+                "ping",
+                "add_device",
+                "create_link",
+                "cli_exec",
+                "get_activity_status",
+            ],
+            notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
+        )
+
+
+def read_bridge_session_descriptor(session_file: Path) -> dict[str, Any] | None:
+    """Read an ephemeral runtime bridge session descriptor if present and valid."""
+    if not session_file.exists():
+        return None
+    try:
+        payload = json.loads(session_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    url = payload.get("url")
+    token = payload.get("token")
+    if not isinstance(url, str) or not isinstance(token, str):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1":
+        return None
+    return payload
+
+
+def probe_bridge_health(
+    session_file: Path,
+    *,
+    timeout_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Probe the local script bridge `/v1/health` endpoint without exposing its secret token."""
+    desc = read_bridge_session_descriptor(session_file)
+    if desc is None:
+        return {
+            "session_descriptor_present": session_file.exists(),
+            "reachable": False,
+            "connected": False,
+            "state": "offline",
+            "error": None,
+        }
+
+    url = f"{desc['url'].rstrip('/')}/v1/health"
+    req = urllib.request.Request(
+        url,
+        headers={"X-NetForge-Token": str(desc["token"])},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:  # noqa: S310
+            body = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        return {
+            "session_descriptor_present": True,
+            "reachable": False,
+            "connected": False,
+            "state": "stale_descriptor",
+            "error": str(exc),
+        }
+
+    connected = bool(body.get("connected", False))
+    return {
+        "session_descriptor_present": True,
+        "reachable": True,
+        "connected": connected,
+        "state": "connected" if connected else "bridge_listening_pt_idle",
+        "bridge_version": body.get("bridge_version"),
+        "error": None,
+    }
+
+
+def render_script_module_sources(
+    output_dir: Path,
+    *,
+    session_file: Path | None = None,
+) -> dict[str, Path]:
+    """Write configured non-secret Script Module JS and HTML files for Packet Tracer export."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    assets_pkg = resources.files("netforge.adapters.assets")
+    js_template = (assets_pkg / "netforge_bridge.js").read_text(encoding="utf-8")
+    html_text = (assets_pkg / "bridge.html").read_text(encoding="utf-8")
+
+    js_path = output_dir / "netforge_bridge.js"
+    html_path = output_dir / "bridge.html"
+    js_rendered = js_template
+    if session_file is not None:
+        session_slash = str(session_file.resolve()).replace("\\", "/")
+        js_rendered = js_template.replace("__NETFORGE_SESSION_FILE__", session_slash)
+    js_path.write_text(js_rendered, encoding="utf-8")
+    html_path.write_text(html_text, encoding="utf-8")
+    return {"js": js_path, "html": html_path}

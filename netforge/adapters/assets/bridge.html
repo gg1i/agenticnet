@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>NetForge Bridge</title></head>
+<body>
+<pre id="status">idle</pre>
+<script>
+(function () {
+    var cfg = { url: "", token: "" };
+    var polling = false;
+    var generation = 0;
+
+    function setStatus(msg) {
+        var el = document.getElementById("status");
+        if (el) { el.textContent = msg; }
+    }
+
+    function pollOnce(gen) {
+        if (!polling || gen !== generation || !cfg.url || !cfg.token) {
+            return;
+        }
+        fetch(cfg.url + "/v1/commands/next?wait_ms=1500", {
+            method: "GET",
+            headers: { "X-NetForge-Token": cfg.token }
+        })
+        .then(function (resp) {
+            if (gen !== generation) { return; }
+            if (resp.status === 204) {
+                setTimeout(function () { pollOnce(gen); }, 25);
+                return;
+            }
+            if (!resp.ok) {
+                setStatus("http_" + resp.status);
+                setTimeout(function () { pollOnce(gen); }, 800);
+                return;
+            }
+            return resp.json().then(function (payload) {
+                if (gen !== generation) { return; }
+                if (payload && payload.command && typeof window.$se === "function") {
+                    var c = payload.command;
+                    setStatus("exec:" + c.opcode);
+                    window.$se("netforgeOnCommand", c.request_id, c.opcode, JSON.stringify(c.params || {}));
+                }
+                setTimeout(function () { pollOnce(gen); }, 10);
+            });
+        })
+        .catch(function (err) {
+            setStatus("err:" + String(err));
+            setTimeout(function () { pollOnce(gen); }, 1000);
+        });
+    }
+
+    window.netforgeStart = function (nextCfg) {
+        var incoming = nextCfg || { url: "", token: "" };
+        var nextUrl = String(incoming.url || "");
+        var nextToken = String(incoming.token || "");
+        if (polling && cfg.url === nextUrl && cfg.token === nextToken) {
+            return;
+        }
+        cfg = { url: nextUrl, token: nextToken };
+        generation += 1;
+        polling = Boolean(cfg.url && cfg.token);
+        setStatus(polling ? "polling:" + cfg.url : "stopped");
+        if (polling) {
+            pollOnce(generation);
+        }
+    };
+
+    window.netforgePostResult = function (resultObj) {
+        if (!cfg.url || !cfg.token) { return; }
+        fetch(cfg.url + "/v1/commands/result", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-NetForge-Token": cfg.token
+            },
+            body: JSON.stringify(resultObj)
+        }).catch(function () {});
+    };
+
+    window.netforgePingReady = function () {
+        if (typeof window.$se === "function") {
+            window.$se("netforgeOnWebViewReady");
+        }
+    };
+
+    var iv = setInterval(function () {
+        if (typeof window.$se === "function") {
+            clearInterval(iv);
+            window.netforgePingReady();
+        }
+    }, 100);
+})();
+</script>
+</body>
+</html>

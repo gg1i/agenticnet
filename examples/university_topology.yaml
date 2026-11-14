@@ -1,0 +1,150 @@
+schema_version: "1.0.0"
+metadata:
+  project_id: university-core-demo
+  name: University Multi-VLAN Demo
+  description: Sample 3-tier campus topology with edge router, L3 distribution switch, 2 access switches, server, and PCs.
+  schema_version: "1.0.0"
+  tags:
+    - campus
+    - ospf
+    - vlan
+    - example
+topology:
+  devices:
+    R1-EDGE:
+      name: R1-EDGE
+      model: "2911"
+      category: router
+      role: Edge WAN & NAT Router
+      position:
+        x: 400.0
+        y: 100.0
+      interfaces:
+        GigabitEthernet0/0:
+          name: GigabitEthernet0/0
+          short_name: Gi0/0
+          media: gigabit_ethernet
+          speed_mbps: 1000
+          admin_up: true
+          connected_to_connection_id: link_demo_01
+          peer_device: SW-DIST-01
+          peer_interface: GigabitEthernet0/1
+          state_level: planned
+        GigabitEthernet0/1:
+          name: GigabitEthernet0/1
+          short_name: Gi0/1
+          media: gigabit_ethernet
+          speed_mbps: 1000
+          admin_up: true
+          state_level: planned
+      state_level: planned
+    SW-DIST-01:
+      name: SW-DIST-01
+      model: "3560-24PS"
+      category: l3_switch
+      role: Distribution L3 Switch
+      position:
+        x: 400.0
+        y: 250.0
+      interfaces:
+        GigabitEthernet0/1:
+          name: GigabitEthernet0/1
+          short_name: Gi0/1
+          media: gigabit_ethernet
+          speed_mbps: 1000
+          admin_up: true
+          connected_to_connection_id: link_demo_01
+          peer_device: R1-EDGE
+          peer_interface: GigabitEthernet0/0
+          state_level: planned
+        GigabitEthernet0/2:
+          name: GigabitEthernet0/2
+          short_name: Gi0/2
+          media: gigabit_ethernet
+          speed_mbps: 1000
+          admin_up: true
+          connected_to_connection_id: link_demo_02
+          peer_device: SW-ACC-ENG
+          peer_interface: GigabitEthernet0/1
+          state_level: planned
+      state_level: planned
+    SW-ACC-ENG:
+      name: SW-ACC-ENG
+      model: "2960-24TT"
+      category: l2_switch
+      role: Engineering Building Access Switch
+      position:
+        x: 400.0
+        y: 400.0
+      interfaces:
+        GigabitEthernet0/1:
+          name: GigabitEthernet0/1
+          short_name: Gi0/1
+          media: gigabit_ethernet
+          speed_mbps: 1000
+          admin_up: true
+          connected_to_connection_id: link_demo_02
+          peer_device: SW-DIST-01
+          peer_interface: GigabitEthernet0/2
+          state_level: planned
+        FastEthernet0/1:
+          name: FastEthernet0/1
+          short_name: Fa0/1
+          media: fast_ethernet
+          speed_mbps: 100
+          admin_up: true
+          connected_to_connection_id: link_demo_03
+          peer_device: PC-ENG-01
+          peer_interface: FastEthernet0
+          state_level: planned
+      state_level: planned
+    PC-ENG-01:
+      name: PC-ENG-01
+      model: "PC-PT"
+      category: pc
+      role: Engineering Lab Workstation
+      position:
+        x: 400.0
+        y: 550.0
+      interfaces:
+        FastEthernet0:
+          name: FastEthernet0
+          short_name: Fa0
+          media: fast_ethernet
+          speed_mbps: 100
+          admin_up: true
+          connected_to_connection_id: link_demo_03
+          peer_device: SW-ACC-ENG
+          peer_interface: FastEthernet0/1
+          state_level: planned
+      state_level: planned
+  connections:
+    link_demo_01:
+      connection_id: link_demo_01
+      source_device: R1-EDGE
+      source_interface: GigabitEthernet0/0
+      target_device: SW-DIST-01
+      target_interface: GigabitEthernet0/1
+      cable_type: straight_through
+      state_level: planned
+    link_demo_02:
+      connection_id: link_demo_02
+      source_device: SW-DIST-01
+      source_interface: GigabitEthernet0/2
+      target_device: SW-ACC-ENG
+      target_interface: GigabitEthernet0/1
+      cable_type: crossover
+      state_level: planned
+    link_demo_03:
+      connection_id: link_demo_03
+      source_device: SW-ACC-ENG
+      source_interface: FastEthernet0/1
+      target_device: PC-ENG-01
+      target_interface: FastEthernet0
+      cable_type: straight_through
+      state_level: planned
+ipam:
+  pools: {}
+  allocations: {}
+config_snapshots: []
+diagnostics: []
