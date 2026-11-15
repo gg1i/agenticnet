@@ -29,8 +29,13 @@ def test_mcp_tool_resource_prompt_discovery_and_manifest(mcp_bundle) -> None:
     tool_names = {t.name for t in tools}
     manifest = runtime.build_manifest()
     assert len(tool_names) == manifest["tool_count"]
-    assert len(tool_names) == 74
+    assert len(tool_names) == 79
     assert "grade_lab" in tool_names
+    assert "lab_open" in tool_names
+    assert "lab_save" in tool_names
+    assert "lab_status" in tool_names
+    assert "list_devices" in tool_names
+    assert "lab_snapshot" in tool_names
     assert "gui_attach_ip_phone_power" in tool_names
     assert {
         "project_create",
@@ -57,6 +62,9 @@ def test_mcp_tool_resource_prompt_discovery_and_manifest(mcp_bundle) -> None:
         "network_verify",
         "verify_requirements_schema",
         "verify_lab",
+        "lab_open",
+        "lab_save",
+        "lab_status",
     } <= tool_names
     assert len(resources) == 7
     assert len(prompts) == 5

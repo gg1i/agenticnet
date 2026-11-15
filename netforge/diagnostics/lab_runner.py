@@ -18,6 +18,8 @@ def evaluate_lab_status(
     task_ids: list[str] | None = None,
     include_activity_grade: bool = True,
     timeout_seconds: float = 25.0,
+    poll_wait_seconds: float | None = None,
+    poll_interval_seconds: float = 3.0,
 ) -> dict[str, Any]:
     """Combine `verify_lab`, `grade_lab` (if available), and `task_ids` coverage into one view.
 
@@ -31,6 +33,8 @@ def evaluate_lab_status(
         verify_report = LabVerifier(router).verify(
             requirements,
             timeout_seconds=timeout_seconds,
+            poll_wait_seconds=poll_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
             include_activity_grade=False,
             task_ids=task_ids,
         )

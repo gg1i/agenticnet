@@ -15,6 +15,10 @@ Public Packet Tracer MCP servers (`Mats2208/MCP-Packet-Tracer`, `kiskander/pt-mc
 2. **Existing Lab In → Solved Lab Out:** Ingesting existing lab instructions plus `.pkt`/`.pka` files, synchronizing planned topology/IPAM/IOS state with the live simulator, configuring devices iteratively, verifying raw CLI state, and saving the completed `.pkt`.
 3. **Native Grader Oracle (`ActivityFile` + CLI Fallback):** Using Packet Tracer's own Check Results / assessment item tree on `.pka` activities as the completion oracle, falling back automatically to raw-evidence CLI verification (`verify_lab`) when a lab is an ungraded `.pkt` or locks assessment reads.
 
+<!-- BEGIN MANIFEST COUNTS -->
+> **Current Live Registry Counts (`docs/manifest.json`):** `79` registered tools (`advanced` profile) / `22` default (`solve_lab` profile), `7` resources, `5` prompts, `17` device models.
+<!-- END MANIFEST COUNTS -->
+
 ---
 
 ## 2. Current Baseline vs. Target Hybrid Architecture

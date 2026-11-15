@@ -11,6 +11,7 @@ from netforge.core.enums import PermissionTier, StateLevel
 from netforge.core.exceptions import ValidationError
 from netforge.core.models import OperationResult
 from netforge.diagnostics.grader import grade_open_activity
+from netforge.diagnostics.lab_runner import evaluate_lab_status
 from netforge.diagnostics.verifier import LabVerifier
 from netforge.diagnostics.verify_schema import get_verify_requirements_schema
 from netforge.mcp.registry import NetForgeRuntime
@@ -46,16 +47,22 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
     def verify_lab(
         requirements: dict[str, Any] | list[dict[str, Any]],
         timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = None,
         include_activity_grade: bool = True,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Verify live Packet Tracer lab state against declarative requirements with evidence."""
+        """Verify live Packet Tracer lab state against declarative requirements with evidence.
+
+        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
+        (0.0s in offline/mock runs) unless overridden explicitly.
+        """
 
         def _run() -> OperationResult:
             try:
                 report = LabVerifier(runtime.router).verify(
                     requirements,
                     timeout_seconds=timeout_seconds,
+                    poll_wait_seconds=poll_wait_seconds,
                     include_activity_grade=include_activity_grade,
                     task_ids=task_ids,
                 )
@@ -157,10 +164,283 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
 
         return runtime.execute("grade_lab", PermissionTier.READ_ONLY, {}, _run)
 
+    def lab_open(
+        path: str,
+        timeout_seconds: float = 30.0,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Open a `.pkt` or `.pka` lab inside Packet Tracer via the bridge (`fileOpen`)."""
+
+        def _run() -> OperationResult:
+            cleaned = str(path or "").strip()
+            if not cleaned:
+                raise ValidationError("Lab file path must not be empty.")
+            if dry_run:
+                return OperationResult.ok(
+                    "lab_open",
+                    f"Planned opening '{cleaned}' via script bridge fileOpen (dry_run).",
+                    data={"dry_run": True, "path": cleaned, "method": "fileOpen"},
+                    state_level=StateLevel.PLANNED,
+                    execution_backend="offline_model",
+                    evidence=[f"Dry-run: would dispatch ipc.appWindow().fileOpen('{cleaned}')."],
+                )
+            backend, data, ev, warnings = runtime.router.open_file(
+                cleaned,
+                timeout_seconds=timeout_seconds,
+            )
+            return OperationResult.ok(
+                "lab_open",
+                f"Opened '{cleaned}' in Packet Tracer via {backend}.",
+                data=data,
+                state_level=StateLevel.EXECUTED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "lab_open",
+            PermissionTier.CONFIGURATION,
+            {"path": path, "timeout_seconds": timeout_seconds, "dry_run": dry_run},
+            _run,
+        )
+
+    def lab_save(
+        path: str | None = None,
+        overwrite: bool = True,
+        timeout_seconds: float = 30.0,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Save the active Packet Tracer lab via bridge (`fileSave` or `fileSaveAsNoPrompt`)."""
+
+        def _run() -> OperationResult:
+            cleaned = str(path).strip() if path is not None else None
+            if path is not None and not cleaned:
+                raise ValidationError("Destination path must not be blank when provided.")
+            method = "fileSaveAsNoPrompt" if cleaned else "fileSave"
+            if dry_run:
+                return OperationResult.ok(
+                    "lab_save",
+                    f"Planned saving Packet Tracer lab via {method} (dry_run).",
+                    data={
+                        "dry_run": True,
+                        "path": cleaned,
+                        "overwrite": overwrite,
+                        "method": method,
+                    },
+                    state_level=StateLevel.PLANNED,
+                    execution_backend="offline_model",
+                    evidence=[f"Dry-run: would dispatch {method} via script bridge."],
+                )
+            backend, data, ev, warnings = runtime.router.save_file(
+                cleaned,
+                overwrite=overwrite,
+                timeout_seconds=timeout_seconds,
+            )
+            return OperationResult.ok(
+                "lab_save",
+                f"Saved Packet Tracer lab via {backend} ({method}).",
+                data=data,
+                state_level=StateLevel.EXECUTED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "lab_save",
+            PermissionTier.CONFIGURATION,
+            {
+                "path": path,
+                "overwrite": overwrite,
+                "timeout_seconds": timeout_seconds,
+                "dry_run": dry_run,
+            },
+            _run,
+        )
+
+    def lab_status(
+        requirements: dict[str, Any] | list[dict[str, Any]] | None = None,
+        task_ids: list[str] | None = None,
+        include_activity_grade: bool = True,
+        timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.
+
+        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
+        (0.0s in offline/mock runs) unless overridden explicitly.
+        """
+
+        def _run() -> OperationResult:
+            try:
+                status = evaluate_lab_status(
+                    runtime.router,
+                    requirements=requirements,
+                    task_ids=task_ids,
+                    include_activity_grade=include_activity_grade,
+                    timeout_seconds=timeout_seconds,
+                    poll_wait_seconds=poll_wait_seconds,
+                )
+            except (PydanticValidationError, TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"Invalid lab_status requirements payload: {exc}",
+                    remediation="Call verify_requirements_schema to inspect the expected schema.",
+                ) from exc
+
+            left = status["what_is_left"]
+            warnings: list[str] = []
+            for item in left["failing_requirements"]:
+                warnings.append(
+                    f"[{item['status']}] {item['type']} ({item['device']}): {item['reason']}"
+                )
+            for item in left["unmet_grader_items"][:20]:
+                warnings.append(
+                    f"[unmet] {item['path']}: "
+                    f"{item.get('incorrect_feedback') or item.get('value') or 'incomplete'}"
+                )
+            if left["uncovered_tasks"]:
+                warnings.append(
+                    f"Uncovered task IDs with no requirement attached: {left['uncovered_tasks']}."
+                )
+            if left["grader_unavailable_reason"] and status["verify"] is None:
+                warnings.append(str(left["grader_unavailable_reason"]))
+
+            verdict = "PASSED" if status["overall_passed"] else "INCOMPLETE"
+            summary_msg = (
+                f"lab_status {verdict}: "
+                f"{len(left['failing_requirements'])} failing requirement(s), "
+                f"{len(left['unmet_grader_items'])} unmet grader item(s), "
+                f"{len(left['uncovered_tasks'])} uncovered task(s)."
+            )
+            return OperationResult.ok(
+                "lab_status",
+                summary_msg,
+                data=status,
+                state_level=StateLevel(status["state_level"]),
+                execution_backend=status["execution_backend"],
+                warnings=warnings,
+                evidence=status["raw_evidence"],
+            )
+
+        return runtime.execute(
+            "lab_status",
+            PermissionTier.READ_ONLY,
+            {
+                "task_ids": task_ids,
+                "include_activity_grade": include_activity_grade,
+                "timeout_seconds": timeout_seconds,
+            },
+            _run,
+        )
+
+    def list_devices(
+        timeout_seconds: float = 25.0,
+    ) -> dict[str, Any]:
+        """List live devices in Packet Tracer: canvas name, model, IOS hostname, and type."""
+
+        def _run() -> OperationResult:
+            backend, data, ev, warnings = runtime.router.list_devices(
+                timeout_seconds=timeout_seconds,
+            )
+            raw_devs = data.get("devices", [])
+            summary_devs = [
+                {
+                    "name": d.get("name"),
+                    "model": d.get("model"),
+                    "hostname": d.get("hostname"),
+                    "type": d.get("type"),
+                    "type_code": d.get("type_code"),
+                    "port_count": d.get("port_count", len(d.get("ports", []))),
+                }
+                for d in raw_devs
+            ]
+            return OperationResult.ok(
+                "list_devices",
+                f"Listed {len(summary_devs)} live device(s) from Packet Tracer via {backend}.",
+                data={"device_count": len(summary_devs), "devices": summary_devs},
+                state_level=StateLevel.VERIFIED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "list_devices",
+            PermissionTier.READ_ONLY,
+            {"timeout_seconds": timeout_seconds},
+            _run,
+        )
+
+    def lab_snapshot(
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Capture live lab snapshot: devices, models, IOS hostnames, links, and interfaces."""
+
+        def _run() -> OperationResult:
+            backend, data, ev, warnings = runtime.router.list_devices(
+                timeout_seconds=timeout_seconds,
+            )
+            devices = data.get("devices", [])
+            links = data.get("links", [])
+            iface_table: list[dict[str, Any]] = []
+            for d in devices:
+                d_name = d.get("name", "")
+                d_host = d.get("hostname", d_name)
+                for p in d.get("ports", []):
+                    ip = p.get("ip_address")
+                    mask = p.get("subnet_mask")
+                    if ip or p.get("port_up") or p.get("has_link"):
+                        iface_table.append(
+                            {
+                                "device": d_name,
+                                "hostname": d_host,
+                                "interface": p.get("name"),
+                                "ip_address": ip or None,
+                                "subnet_mask": mask or None,
+                                "port_up": p.get("port_up"),
+                                "protocol_up": p.get("protocol_up"),
+                                "remote_device": p.get("remote_device_name") or None,
+                                "remote_interface": p.get("remote_port_name") or None,
+                            }
+                        )
+            snapshot = {
+                "device_count": len(devices),
+                "link_count": len(links),
+                "active_interface_count": len(iface_table),
+                "devices": devices,
+                "links": links,
+                "active_interfaces": iface_table,
+            }
+            return OperationResult.ok(
+                "lab_snapshot",
+                (
+                    f"Captured live lab snapshot: {len(devices)} device(s), "
+                    f"{len(links)} link(s), {len(iface_table)} active interface(s)."
+                ),
+                data=snapshot,
+                state_level=StateLevel.VERIFIED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "lab_snapshot",
+            PermissionTier.READ_ONLY,
+            {"timeout_seconds": timeout_seconds},
+            _run,
+        )
+
     specs = [
         ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
         ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
         ("grade_lab", grade_lab, PermissionTier.READ_ONLY, True),
+        ("lab_open", lab_open, PermissionTier.CONFIGURATION, False),
+        ("lab_save", lab_save, PermissionTier.CONFIGURATION, False),
+        ("lab_status", lab_status, PermissionTier.READ_ONLY, True),
+        ("list_devices", list_devices, PermissionTier.READ_ONLY, True),
+        ("lab_snapshot", lab_snapshot, PermissionTier.READ_ONLY, True),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(
