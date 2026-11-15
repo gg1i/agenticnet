@@ -26,7 +26,7 @@ NetForge MCP is a modular Model Context Protocol (MCP) server and engineering en
 | **Phase 2 — Packet Tracer Adapter** | Windows PyWin32/ctypes GUI detection, DPI-aware calibration, visual anchor matching, SendInput mouse/keyboard input, fail-safe emergency stop, device console state machine | **Implemented (`v0.1.0`)** |
 | **Phase 3 — Live Network Automation** | Simulation/Realtime mode switching, PDU test packets, simulation event parsing, CLI ping execution, `show ip route` / `show arp` / `show ip int brief` table parsers | **Implemented (`v0.1.0`)** |
 | **Phase 4 — Intelligent Diagnostics** | Automated rule evaluators (missing gateway, disabled interface with IP, link subnet mismatch, native VLAN mismatch), ranked proposals, approval gates, verified self-repair | **Implemented (`v0.1.0`)** |
-| **Phase 5 — Public Release** | Multi-engine integration, capability manifest (`docs/manifest.json`), 69 MCP tools, 6 resources, 4 prompts, CI workflows, and complete documentation | **Implemented (`v0.1.0`)** |
+| **Phase 5 — Public Release** | Multi-engine integration, capability manifest (`docs/manifest.json`), 79 MCP tools (22 in default `solve_lab` profile), 7 resources, 5 prompts, CI workflows, and complete documentation | **Implemented (`v0.1.0`)** |
 
 ---
 
@@ -36,7 +36,7 @@ NetForge MCP is a modular Model Context Protocol (MCP) server and engineering en
 netforge/
 ├── core/         # Enums, state separation, exceptions, OperationResult, settings, stderr logging
 ├── security/     # Permission tiers, destructive confirmation guardrails, secret redaction
-├── devices/      # Verified Packet Tracer device catalog & interface normalization (15 models)
+├── devices/      # Verified Packet Tracer device catalog & interface normalization (17 models)
 ├── topology/     # NetworkX MultiGraph topology engine, cable rules, layout, Mermaid/ASCII export
 ├── ipam/         # IPv4/IPv6 CIDR math, VLSM allocator, conflict detection, addressing tables
 ├── ios/          # Structured IOS generators, capability pre-validators, CLI parser, unified diff
@@ -46,7 +46,7 @@ netforge/
 ├── console/      # (Phase 2) Device console state-machine, prompt detection, paging cleanup
 ├── simulation/   # (Phase 3) Simulation mode, PDU tracking, CLI/offline connectivity checks
 ├── diagnostics/  # (Phase 4) Root-cause rules, ranked repair proposals, verified execution
-└── mcp/          # Official Python MCP SDK server, 69 tools, 6 resources, 4 prompts, manifest
+└── mcp/          # Official Python MCP SDK server, 79 tools (22 default), 7 resources, 5 prompts, manifest
 ```
 
 ---
@@ -137,12 +137,13 @@ netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
 
 ## Live Verification & Benchmark Results
 
-Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offline mocked runs (`"mock": true` / `mode: "offline_mock"`) are synthetic harness checks and are never reported as benchmark scores (see [Benchmark Protocol](docs/BENCHMARK.md)).
+Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offline mocked runs (`"mock": true` / `mode: "offline_mock"`) are synthetic harness checks and are never reported as benchmark scores (see [Benchmark Protocol](docs/BENCHMARK.md) and [Test Report](docs/TEST_REPORT.md)).
 
 | Evaluation Track | Mode | Result (Live Only) | Reference |
 |---|---|---|---|
 | Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading; `gui_attach_ip_phone_power` **experimental: not yet validated by the 5-attempt live protocol**) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
-| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Pending live run** (awaiting live Phase 5 gate; zero live AI-agent benchmark runs recorded yet) | [BENCHMARK.md](docs/BENCHMARK.md) |
+| Phase 5 `lab_open` / `lab_save` / `lab_status` Persistence & External `.pkt` Discovery (`list_devices` / `lab_snapshot`) | `live_pt` | **Verified Live** (`6/6` requirements pass pre-save & post-reopen after closing/restarting PT; `dhcp_reservation.pkt`: `10` devices, `4` links, `23` active interfaces) | [TEST_REPORT.md](docs/TEST_REPORT.md) |
+| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Pending live run** (offline mock harness only; zero live AI-agent benchmark runs recorded yet) | [BENCHMARK.md](docs/BENCHMARK.md) |
 
 ---
 

@@ -47,16 +47,22 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
     def verify_lab(
         requirements: dict[str, Any] | list[dict[str, Any]],
         timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = None,
         include_activity_grade: bool = True,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Verify live Packet Tracer lab state against declarative requirements with evidence."""
+        """Verify live Packet Tracer lab state against declarative requirements with evidence.
+
+        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
+        (0.0s in offline/mock runs) unless overridden explicitly.
+        """
 
         def _run() -> OperationResult:
             try:
                 report = LabVerifier(runtime.router).verify(
                     requirements,
                     timeout_seconds=timeout_seconds,
+                    poll_wait_seconds=poll_wait_seconds,
                     include_activity_grade=include_activity_grade,
                     task_ids=task_ids,
                 )
@@ -258,8 +264,13 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         task_ids: list[str] | None = None,
         include_activity_grade: bool = True,
         timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left."""
+        """Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.
+
+        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
+        (0.0s in offline/mock runs) unless overridden explicitly.
+        """
 
         def _run() -> OperationResult:
             try:
@@ -269,6 +280,7 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
                     task_ids=task_ids,
                     include_activity_grade=include_activity_grade,
                     timeout_seconds=timeout_seconds,
+                    poll_wait_seconds=poll_wait_seconds,
                 )
             except (PydanticValidationError, TypeError, ValueError) as exc:
                 raise ValidationError(
@@ -322,6 +334,104 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             _run,
         )
 
+    def list_devices(
+        timeout_seconds: float = 25.0,
+    ) -> dict[str, Any]:
+        """List live devices in Packet Tracer: canvas name, model, IOS hostname, and type."""
+
+        def _run() -> OperationResult:
+            backend, data, ev, warnings = runtime.router.list_devices(
+                timeout_seconds=timeout_seconds,
+            )
+            raw_devs = data.get("devices", [])
+            summary_devs = [
+                {
+                    "name": d.get("name"),
+                    "model": d.get("model"),
+                    "hostname": d.get("hostname"),
+                    "type": d.get("type"),
+                    "type_code": d.get("type_code"),
+                    "port_count": d.get("port_count", len(d.get("ports", []))),
+                }
+                for d in raw_devs
+            ]
+            return OperationResult.ok(
+                "list_devices",
+                f"Listed {len(summary_devs)} live device(s) from Packet Tracer via {backend}.",
+                data={"device_count": len(summary_devs), "devices": summary_devs},
+                state_level=StateLevel.VERIFIED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "list_devices",
+            PermissionTier.READ_ONLY,
+            {"timeout_seconds": timeout_seconds},
+            _run,
+        )
+
+    def lab_snapshot(
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Capture live lab snapshot: devices, models, IOS hostnames, links, and interfaces."""
+
+        def _run() -> OperationResult:
+            backend, data, ev, warnings = runtime.router.list_devices(
+                timeout_seconds=timeout_seconds,
+            )
+            devices = data.get("devices", [])
+            links = data.get("links", [])
+            iface_table: list[dict[str, Any]] = []
+            for d in devices:
+                d_name = d.get("name", "")
+                d_host = d.get("hostname", d_name)
+                for p in d.get("ports", []):
+                    ip = p.get("ip_address")
+                    mask = p.get("subnet_mask")
+                    if ip or p.get("port_up") or p.get("has_link"):
+                        iface_table.append(
+                            {
+                                "device": d_name,
+                                "hostname": d_host,
+                                "interface": p.get("name"),
+                                "ip_address": ip or None,
+                                "subnet_mask": mask or None,
+                                "port_up": p.get("port_up"),
+                                "protocol_up": p.get("protocol_up"),
+                                "remote_device": p.get("remote_device_name") or None,
+                                "remote_interface": p.get("remote_port_name") or None,
+                            }
+                        )
+            snapshot = {
+                "device_count": len(devices),
+                "link_count": len(links),
+                "active_interface_count": len(iface_table),
+                "devices": devices,
+                "links": links,
+                "active_interfaces": iface_table,
+            }
+            return OperationResult.ok(
+                "lab_snapshot",
+                (
+                    f"Captured live lab snapshot: {len(devices)} device(s), "
+                    f"{len(links)} link(s), {len(iface_table)} active interface(s)."
+                ),
+                data=snapshot,
+                state_level=StateLevel.VERIFIED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "lab_snapshot",
+            PermissionTier.READ_ONLY,
+            {"timeout_seconds": timeout_seconds},
+            _run,
+        )
+
     specs = [
         ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
         ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
@@ -329,6 +439,8 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         ("lab_open", lab_open, PermissionTier.CONFIGURATION, False),
         ("lab_save", lab_save, PermissionTier.CONFIGURATION, False),
         ("lab_status", lab_status, PermissionTier.READ_ONLY, True),
+        ("list_devices", list_devices, PermissionTier.READ_ONLY, True),
+        ("lab_snapshot", lab_snapshot, PermissionTier.READ_ONLY, True),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(

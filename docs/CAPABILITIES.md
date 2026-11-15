@@ -112,8 +112,10 @@ Findings (including failures):
 
 ---
 
-## 8. Phase 5 Offline Probes: Lab Save API (`AppWindow`)
+## 8. Phase 5 Live Verification: `lab_open`, `lab_save`, `lab_status`, `list_devices`, & `lab_snapshot`
 
-| Capability / Probe | Status | Evidence & Notes |
+| Capability / Probe | Status | Live Evidence & Notes |
 |---|---|---|
-| PT `AppWindow` Save methods (`IpcAPI/class_app_window.html`) | **DOCS INSPECTED / UNTESTED LIVE** | Local PT `8.2.2` IPC documentation defines `bool AppWindow::fileSave()`, `bool AppWindow::fileSaveAs(QString)` (deprecated), `void AppWindow::fileSaveAsAsync(QString)`, and `void AppWindow::fileSaveAsNoPrompt(QString, bool bAsync)` ("Same as `fileSaveAs()` except it does not prompt to overwrite the file"). Live PT execution & `.pts` export for the `save_file` opcode await live PT availability (`UNTESTED LIVE`). |
+| PT `AppWindow::fileSaveAsNoPrompt(path, false)` via bridge `save_file` / `lab_save` | **VERIFIED LIVE** | Verified against PT `8.2.2.0400` in [`docs/evidence/phase5_live_verification.json`](evidence/phase5_live_verification.json): `lab_save` returned `success=true`, `execution_backend="script_backend"`, `data.ok=true`, writing `39,548` bytes (`phase5_solved_roundtrip.pkt`) with `overwrite=true`. |
+| Full persistence round-trip (`lab_save` -> close PT -> fresh PT -> `lab_open` -> `lab_status`) | **VERIFIED LIVE** | Pre-config `lab_status` failed `6/6` requirements (`r1_host`, `r2_host`, `r1_ip`, `r2_ip`, `r1_up`, `r2_up`); after CLI config + `write memory`, pre-save `lab_status` passed `6/6`. After killing `PacketTracer.exe`, launching a fresh PT instance (`relaunch_bridge_ping_ok=true`), calling `lab_open`, and auto-elevating reopened User Exec prompts (`>` -> `enable`), `post_reopen_status` passed `6/6` (`overall_passed=true`, `state_level="verified"`, `what_is_left_is_empty=true`). |
+| `list_devices` & `lab_snapshot` on an external `.pkt` (`dhcp_reservation.pkt`) | **VERIFIED LIVE** | Opened bundled stock `<PT_DIR>\saves\01 Networking\DHCP\dhcp_reservation.pkt` via `lab_open` (`state_level="executed"`). Returned `10` devices (`Wireless Router0` `type="wireless_router"`, `PC0`–`PC5` `type="pc"`, `Switch0`–`Switch1` `type="switch"`, `Power Distribution Device0` `type="other"`), `4` links via `Cable::getOtherPort`, and `23` interface entries with IPs/masks (`192.168.0.1/24` on `Vlan1`, `169.254.*` on wired PCs) and remote peers. |

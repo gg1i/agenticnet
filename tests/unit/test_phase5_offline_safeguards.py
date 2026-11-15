@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -340,8 +340,62 @@ def test_every_default_profile_and_prompt_tool_is_registered(tmp_path: Path) -> 
     prompt_res = asyncio.run(srv.get_prompt("solve_lab", arguments={}))
     prompt_text = str(prompt_res.messages[0].content.text)
     backticked = set(re.findall(r"`([a-z0-9_]+)`", prompt_text))
-    non_tool_words = {"task_ids", "requirements", "pkt", "pka", "json", "notes"}
+    non_tool_words = {"task_ids", "requirements", "pkt", "pka", "json", "notes", "what_is_left"}
     prompt_tools = backticked - non_tool_words
     unregistered_in_prompt = prompt_tools - registered_tools
-    assert not unregistered_in_prompt, f"Unregistered tools named in prompt: {unregistered_in_prompt}"
+    assert not unregistered_in_prompt, (
+        f"Unregistered tools named in prompt: {unregistered_in_prompt}"
+    )
+
+
+@pytest.mark.unit
+def test_readme_and_docs_counts_match_manifest(tmp_path: Path) -> None:
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf_manifest", tool_profile="advanced")
+    _, runtime = create_mcp_server(settings=settings)
+    manifest = runtime.build_manifest()
+
+    on_disk_manifest = json.loads(
+        (REPO_ROOT / "docs" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert on_disk_manifest == manifest
+
+    total_tools = int(manifest["tool_count"])
+    solve_lab_count = len(SOLVE_LAB_TOOLS)
+    resource_count = len(manifest["resources"])
+    prompt_count = len(manifest["prompts"])
+    model_count = len(manifest["supported_device_models"])
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"{total_tools} MCP tools ({solve_lab_count} in default `solve_lab` profile)" in readme
+    assert f"{resource_count} resources, {prompt_count} prompts" in readme
+    assert f"{total_tools} tools ({solve_lab_count} default)" in readme
+    assert f"({model_count} models)" in readme
+    for stale in ("69 MCP tools", "69 tools", "6 resources", "4 prompts"):
+        assert stale not in readme
+
+    mcp_tools_doc = (REPO_ROOT / "docs" / "mcp-tools.md").read_text(encoding="utf-8")
+    assert f"**{total_tools} specialized MCP tools**" in mcp_tools_doc
+    assert f"`{solve_lab_count}` enabled in default `solve_lab` profile" in mcp_tools_doc
+    assert f"**{resource_count} read-only resources**" in mcp_tools_doc
+    assert f"**{prompt_count} guided AI agent prompts**" in mcp_tools_doc
+    assert f"## 2. Resources ({resource_count})" in mcp_tools_doc
+    assert f"## 3. Workflow Prompts ({prompt_count})" in mcp_tools_doc
+    assert f"all {total_tools} tools" in mcp_tools_doc
+    assert f"{model_count} supported device models" in mcp_tools_doc
+    for stale in (
+        "69 specialized MCP tools",
+        "69 Tools",
+        "6 read-only resources",
+        "4 guided AI agent prompts",
+    ):
+        assert stale not in mcp_tools_doc
+
+    arch_doc = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    assert "<!-- BEGIN MANIFEST COUNTS -->" in arch_doc
+    assert f"`{total_tools}` registered tools" in arch_doc
+    assert f"`{solve_lab_count}` default (`solve_lab` profile)" in arch_doc
+    expected_arch_counts = (
+        f"`{resource_count}` resources, `{prompt_count}` prompts, `{model_count}` device models"
+    )
+    assert expected_arch_counts in arch_doc
 

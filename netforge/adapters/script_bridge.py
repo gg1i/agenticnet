@@ -30,6 +30,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "get_activity_status",
         "open_file",
         "save_file",
+        "list_devices",
     }
 )
 
@@ -236,18 +237,21 @@ class HttpScriptBridgeServer:
 
             def _send_json(self, status: int, body: dict[str, Any] | None = None) -> None:
                 raw = json.dumps(body).encode("utf-8") if body is not None else b""
-                self.send_response(status)
-                if not self._write_cors_headers():
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", "0")
+                try:
+                    self.send_response(status)
+                    if not self._write_cors_headers():
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    if body is not None:
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(raw)))
                     self.end_headers()
+                    if raw:
+                        self.wfile.write(raw)
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     return
-                if body is not None:
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                if raw:
-                    self.wfile.write(raw)
 
             def _authorize(self) -> bool:
                 origin = self._origin_header()
@@ -752,6 +756,24 @@ class HttpScriptBridgeBackend(ScriptBackend):
             **data,
         }
 
+    def list_devices(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Query live Packet Tracer canvas devices, models, hostnames, ports, and links."""
+        self.safety.check_safe_to_act(live_input=False, count_action=False)
+        data = self.server.enqueue_command(
+            "list_devices",
+            {},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
     def backend_status(self) -> BackendStatus:
         """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
         return BackendStatus(
@@ -770,6 +792,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 "get_activity_status",
                 "open_file",
                 "save_file",
+                "list_devices",
             ],
             notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
         )

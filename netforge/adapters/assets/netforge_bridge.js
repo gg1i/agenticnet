@@ -467,6 +467,246 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                 }, null);
                 return;
             }
+            case "save_file": {
+                var savePath = params.path ? String(params.path) : "";
+                var overwrite = (params.overwrite !== false);
+                var appWin = ipc.appWindow();
+                if (savePath) {
+                    try {
+                        if (typeof appWin.fileSaveAsNoPrompt === "function") {
+                            appWin.fileSaveAsNoPrompt(savePath, overwrite);
+                        } else if (typeof appWin.fileSaveAs === "function") {
+                            appWin.fileSaveAs(savePath);
+                        } else {
+                            appWin.fileSave();
+                        }
+                    } catch (saveErr) {
+                        sendBridgeResult(requestId, false, {}, "fileSaveAs failed: " + String(saveErr));
+                        return;
+                    }
+                } else {
+                    try {
+                        appWin.fileSave();
+                    } catch (saveErr2) {
+                        sendBridgeResult(requestId, false, {}, "fileSave failed: " + String(saveErr2));
+                        return;
+                    }
+                }
+                var curFile = appWin.getActiveFile();
+                var curSavedFilename = "";
+                try {
+                    if (curFile && typeof curFile.getSavedFilename === "function") {
+                        curSavedFilename = String(curFile.getSavedFilename() || "");
+                    }
+                } catch (fnErr2) {}
+                sendBridgeResult(requestId, true, {
+                    path: savePath || curSavedFilename,
+                    saved_filename: curSavedFilename,
+                    overwrite: overwrite
+                }, null);
+                return;
+            }
+            case "list_devices": {
+                var net = ipc.network();
+                var devCount = 0;
+                try { devCount = Number(net.getDeviceCount()); } catch (eDc) {}
+                var devices = [];
+                var portMap = [];
+                var links = [];
+                var seenLinks = {};
+                var typeNames = {
+                    0: "router",
+                    1: "switch",
+                    2: "cloud",
+                    3: "bridge",
+                    4: "hub",
+                    5: "repeater",
+                    6: "coaxial_splitter",
+                    7: "access_point",
+                    8: "pc",
+                    9: "server",
+                    10: "printer",
+                    11: "wireless_router",
+                    12: "ip_phone",
+                    13: "dsl_modem",
+                    14: "cable_modem",
+                    15: "remote_network",
+                    16: "multilayer_switch",
+                    17: "laptop",
+                    18: "tablet",
+                    19: "pda",
+                    20: "wireless_end_device",
+                    21: "wired_end_device",
+                    22: "tv",
+                    23: "home_voip",
+                    24: "analog_phone",
+                    26: "asa",
+                    27: "ioe",
+                    28: "home_gateway",
+                    31: "access_point",
+                    39: "wlc"
+                };
+
+                for (var i = 0; i < devCount; i++) {
+                    var dev = null;
+                    try { dev = net.getDeviceAt(i); } catch (eDa) {}
+                    if (!dev) { continue; }
+                    var dName = "";
+                    var dModel = "";
+                    var dType = -1;
+                    try { dName = String(dev.getName() || ""); } catch (eDn) {}
+                    try { dModel = String(dev.getModel() || ""); } catch (eDm) {}
+                    try { dType = Number(dev.getType()); } catch (eDt) {}
+
+                    var hostname = "";
+                    var isIosCliDevice = (dType === 0 || dType === 1 || dType === 16 || dType === 26);
+                    if (isIosCliDevice) {
+                        try {
+                            var cmdLine = dev.getCommandLine();
+                            if (cmdLine && typeof cmdLine.getPrompt === "function") {
+                                var pr = String(cmdLine.getPrompt() || "");
+                                if (pr && pr.indexOf("\\") === -1 && pr.indexOf("/") === -1) {
+                                    hostname = pr.replace(/\([^)]*\)/g, "").replace(/[>#:]/g, "").replace(/^\s+|\s+$/g, "");
+                                }
+                            }
+                        } catch (eHn) {}
+                    }
+
+                    var portCount = 0;
+                    try { portCount = Number(dev.getPortCount()); } catch (ePc) {}
+                    var ports = [];
+                    for (var j = 0; j < portCount; j++) {
+                        var p = null;
+                        try { p = dev.getPortAt(j); } catch (ePa) {}
+                        if (!p) { continue; }
+                        var pName = "";
+                        var isUp = false;
+                        var protoUp = false;
+                        var mac = "";
+                        var ipAddr = "";
+                        var subMask = "";
+                        var hasLink = false;
+                        var remPort = "";
+                        var remDev = "";
+
+                        try { pName = String(p.getName() || ""); } catch (ePn) {}
+                        try { isUp = Boolean(p.isPortUp && p.isPortUp()); } catch (ePu) {}
+                        try { protoUp = Boolean(p.isProtocolUp && p.isProtocolUp()); } catch (ePru) {}
+                        try { if (p.getMacAddress) { mac = String(p.getMacAddress() || ""); } } catch (eMac) {}
+                        try {
+                            if (typeof p.getIpAddress === "function") {
+                                ipAddr = String(p.getIpAddress() || "");
+                            }
+                            if (typeof p.getSubnetMask === "function") {
+                                subMask = String(p.getSubnetMask() || "");
+                            }
+                        } catch (eIp) {}
+                        try {
+                            var linkObj = p.getLink ? p.getLink() : null;
+                            hasLink = Boolean(linkObj);
+                            if (typeof p.getRemotePortName === "function") {
+                                remPort = String(p.getRemotePortName() || "");
+                            }
+                            if (linkObj) {
+                                var otherP = null;
+                                if (typeof linkObj.getOtherPort === "function") {
+                                    try { otherP = linkObj.getOtherPort(dName, pName); } catch (eOp1) {}
+                                }
+                                if (!otherP && typeof linkObj.getPort1 === "function" && typeof linkObj.getPort2 === "function") {
+                                    var lp1 = linkObj.getPort1();
+                                    var lp2 = linkObj.getPort2();
+                                    var lp1Dev = (lp1 && typeof lp1.getOwnerDevice === "function" && lp1.getOwnerDevice())
+                                        ? String(lp1.getOwnerDevice().getName() || "") : "";
+                                    var lp1Name = lp1 ? String(lp1.getName() || "") : "";
+                                    otherP = (lp1Dev === dName && lp1Name === pName) ? lp2 : lp1;
+                                }
+                                if (otherP) {
+                                    if (!remPort && typeof otherP.getName === "function") {
+                                        remPort = String(otherP.getName() || "");
+                                    }
+                                    if (typeof otherP.getOwnerDevice === "function" && otherP.getOwnerDevice()) {
+                                        remDev = String(otherP.getOwnerDevice().getName() || "");
+                                    }
+                                }
+                            }
+                        } catch (eLnk) {}
+
+                        var pInfo = {
+                            name: pName,
+                            ip_address: ipAddr,
+                            subnet_mask: subMask,
+                            port_up: isUp,
+                            protocol_up: protoUp,
+                            mac_address: mac,
+                            has_link: hasLink,
+                            remote_port_name: remPort,
+                            remote_device_name: remDev
+                        };
+                        ports.push(pInfo);
+                        if (hasLink && remDev && remPort) {
+                            var pairKey = [dName + ":" + pName, remDev + ":" + remPort].sort().join("<->");
+                            if (!seenLinks[pairKey]) {
+                                seenLinks[pairKey] = true;
+                                links.push({
+                                    device1: dName,
+                                    port1: pName,
+                                    device2: remDev,
+                                    port2: remPort
+                                });
+                            }
+                        } else if (hasLink && remPort) {
+                            portMap.push({
+                                dev: dName,
+                                port: pName,
+                                rem_port: remPort,
+                                portRef: pInfo
+                            });
+                        }
+                    }
+
+                    devices.push({
+                        name: dName,
+                        model: dModel,
+                        type_code: dType,
+                        type: typeNames[dType] || "other",
+                        hostname: hostname || dName,
+                        port_count: ports.length,
+                        ports: ports
+                    });
+                }
+
+                // Fallback cross-link peer resolution via rem_port match if needed
+                for (var li = 0; li < portMap.length; li++) {
+                    var src = portMap[li];
+                    if (src.portRef.remote_device_name) { continue; }
+                    for (var lj = li + 1; lj < portMap.length; lj++) {
+                        var dst = portMap[lj];
+                        if (src.dev !== dst.dev && src.rem_port === dst.port && dst.rem_port === src.port) {
+                            src.portRef.remote_device_name = dst.dev;
+                            dst.portRef.remote_device_name = src.dev;
+                            var linkKey = [src.dev + ":" + src.port, dst.dev + ":" + dst.port].sort().join("<->");
+                            if (!seenLinks[linkKey]) {
+                                seenLinks[linkKey] = true;
+                                links.push({
+                                    device1: src.dev,
+                                    port1: src.port,
+                                    device2: dst.dev,
+                                    port2: dst.port
+                                });
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                sendBridgeResult(requestId, true, {
+                    device_count: devices.length,
+                    link_count: links.length,
+                    devices: devices,
+                    links: links
+                }, null);
+                return;
+            }
             default:
                 sendBridgeResult(requestId, false, {}, "Unsupported opcode: " + String(opcode));
                 return;

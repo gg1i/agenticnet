@@ -452,3 +452,35 @@ class BackendRouter:
             "Cannot save Packet Tracer workspace: no live ScriptBackend connected.",
             remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
         )
+
+    def list_devices(
+        self,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Query live Packet Tracer devices, links, and interface statuses through ScriptBackend."""
+        if self.has_live_script() and self.script_backend is not None:
+            list_fn = getattr(self.script_backend, "list_devices", None)
+            if not callable(list_fn):
+                raise AdapterUnavailableError(
+                    "Connected ScriptBackend does not implement 'list_devices'.",
+                    remediation="Update netforge_bridge.pts with the 'list_devices' opcode.",
+                )
+            data = dict(list_fn(timeout_seconds=timeout_seconds))
+            if data.get("ok") is False:
+                raise AdapterUnavailableError(
+                    str(data.get("error") or "Packet Tracer list_devices reported failure."),
+                    details=data,
+                )
+            dev_cnt = len(data.get("devices", []))
+            link_cnt = len(data.get("links", []))
+            return (
+                "script_backend",
+                data,
+                [f"Read {dev_cnt} devices and {link_cnt} links live from Packet Tracer."],
+                [],
+            )
+        raise AdapterUnavailableError(
+            "Cannot inspect live devices: no live ScriptBackend connected.",
+            remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
+        )

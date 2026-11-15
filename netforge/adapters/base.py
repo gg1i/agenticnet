@@ -201,6 +201,24 @@ class ScriptBackend(ABC):
             f"{self.__class__.__name__} does not implement read_activity_status."
         )
 
+    def open_file(self, path: str, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Open a `.pkt` or `.pka` file in Packet Tracer."""
+        raise AdapterUnavailableError(f"{self.__class__.__name__} does not implement open_file.")
+
+    def save_file(
+        self,
+        path: str | None = None,
+        *,
+        overwrite: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Save the active Packet Tracer file."""
+        raise AdapterUnavailableError(f"{self.__class__.__name__} does not implement save_file.")
+
+    def list_devices(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        """List live Packet Tracer devices, links, and ports."""
+        raise AdapterUnavailableError(f"{self.__class__.__name__} does not implement list_devices.")
+
     def backend_status(self) -> BackendStatus:
         """Describe script backend connection state and supported capabilities."""
         return BackendStatus(

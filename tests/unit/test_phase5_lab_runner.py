@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -126,6 +127,65 @@ class _MockLabBackend(ScriptBackend):
             "saved": True,
             "path": path or "active.pka",
             "method": "fileSaveAsNoPrompt" if path else "fileSave",
+        }
+
+    def list_devices(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "device_count": 2,
+            "link_count": 1,
+            "devices": [
+                {
+                    "name": "Router0",
+                    "model": "2911",
+                    "type_code": 0,
+                    "type": "router",
+                    "hostname": "HQ_RTR",
+                    "port_count": 3,
+                    "ports": [
+                        {
+                            "name": "GigabitEthernet0/0",
+                            "ip_address": "10.0.0.1",
+                            "subnet_mask": "255.255.255.0",
+                            "port_up": True,
+                            "protocol_up": True,
+                            "mac_address": "0060.2F06.8501",
+                            "has_link": True,
+                            "remote_port_name": "FastEthernet0/1",
+                            "remote_device_name": "Switch0",
+                        }
+                    ],
+                },
+                {
+                    "name": "Switch0",
+                    "model": "2960-24TT",
+                    "type_code": 1,
+                    "type": "switch",
+                    "hostname": "SW1",
+                    "port_count": 24,
+                    "ports": [
+                        {
+                            "name": "FastEthernet0/1",
+                            "ip_address": "",
+                            "subnet_mask": "",
+                            "port_up": True,
+                            "protocol_up": True,
+                            "mac_address": "0060.7067.C401",
+                            "has_link": True,
+                            "remote_port_name": "GigabitEthernet0/0",
+                            "remote_device_name": "Router0",
+                        }
+                    ],
+                },
+            ],
+            "links": [
+                {
+                    "device1": "Router0",
+                    "port1": "GigabitEthernet0/0",
+                    "device2": "Switch0",
+                    "port2": "FastEthernet0/1",
+                }
+            ],
         }
 
 
@@ -333,14 +393,14 @@ def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
     srv_default, rt_default = create_mcp_server(default_settings)
     default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
     assert default_names == SOLVE_LAB_TOOLS
-    assert len(default_names) == 20
+    assert len(default_names) == 22
     assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
     assert "configure_ospf" not in default_names
 
     adv_settings = NetForgeSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
     srv_adv, rt_adv = create_mcp_server(adv_settings)
     adv_names = {t.name for t in asyncio.run(srv_adv.list_tools())}
-    assert len(adv_names) == 77
+    assert len(adv_names) == 79
     assert default_names < adv_names
     assert rt_adv.build_manifest()["tool_profile"] == "advanced"
 
@@ -380,3 +440,201 @@ def test_benchmark_runner_mock_and_fail_closed_live(tmp_path: Path) -> None:
 
     # Live mode refuses when run in offline skeleton
     assert bench_cli.main(["--live"]) == 2
+
+
+@pytest.mark.unit
+def test_list_devices_and_lab_snapshot_mocked_and_fail_closed(tmp_path: Path) -> None:
+    backend = _MockLabBackend()
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    srv_live, _ = create_mcp_server(settings=settings, script_backend=backend)
+
+    # 1. list_devices live via mock backend
+    ld_res = _call_tool_sync(srv_live, "list_devices", {})
+    assert ld_res["success"] is True
+    assert ld_res["execution_backend"] == "script_backend"
+    devs = ld_res["data"]["devices"]
+    assert len(devs) == 2
+    rtr = next(d for d in devs if d["name"] == "Router0")
+    assert rtr["model"] == "2911"
+    assert rtr["hostname"] == "HQ_RTR"
+    assert rtr["type"] == "router"
+
+    # 2. lab_snapshot live via mock backend
+    snap_res = _call_tool_sync(srv_live, "lab_snapshot", {})
+    assert snap_res["success"] is True
+    assert snap_res["data"]["device_count"] == 2
+    assert snap_res["data"]["link_count"] == 1
+    assert len(snap_res["data"]["active_interfaces"]) == 2
+    iface0 = snap_res["data"]["active_interfaces"][0]
+    assert iface0["device"] == "Router0"
+    assert iface0["ip_address"] == "10.0.0.1"
+    assert iface0["subnet_mask"] == "255.255.255.0"
+    assert iface0["remote_device"] == "Switch0"
+
+    # 3. Fail-closed when no script backend connected
+    srv_off, _ = create_mcp_server(settings=settings)
+    fail_ld = _call_tool_sync(srv_off, "list_devices", {})
+    assert fail_ld["success"] is False
+    assert "no live ScriptBackend" in str(fail_ld.get("error") or fail_ld.get("errors") or fail_ld)
+
+
+@pytest.mark.unit
+def test_verifier_polling_wait_passes_eventually_and_fails_with_evidence(tmp_path: Path) -> None:
+    from netforge.adapters.router import BackendRouter
+    from netforge.diagnostics.verifier import LabVerifier
+
+    class _ConvergenceBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.call_counts: dict[str, int] = {}
+
+        def execute_cli(
+            self, device_name: str, commands: list[str], **kwargs: Any
+        ) -> dict[str, Any]:
+            cmd = commands[-1]
+            self.call_counts[cmd] = self.call_counts.get(cmd, 0) + 1
+            count = self.call_counts[cmd]
+            if cmd == "show ip interface brief":
+                # Fails on attempts 1 and 2, passes on attempt 3
+                if count < 3:
+                    out = (
+                        "GigabitEthernet0/0     10.0.0.1        "
+                        "YES manual up                    down\n"
+                    )
+                else:
+                    out = (
+                        "GigabitEthernet0/0     10.0.0.1        "
+                        "YES manual up                    up\n"
+                    )
+                return {
+                    "ok": True,
+                    "raw_output": out,
+                    "results": [{"command": cmd, "status": 0}],
+                }
+            if cmd == "ping 10.99.99.99":
+                return {
+                    "ok": True,
+                    "raw_output": "Success rate is 0 percent (0/5)",
+                    "results": [{"command": cmd, "status": 0}],
+                }
+            return super().execute_cli(device_name, commands, **kwargs)
+
+    backend = _ConvergenceBackend()
+    router = BackendRouter(script_backend=backend)
+    verifier = LabVerifier(router, cli_pacing_seconds=0.01, max_cli_retries=1)
+
+    # 1. Requirement that converges after polling
+    reqs = [
+        {
+            "id": "r1_int",
+            "task_id": "T1",
+            "type": "interface_up",
+            "device": "R1",
+            "interface": "GigabitEthernet0/0",
+        }
+    ]
+    rep = verifier.verify(reqs, poll_wait_seconds=5.0, poll_interval_seconds=0.05)
+    assert rep["passed"] is True
+    assert rep["results"][0]["status"] == "pass"
+    assert backend.call_counts["show ip interface brief"] >= 3
+
+    # 2. Requirement that never converges: polling times out and reports real failure with evidence
+    fail_reqs = [
+        {
+            "id": "r1_ping",
+            "task_id": "T2",
+            "type": "reachable",
+            "source": "R1",
+            "target": "10.99.99.99",
+        }
+    ]
+    rep_fail = verifier.verify(fail_reqs, poll_wait_seconds=0.15, poll_interval_seconds=0.05)
+    assert rep_fail["passed"] is False
+    assert rep_fail["results"][0]["status"] == "fail"
+    assert "0 percent" in rep_fail["results"][0]["evidence"]
+    assert rep_fail["results"][0]["reason"]
+
+
+@pytest.mark.unit
+def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
+    from netforge.adapters.router import BackendRouter
+    from netforge.core.exceptions import NetForgeError
+    from netforge.diagnostics.verifier import LabVerifier, PacedDeviceCliQueue
+
+    # 1. Test pacing queue timing
+    queue = PacedDeviceCliQueue(pacing_seconds=0.05, max_retries=2)
+    t0 = time.monotonic()
+    queue.pace("R1")
+    queue.pace("R1")
+    t1 = time.monotonic()
+    assert (t1 - t0) >= 0.04
+
+    # 2. Bounded retries on transient error
+    class _FlakyBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def execute_cli(
+            self, device_name: str, commands: list[str], **kwargs: Any
+        ) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls < 3:
+                raise NetForgeError("Transient bridge timeout")
+            return {
+                "ok": True,
+                "raw_output": (
+                    "GigabitEthernet0/0     10.0.0.1        "
+                    "YES manual up                    up\n"
+                ),
+                "results": [{"command": commands[0], "status": 0}],
+            }
+
+    flaky = _FlakyBackend()
+    router = BackendRouter(script_backend=flaky)
+    verifier = LabVerifier(router, cli_pacing_seconds=0.01, max_cli_retries=3)
+    outcome = verifier._read_cli("R1", "show ip interface brief", timeout_seconds=10.0)
+    assert outcome.error is None
+    assert "10.0.0.1" in outcome.raw_evidence
+    assert flaky.calls == 3
+
+    # 3. Auto-elevates from User Exec ('>') to Privileged Exec ('enable') when read fails
+    class _UserExecBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent_cmds: list[str] = []
+            self.mode = "user"
+
+        def execute_cli(
+            self, device_name: str, commands: list[str], **kwargs: Any
+        ) -> dict[str, Any]:
+            cmd = commands[0]
+            self.sent_cmds.append(cmd)
+            if cmd == "enable":
+                self.mode = "priv"
+                return {"ok": True, "prompt": "R1#", "raw_output": "", "command_statuses": []}
+            if cmd == "show running-config" and self.mode == "user":
+                return {
+                    "ok": True,
+                    "prompt": "R1>",
+                    "raw_output": "% Invalid input detected at '^' marker.\nR1>",
+                    "command_statuses": [{"command": cmd, "status": 2}],
+                }
+            return {
+                "ok": True,
+                "prompt": "R1#",
+                "raw_output": "hostname R1-LIVE\nend\nR1#",
+                "command_statuses": [{"command": cmd, "status": 0}],
+            }
+
+    ux_backend = _UserExecBackend()
+    ux_verifier = LabVerifier(
+        BackendRouter(script_backend=ux_backend),
+        cli_pacing_seconds=0.01,
+        max_cli_retries=1,
+    )
+    ux_outcome = ux_verifier._read_cli("R1", "show running-config", timeout_seconds=10.0)
+    assert ux_outcome.error is None
+    assert "hostname R1-LIVE" in ux_outcome.raw_evidence
+    assert ux_backend.sent_cmds == ["show running-config", "enable", "show running-config"]
+

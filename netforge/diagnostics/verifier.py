@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from netforge.adapters.router import BackendRouter
+from netforge.adapters.script_bridge import HttpScriptBridgeBackend
 from netforge.core.enums import StateLevel
 from netforge.core.exceptions import NetForgeError
 from netforge.core.models import ExecutionBackend
@@ -409,11 +411,41 @@ def _build_task_coverage(
     }
 
 
+class PacedDeviceCliQueue:
+    """Serializes and paces CLI requests per device with bounded retries."""
+
+    def __init__(self, pacing_seconds: float = 0.25, max_retries: int = 2) -> None:
+        self.pacing_seconds = max(0.0, float(pacing_seconds))
+        self.max_retries = max(0, int(max_retries))
+        self._last_call: dict[str, float] = {}
+
+    def pace(self, device_name: str) -> None:
+        now = time.monotonic()
+        last = self._last_call.get(device_name, 0.0)
+        elapsed = now - last
+        if elapsed < self.pacing_seconds:
+            time.sleep(self.pacing_seconds - elapsed)
+        self._last_call[device_name] = time.monotonic()
+
+    def record_call(self, device_name: str) -> None:
+        self._last_call[device_name] = time.monotonic()
+
+
 class LabVerifier:
     """Evaluates declarative lab requirements strictly from live PT CLI read-backs."""
 
-    def __init__(self, router: BackendRouter) -> None:
+    def __init__(
+        self,
+        router: BackendRouter,
+        *,
+        cli_pacing_seconds: float = 0.25,
+        max_cli_retries: int = 2,
+    ) -> None:
         self.router = router
+        self.cli_queue = PacedDeviceCliQueue(
+            pacing_seconds=cli_pacing_seconds,
+            max_retries=max_cli_retries,
+        )
 
     def _read_cli(
         self,
@@ -421,6 +453,7 @@ class LabVerifier:
         command: str,
         *,
         timeout_seconds: float,
+        max_retries: int | None = None,
     ) -> _CliReadOutcome:
         if not self.router.has_live_script() or self.router.script_backend is None:
             return _CliReadOutcome(
@@ -430,69 +463,116 @@ class LabVerifier:
             )
 
         pt_name = self.router.resolve_pt_device_name(device_name)
-        try:
-            res = self.router.script_backend.execute_cli(
-                pt_name,
-                [command],
-                timeout_seconds=max(float(timeout_seconds), 25.0),
-            )
-        except NetForgeError as exc:
-            return _CliReadOutcome(
-                command=command,
-                raw_evidence=redact_cli_text(str(exc.message)),
-                error=f"CLI execution error on '{pt_name}': {exc.message}",
-            )
-        except Exception as exc:
-            return _CliReadOutcome(
-                command=command,
-                raw_evidence="",
-                error=f"Unexpected CLI read error on '{pt_name}': {exc}",
-            )
+        retries = self.cli_queue.max_retries if max_retries is None else max_retries
+        attempts = 0
+        last_outcome: _CliReadOutcome | None = None
+        mode_normalized = False
 
-        timed_out = bool(res.get("timed_out", False))
-        raw_out = str(res.get("raw_output", ""))
-        prompt = str(res.get("prompt", "")).strip()
-        redacted = redact_cli_text(raw_out)
+        while attempts <= retries:
+            attempts += 1
+            self.cli_queue.pace(pt_name)
+            try:
+                res = self.router.script_backend.execute_cli(
+                    pt_name,
+                    [command],
+                    timeout_seconds=max(float(timeout_seconds), 25.0),
+                )
+            except NetForgeError as exc:
+                last_outcome = _CliReadOutcome(
+                    command=command,
+                    raw_evidence=redact_cli_text(str(exc.message)),
+                    error=f"CLI execution error on '{pt_name}': {exc.message}",
+                )
+                if attempts <= retries:
+                    time.sleep(0.3)
+                    continue
+                return last_outcome
+            except Exception as exc:
+                last_outcome = _CliReadOutcome(
+                    command=command,
+                    raw_evidence="",
+                    error=f"Unexpected CLI read error on '{pt_name}': {exc}",
+                )
+                if attempts <= retries:
+                    time.sleep(0.3)
+                    continue
+                return last_outcome
 
-        if timed_out:
+            timed_out = bool(res.get("timed_out", False))
+            raw_out = str(res.get("raw_output", ""))
+            prompt = str(res.get("prompt", "")).strip()
+            redacted = redact_cli_text(raw_out)
+
+            if timed_out:
+                last_outcome = _CliReadOutcome(
+                    command=command,
+                    raw_evidence=redacted,
+                    error=f"Timed out executing '{command}' on '{pt_name}'.",
+                    timed_out=True,
+                )
+                if attempts <= retries:
+                    time.sleep(0.3)
+                    continue
+                return last_outcome
+
+            statuses = res.get("command_statuses", [])
+            cmd_failed = False
+            if isinstance(statuses, list):
+                for entry in statuses:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("command", "").strip().lower() == command.strip().lower()
+                        and int(entry.get("status", 0)) != 0
+                    ):
+                        cmd_failed = True
+                        break
+
+            err_msg = detect_cli_read_error(raw_out)
+            # Distinguish clean prompt return with empty table (e.g. 0 DHCP bindings/ephones)
+            # from genuinely empty output: preserve raw redacted prompt output as evidence.
+            if (
+                err_msg == "Empty CLI output received from device."
+                and prompt
+                and not cmd_failed
+                and raw_out.strip()
+            ):
+                err_msg = None
+
+            if cmd_failed and err_msg is None:
+                err_msg = f"Command '{command}' returned non-zero IOS status on '{pt_name}'."
+
+            # Auto-normalize IOS Exec mode once (e.g., User Exec '>' -> 'enable' after PT
+            # file reopen, or config submode '(config)#' -> 'end') and re-read cleanly.
+            if (
+                (err_msg is not None or cmd_failed)
+                and not mode_normalized
+                and (prompt.endswith(">") or ("(" in prompt and prompt.endswith("#")))
+            ):
+                mode_normalized = True
+                mode_cmd = "enable" if prompt.endswith(">") else "end"
+                self.cli_queue.pace(pt_name)
+                try:
+                    self.router.script_backend.execute_cli(
+                        pt_name,
+                        [mode_cmd],
+                        timeout_seconds=max(float(timeout_seconds), 10.0),
+                    )
+                    attempts = max(0, attempts - 1)
+                    continue
+                except Exception:
+                    pass
+
             return _CliReadOutcome(
                 command=command,
                 raw_evidence=redacted,
-                error=f"Timed out executing '{command}' on '{pt_name}'.",
-                timed_out=True,
+                error=err_msg,
+                timed_out=False,
             )
 
-        statuses = res.get("command_statuses", [])
-        cmd_failed = False
-        if isinstance(statuses, list):
-            for entry in statuses:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("command", "").strip().lower() == command.strip().lower()
-                    and int(entry.get("status", 0)) != 0
-                ):
-                    cmd_failed = True
-                    break
-
-        err_msg = detect_cli_read_error(raw_out)
-        # Distinguish clean prompt return with empty table (e.g. 0 DHCP bindings/ephones)
-        # from genuinely empty output: preserve raw redacted prompt output as evidence.
-        if (
-            err_msg == "Empty CLI output received from device."
-            and prompt
-            and not cmd_failed
-            and raw_out.strip()
-        ):
-            err_msg = None
-
-        if cmd_failed and err_msg is None:
-            err_msg = f"Command '{command}' returned non-zero IOS status on '{pt_name}'."
-
-        return _CliReadOutcome(
+        return last_outcome or _CliReadOutcome(
             command=command,
-            raw_evidence=redacted,
-            error=err_msg,
-            timed_out=False,
+            raw_evidence="",
+            error=f"Failed executing '{command}' on '{pt_name}' after {retries} retries.",
         )
 
     def verify(
@@ -500,15 +580,32 @@ class LabVerifier:
         requirements: dict[str, Any] | list[dict[str, Any]] | VerifyLabRequest,
         *,
         timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = None,
+        poll_interval_seconds: float = 3.0,
         include_activity_grade: bool = True,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Run live CLI verification across all declared requirements and keep raw evidence."""
+        """Run live CLI verification across all declared requirements and keep raw evidence.
+
+        When ``poll_wait_seconds`` is ``None`` (default), waits up to ``45.0`` seconds per
+        failing requirement when connected to a real ``HttpScriptBridgeBackend`` (live PT),
+        and ``0.0`` seconds for offline/mock backends so unit tests remain fast. Passing an
+        explicit float overrides this in both live and mock runs.
+        """
         spec = normalize_requirements_payload(requirements)
         expected_tasks = task_ids if task_ids is not None else spec.task_ids
         task_coverage = _build_task_coverage(expected_tasks, spec.requirements)
         has_script = self.router.has_live_script()
         exec_backend: ExecutionBackend = "script_backend" if has_script else "offline_model"
+        is_real_http_bridge = (
+            self.router is not None
+            and has_script
+            and isinstance(self.router.script_backend, HttpScriptBridgeBackend)
+        )
+        if poll_wait_seconds is None:
+            effective_poll_wait = 45.0 if is_real_http_bridge else 0.0
+        else:
+            effective_poll_wait = max(0.0, float(poll_wait_seconds)) if has_script else 0.0
 
         cache: dict[tuple[str, str], _CliReadOutcome] = {}
         results: list[dict[str, Any]] = []
@@ -516,50 +613,75 @@ class LabVerifier:
         for idx, req in enumerate(spec.requirements, start=1):
             dev_name, command, cacheable = _command_for_requirement(req)
             key = (dev_name, command)
-            if cacheable and key in cache:
-                outcome = cache[key]
-            else:
-                outcome = self._read_cli(dev_name, command, timeout_seconds=timeout_seconds)
-                if (
-                    isinstance(req, TelephonyServiceRequirement)
-                    and outcome.error is not None
-                    and any(
-                        tok in outcome.error.lower()
-                        for tok in ("% invalid", "% unrecognized", "% unknown")
-                    )
-                ):
-                    cfg_key = (dev_name, "show running-config")
-                    cfg_outcome = cache.get(cfg_key)
-                    if cfg_outcome is None:
-                        cfg_outcome = self._read_cli(
-                            dev_name,
-                            "show running-config",
-                            timeout_seconds=timeout_seconds,
-                        )
-                        cache[cfg_key] = cfg_outcome
-                    if cfg_outcome.error is None:
-                        sections = parse_running_config_sections(
-                            cfg_outcome.raw_evidence,
-                            section="telephony-service",
-                        )
-                        sec_text = (
-                            sections[0].text
-                            if sections
-                            else "% Telephony-service is not configured"
-                        )
-                        outcome = _CliReadOutcome(
-                            command=(
-                                "show telephony-service -> fallback: show running-config "
-                                "(telephony-service section)"
-                            ),
-                            raw_evidence=sec_text
-                            if sections
-                            else cfg_outcome.raw_evidence,
-                        )
-                if cacheable:
-                    cache[key] = outcome
 
-            evaluated = _evaluate_requirement(req, outcome)
+            start_req_time = time.monotonic()
+            evaluated: dict[str, Any] | None = None
+            outcome: _CliReadOutcome | None = None
+
+            while True:
+                if cacheable and key in cache:
+                    outcome = cache[key]
+                else:
+                    outcome = self._read_cli(dev_name, command, timeout_seconds=timeout_seconds)
+                    if (
+                        isinstance(req, TelephonyServiceRequirement)
+                        and outcome.error is not None
+                        and any(
+                            tok in outcome.error.lower()
+                            for tok in ("% invalid", "% unrecognized", "% unknown")
+                        )
+                    ):
+                        cfg_key = (dev_name, "show running-config")
+                        cfg_outcome = cache.get(cfg_key)
+                        if cfg_outcome is None:
+                            cfg_outcome = self._read_cli(
+                                dev_name,
+                                "show running-config",
+                                timeout_seconds=timeout_seconds,
+                            )
+                            cache[cfg_key] = cfg_outcome
+                        if cfg_outcome.error is None:
+                            sections = parse_running_config_sections(
+                                cfg_outcome.raw_evidence,
+                                section="telephony-service",
+                            )
+                            sec_text = (
+                                sections[0].text
+                                if sections
+                                else "% Telephony-service is not configured"
+                            )
+                            outcome = _CliReadOutcome(
+                                command=(
+                                    "show telephony-service -> fallback: show running-config "
+                                    "(telephony-service section)"
+                                ),
+                                raw_evidence=sec_text
+                                if sections
+                                else cfg_outcome.raw_evidence,
+                            )
+                    if cacheable and outcome.error is None:
+                        cache[key] = outcome
+
+                assert outcome is not None
+                evaluated = _evaluate_requirement(req, outcome)
+                if evaluated["status"] == "pass":
+                    break
+
+                # Requirement not yet passing; check if polling wait should continue
+                if not has_script or effective_poll_wait <= 0:
+                    break
+                elapsed = time.monotonic() - start_req_time
+                if elapsed >= effective_poll_wait:
+                    # Polling wait expired: final real failure with evidence
+                    break
+
+                # Clear cache entry before next poll iteration to fetch live update
+                if cacheable and key in cache:
+                    del cache[key]
+
+                time.sleep(min(poll_interval_seconds, max(0.1, effective_poll_wait - elapsed)))
+
+            assert evaluated is not None
             evaluated["index"] = idx
             results.append(evaluated)
 
