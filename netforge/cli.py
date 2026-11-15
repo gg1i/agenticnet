@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import json
 import os
 import platform
-import shutil
-import subprocess
 import sys
 from collections.abc import Sequence
-from ctypes import wintypes
 from importlib import resources
 from pathlib import Path
 
 from netforge import __schema_version__, __version__
-from netforge.adapters.discovery import detect_packet_tracer_binary as _detect_packet_tracer_binary
+from netforge.adapters.discovery import (
+    detect_packet_tracer_binary as _detect_packet_tracer_binary,
+)
+from netforge.adapters.discovery import (
+    is_packet_tracer_running as _is_packet_tracer_running,
+)
 from netforge.adapters.script_bridge import (
     HttpScriptBridgeBackend,
     HttpScriptBridgeServer,
@@ -35,46 +36,6 @@ def _is_dir_writable(target: Path) -> bool:
     while not probe.exists() and probe.parent != probe:
         probe = probe.parent
     return probe.exists() and os.access(probe, os.W_OK)
-
-
-def _is_packet_tracer_running() -> bool:
-    """Detect whether a Packet Tracer process is running without mutating system state."""
-    if platform.system() == "Windows":
-        class _ProcessEntry32W(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_size_t),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", ctypes.c_long),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", wintypes.WCHAR * 260),
-            ]
-
-        kernel32 = ctypes.windll.kernel32
-        snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-        if snap == wintypes.HANDLE(-1).value:
-            return False
-        try:
-            entry = _ProcessEntry32W()
-            entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
-            ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
-            while ok:
-                if entry.szExeFile.lower() in {"packettracer.exe", "packettracer"}:
-                    return True
-                ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
-            return False
-        finally:
-            kernel32.CloseHandle(snap)
-
-    pgrep = shutil.which("pgrep")
-    if pgrep:
-        proc = subprocess.run([pgrep, "-f", "PacketTracer"], capture_output=True, check=False)
-        return proc.returncode == 0
-    return False
 
 
 def build_doctor_report(settings: NetForgeSettings) -> dict[str, object]:
@@ -312,7 +273,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         configure_logging(settings.log_level, json_format=bool(getattr(args, "json_logs", False)))
         bridge = HttpScriptBridgeBackend(
-            HttpScriptBridgeServer(session_file=settings.data_dir / "bridge_session.json")
+            HttpScriptBridgeServer(session_file=settings.data_dir / "bridge_session.json"),
+            auto_launch_pt=settings.auto_launch_packet_tracer,
+            packet_tracer_path=settings.packet_tracer_path,
         )
         bridge.start()
         try:

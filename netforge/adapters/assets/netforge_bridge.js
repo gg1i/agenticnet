@@ -206,6 +206,7 @@ function handleCliExec(requestId, params) {
     var stage = "check_boot";
     var yesNoHandled = false;
     var pressReturnSentAt = 0;
+    var lastCmdSentAt = 0;
 
     var onOut = function (_src, args) { chunks.push(String(args.newOutput || "")); };
     var onEnd = function (_src, args) {
@@ -281,22 +282,38 @@ function handleCliExec(requestId, params) {
             if (stage === "send" && !sent) {
                 sent = true;
                 nextIdx = 1;
+                lastCmdSentAt = Date.now();
                 term.enterCommand(String(commands[0]));
                 stage = "wait_done";
             } else if (stage === "wait_done") {
-                // Send commands one at a time: queued keystrokes typed while a
-                // --More-- pager is active get swallowed (observed: "ping" -> "ing").
-                if (nextIdx < commands.length && statuses.length >= nextIdx
-                    && !(rawNow.slice(-32).indexOf("--More--") !== -1)) {
-                    term.enterCommand(String(commands[nextIdx]));
-                    nextIdx += 1;
-                }
                 var tail = rawNow.slice(-32);
                 var atMore = tail.indexOf("--More--") !== -1;
                 if (atMore && rawNow.length !== lastMoreChunkLen) {
                     lastMoreChunkLen = rawNow.length;
                     moreCount += 1;
                     try { term.enterChar(32, 0); } catch (eMore) {}
+                }
+                // Recover if PT drops a `commandEnded` event while an async syslog line
+                // interleaves and the CLI prompt is already back (skip slow ping/traceroute).
+                if (statuses.length < nextIdx && hasCliPrompt && !atMore
+                    && lastCmdSentAt > 0 && (Date.now() - lastCmdSentAt > 1500)) {
+                    var pendingCmd = String(commands[statuses.length] || "");
+                    var pendingLow = pendingCmd.replace(/^\s+|\s+$/g, "").toLowerCase();
+                    var isSlowNetCmd = (
+                        pendingLow.indexOf("ping") === 0
+                        || pendingLow.indexOf("traceroute") === 0
+                    );
+                    if (!isSlowNetCmd) {
+                        statuses.push({ command: pendingCmd, status: 0, non_fatal: true });
+                        lastCmdSentAt = Date.now();
+                    }
+                }
+                // Send commands one at a time: queued keystrokes typed while a
+                // --More-- pager is active get swallowed (observed: "ping" -> "ing").
+                if (nextIdx < commands.length && statuses.length >= nextIdx && !atMore) {
+                    lastCmdSentAt = Date.now();
+                    term.enterCommand(String(commands[nextIdx]));
+                    nextIdx += 1;
                 }
                 var doneByCount = statuses.length >= commands.length && !atMore;
                 if (!waitForPrompt || doneByCount || elapsed >= effectiveTimeoutMs) {
@@ -326,6 +343,103 @@ function handleCliExec(requestId, params) {
     }, 100);
 }
 
+function attachIpPhonePowerOnDevice(dev) {
+    if (!dev) {
+        return { ok: false, powered: false, error: "Null device handle" };
+    }
+    var beforePower = false;
+    try { beforePower = Boolean(dev.getPower && dev.getPower()); } catch (e0) {}
+
+    var suppList = [];
+    try {
+        if (typeof dev.getSupportedModule === "function") {
+            var rawSupp = dev.getSupportedModule();
+            if (rawSupp && typeof rawSupp.length === "number") {
+                for (var si = 0; si < rawSupp.length; si++) {
+                    suppList.push(String(rawSupp[si]));
+                }
+            }
+        }
+    } catch (eSupp) {}
+
+    var adapterNames = ["IP_PHONE_POWER_ADAPTER", "IP-Phone-Power-Adapter"];
+    for (var sj = 0; sj < suppList.length; sj++) {
+        var sEntry = suppList[sj];
+        if (sEntry.toLowerCase().indexOf("power") !== -1 || sEntry.toLowerCase().indexOf("adapter") !== -1) {
+            var token = sEntry.split(",")[0].split(":")[0].split(" ")[0].replace(/^\s+|\s+$/g, "");
+            if (token && adapterNames.indexOf(token) === -1) {
+                adapterNames.unshift(token);
+            }
+        }
+    }
+
+    var rootMod = null;
+    try { rootMod = dev.getRootModule ? dev.getRootModule() : null; } catch (eRm) {}
+    var rootSlotPath = "";
+    var slotCount = 0;
+    if (rootMod) {
+        try { if (typeof rootMod.getSlotPath === "function") { rootSlotPath = String(rootMod.getSlotPath() || ""); } } catch (eSp) {}
+        try { if (typeof rootMod.getSlotCount === "function") { slotCount = Number(rootMod.getSlotCount()) || 0; } } catch (eSc) {}
+    }
+
+    var added = false;
+    var methodUsed = "";
+    for (var ai = 0; ai < adapterNames.length && !added; ai++) {
+        var mName = adapterNames[ai];
+        if (rootMod && typeof rootMod.addModuleAt === "function") {
+            var maxIdx = Math.max(slotCount, 2);
+            for (var idx = 0; idx <= maxIdx; idx++) {
+                try {
+                    if (rootMod.addModuleAt(mName, idx)) {
+                        added = true;
+                        methodUsed = "rootModule.addModuleAt(" + mName + "," + idx + ")";
+                        break;
+                    }
+                } catch (eAma) {}
+            }
+        }
+        if (!added && typeof dev.addModule === "function") {
+            var slotCandidates = [];
+            if (rootSlotPath) { slotCandidates.push(rootSlotPath); }
+            slotCandidates.push("0", "0/0", "1/0", "0/1", "1", "");
+            for (var ci = 0; ci < slotCandidates.length; ci++) {
+                try {
+                    if (dev.addModule(slotCandidates[ci], 11, mName)) {
+                        added = true;
+                        methodUsed = "device.addModule(" + slotCandidates[ci] + ",11," + mName + ")";
+                        break;
+                    }
+                } catch (eAm) {}
+            }
+        }
+    }
+
+    try {
+        if (typeof dev.setPower === "function") {
+            dev.setPower(true);
+        }
+    } catch (ePwr) {}
+
+    var afterPower = false;
+    var afterModCount = 0;
+    try { afterPower = Boolean(dev.getPower && dev.getPower()); } catch (eAp) {}
+    try {
+        if (rootMod && typeof rootMod.getModuleCount === "function") {
+            afterModCount = Number(rootMod.getModuleCount()) || 0;
+        }
+    } catch (eMc) {}
+
+    return {
+        ok: true,
+        powered: afterPower,
+        before_power: beforePower,
+        module_added: added,
+        method_used: methodUsed,
+        module_count: afterModCount,
+        supported_modules: suppList
+    };
+}
+
 function netforgeOnCommand(requestId, opcode, paramsJson) {
     var params = {};
     try { params = paramsJson ? JSON.parse(paramsJson) : {}; } catch (e) {}
@@ -350,9 +464,11 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                 return;
             case "add_device": {
                 var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
+                var dTypeNum = Number(params.device_type || 0);
+                var dModelStr = String(params.model || "");
                 var name = lw.addDevice(
-                    Number(params.device_type || 0),
-                    String(params.model || ""),
+                    dTypeNum,
+                    dModelStr,
                     Number(params.x || 100),
                     Number(params.y || 100)
                 );
@@ -360,11 +476,22 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     sendBridgeResult(requestId, false, {}, "addDevice returned empty name");
                     return;
                 }
-                sendBridgeResult(requestId, true, {
+                var addOut = {
                     device_name: String(name),
-                    model: String(params.model || ""),
-                    device_type: Number(params.device_type || 0)
-                }, null);
+                    model: dModelStr,
+                    device_type: dTypeNum
+                };
+                if (params.auto_power !== false && (dTypeNum === 12 || dModelStr === "7960")) {
+                    try {
+                        var createdDev = ipc.network().getDevice(String(name));
+                        var pwrInfo = attachIpPhonePowerOnDevice(createdDev);
+                        addOut.auto_powered = Boolean(pwrInfo.powered);
+                        addOut.power_details = pwrInfo;
+                    } catch (ePwrAdd) {
+                        addOut.auto_powered = false;
+                    }
+                }
+                sendBridgeResult(requestId, true, addOut, null);
                 return;
             }
             case "create_link": {
@@ -705,6 +832,18 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     devices: devices,
                     links: links
                 }, null);
+                return;
+            }
+            case "attach_ip_phone_power": {
+                var pwrDevName = String(params.device_name || "");
+                var pwrDev = ipc.network().getDevice(pwrDevName);
+                if (!pwrDev) {
+                    sendBridgeResult(requestId, false, {}, "Device not found: " + pwrDevName);
+                    return;
+                }
+                var pwrRes = attachIpPhonePowerOnDevice(pwrDev);
+                pwrRes.device_name = pwrDevName;
+                sendBridgeResult(requestId, true, pwrRes, null);
                 return;
             }
             default:

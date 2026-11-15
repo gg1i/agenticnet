@@ -44,8 +44,20 @@ Opened an external Packet Tracer sample file not constructed by NetForge (`<PT_D
 
 See [`docs/CAPABILITIES.md`](CAPABILITIES.md) for earlier live checks (`sokoban.pka`, `mqttdemo.pka` via `grade_lab` / `open_file`, and `7960` Physical-tab geometry).
 
-- **`gui_attach_ip_phone_power`**: **Experimental / Blocked in isolated agent desktop (`0/5` live `SendInput` attempts)**. Fails closed when `GetForegroundWindow() == 0`; run `scripts/verify_7960_power_reliability.py` directly on an interactive unlocked `WinSta0\Default` Windows session.
-- **Phase 5 AI-Agent End-to-End Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`)**: **Pending live run** (only offline mock harness checks exist today; never reported as live benchmark scores).
+- **`gui_attach_ip_phone_power`**: **Script-first path VERIFIED LIVE; `SendInput` GUI fallback blocked in isolated desktop (`0/5`)**. When live script bridge is connected, `gui_attach_ip_phone_power` delegates directly to `attach_ip_phone_power` (`device.addModule(0/0,11,IP_PHONE_POWER_ADAPTER)` + `setPower(true)` -> `powered=true`, `module_added=true`, `module_count=1`), and `device_add` auto-powers `7960` models on creation. The `SendInput` fallback still fails closed when `GetForegroundWindow() == 0` in isolated agent sessions (use `scripts/verify_7960_power_reliability.py` on an unlocked `WinSta0\Default` session to test the fallback).
+- **Zero-Touch Auto-Bootstrap & Cold PT Launch**: Verified live (`Connected: True` from closed PT via `HttpScriptBridgeBackend.ensure_connected()` + `%LOCALAPPDATA%\netforge\netforge_bridge.pts` sync).
+
+### 1.4 Phase 5 Live 3-Lab Benchmark (`docs/evidence/phase5_live_benchmark.json`) — **VERIFIED LIVE**
+
+Executed end-to-end against fresh Cisco Packet Tracer `8.2.2.0400` instances per lab (`python scripts/run_benchmark.py --all-sample-labs --live --execute-live --output docs/evidence/phase5_live_benchmark.json`), `mock=false`, `mode="live_pt"`, `total=3`, `passed=3`:
+
+| Lab | Mode | Score | Iterations (Baseline -> Solved) | Elapsed | Status |
+|---|---|---|---|---|---|
+| `01_static_routing` | `live_pt` | `8/8` (`100.0%`) | `2` (`0/8` -> `8/8`) | `67.1s` | `passed` |
+| `02_vlan_dhcp` | `live_pt` | `5/5` (`100.0%`) | `2` (`0/5` -> `5/5`) | `79.2s` | `passed` |
+| `03_small_voice` | `live_pt` | `5/5` (`100.0%`) | `2` (`0/5` -> `5/5`) | `50.1s` | `passed` |
+
+Combined total across all 3 sample labs: **`18/18` (`100.0%`)** in **`196.5s`**, including live zero-touch `7960` power attachment and `ephone 1` `REGISTERED` (`1001`) verification in `03_small_voice`.
 
 ---
 

@@ -10,8 +10,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from netforge.diagnostics.benchmark import (
+    LIVE_COMPARABILITY_NOTICE,
     MOCK_COMPARABILITY_NOTICE,
     BenchmarkResult,
+    run_live_pt_benchmark,
     run_offline_mock_benchmark,
 )
 
@@ -56,7 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Attempt live Packet Tracer benchmark (unavailable until PT bridge integration).",
+        help="Target live Packet Tracer benchmark mode (requires --execute-live).",
+    )
+    parser.add_argument(
+        "--execute-live",
+        action="store_true",
+        help="Confirm launching live Cisco Packet Tracer and running real lab benchmarks.",
     )
     parser.add_argument(
         "--output",
@@ -67,19 +74,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Execute offline mock benchmark or report live unavailability cleanly."""
+    """Execute offline mock or live PT benchmark and emit canonical JSON reports."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.live and not args.mock:
+    if args.live and not args.mock and not args.execute_live:
         print(
             json.dumps(
                 {
                     "status": "blocked",
                     "passed": False,
                     "error": (
-                        "Live PT benchmark runs are disabled in offline skeleton mode; "
-                        "re-run with --mock for offline validation or wait for live Phase 5 gate."
+                        "Live PT benchmark requires --execute-live confirmation; "
+                        "re-run with --mock for offline validation or pass --live --execute-live."
                     ),
                 },
                 indent=2,
@@ -94,15 +101,36 @@ def main(argv: list[str] | None = None) -> int:
     else:
         targets = [SAMPLE_LABS[0]]
 
+    live_mode = bool(args.live and args.execute_live and not args.mock)
     results: list[BenchmarkResult] = []
     for target in targets:
-        res = run_offline_mock_benchmark(
-            target,
-            agent_name=args.agent,
-            model_name=args.model,
-            max_iterations=args.max_iterations,
-            time_budget_seconds=args.time_budget,
-        )
+        if args.all_sample_labs:
+            print(f"[benchmark] running {target.stem}...", file=sys.stderr, flush=True)
+        if live_mode:
+            res = run_live_pt_benchmark(
+                target,
+                agent_name=args.agent,
+                model_name=args.model if args.model != "mock" else "live-pt-8.2.2",
+                max_iterations=args.max_iterations,
+                time_budget_seconds=args.time_budget,
+            )
+        else:
+            res = run_offline_mock_benchmark(
+                target,
+                agent_name=args.agent,
+                model_name=args.model,
+                max_iterations=args.max_iterations,
+                time_budget_seconds=args.time_budget,
+            )
+        if args.all_sample_labs:
+            print(
+                f"[benchmark] finished {target.stem}: passed={res.passed} "
+                f"score={res.reference_score.requirements_passed}/"
+                f"{res.reference_score.requirements_total} "
+                f"({res.score_pct:.1f}%, {res.elapsed_seconds:.1f}s)",
+                file=sys.stderr,
+                flush=True,
+            )
         results.append(res)
 
     payload = (
@@ -110,9 +138,11 @@ def main(argv: list[str] | None = None) -> int:
         if len(results) == 1
         else {
             "schema_version": "1.0.0",
-            "mock": True,
-            "mode": "offline_mock",
-            "comparability_notice": MOCK_COMPARABILITY_NOTICE,
+            "mock": not live_mode,
+            "mode": "live_pt" if live_mode else "offline_mock",
+            "comparability_notice": (
+                LIVE_COMPARABILITY_NOTICE if live_mode else MOCK_COMPARABILITY_NOTICE
+            ),
             "total": len(results),
             "passed": sum(1 for r in results if r.passed),
             "results": [r.model_dump(mode="json") for r in results],

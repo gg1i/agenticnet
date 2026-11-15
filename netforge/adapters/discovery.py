@@ -2,9 +2,53 @@
 
 from __future__ import annotations
 
+import ctypes
 import platform
 import shutil
+import subprocess
+from ctypes import wintypes
 from pathlib import Path
+
+
+def is_packet_tracer_running() -> bool:
+    """Detect whether a Packet Tracer process is running without mutating system state."""
+    if platform.system() == "Windows":
+
+        class _ProcessEntry32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        if snap == wintypes.HANDLE(-1).value:
+            return False
+        try:
+            entry = _ProcessEntry32W()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
+            ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                if entry.szExeFile.lower() in {"packettracer.exe", "packettracer"}:
+                    return True
+                ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+            return False
+        finally:
+            kernel32.CloseHandle(snap)
+
+    pgrep = shutil.which("pgrep")
+    if pgrep:
+        proc = subprocess.run([pgrep, "-f", "PacketTracer"], capture_output=True, check=False)
+        return proc.returncode == 0
+    return False
 
 
 def detect_packet_tracer_binary(explicit_path: str | None = None) -> str | None:

@@ -1,0 +1,439 @@
+{
+  "schema_version": "1.0.0",
+  "mock": false,
+  "mode": "live_pt",
+  "comparability_notice": "LIVE BENCHMARK OUTPUT (live_pt): scored against live Cisco Packet Tracer state.",
+  "total": 3,
+  "passed": 3,
+  "results": [
+    {
+      "schema_version": "1.0.0",
+      "run_id": "bench_4b6c9378bccd",
+      "timestamp_utc": "2026-11-15T22:53:18.592590+00:00",
+      "lab": "01_static_routing",
+      "agent": "offline-harness",
+      "model": "live-pt-8.2.2",
+      "mock": false,
+      "mode": "live_pt",
+      "comparability_notice": "LIVE BENCHMARK OUTPUT (live_pt): scored against live Cisco Packet Tracer state.",
+      "tool_profile": "solve_lab",
+      "iterations": 2,
+      "max_iterations": 8,
+      "elapsed_seconds": 67.141,
+      "time_budget_seconds": 900.0,
+      "score_pct": 100.0,
+      "passed": true,
+      "status": "passed",
+      "reference_score": {
+        "source": "human_authored_reference",
+        "reference_path": "benchmarks/reference/01_static_routing.json",
+        "requirements_passed": 8,
+        "requirements_total": 8,
+        "score_pct": 100.0,
+        "all_reference_requirements_passed": true,
+        "grade_percentage": null,
+        "unmet_reference_items": [],
+        "unmet_grader_items": [],
+        "passed": true
+      },
+      "agent_self_report": null,
+      "evidence": {
+        "reference_score": {
+          "source": "human_authored_reference",
+          "reference_path": "benchmarks/reference/01_static_routing.json",
+          "requirements_passed": 8,
+          "requirements_total": 8,
+          "score_pct": 100.0,
+          "all_reference_requirements_passed": true,
+          "grade_percentage": null,
+          "unmet_reference_items": [],
+          "unmet_grader_items": [],
+          "passed": true
+        },
+        "agent_self_report": null,
+        "verify_summary": {
+          "total": 8,
+          "passed": 8,
+          "failed": 0,
+          "errors": 0
+        },
+        "grade_summary": {
+          "state": "unavailable",
+          "readable": false,
+          "percentage_complete": null,
+          "items_count": null,
+          "correct_items_count": null,
+          "reason": "Activity completion status is unavailable."
+        },
+        "task_coverage": {
+          "expected_tasks": [
+            "r1_gi00_up",
+            "r1_lo0_ip",
+            "r2_gi00_up",
+            "r2_lo0_ip",
+            "r1_static_route",
+            "r2_static_route",
+            "r1_ping_r2_lan",
+            "r2_ping_r1_lan"
+          ],
+          "covered_tasks": [
+            "r1_gi00_up",
+            "r1_lo0_ip",
+            "r2_gi00_up",
+            "r2_lo0_ip",
+            "r1_static_route",
+            "r2_static_route",
+            "r1_ping_r2_lan",
+            "r2_ping_r1_lan"
+          ],
+          "uncovered_tasks": [],
+          "extra_task_ids": [],
+          "untagged_requirements": 0,
+          "requirements_by_task": {
+            "r1_gi00_up": [
+              "r1_gi00_up"
+            ],
+            "r1_lo0_ip": [
+              "r1_lo0_ip"
+            ],
+            "r2_gi00_up": [
+              "r2_gi00_up"
+            ],
+            "r2_lo0_ip": [
+              "r2_lo0_ip"
+            ],
+            "r1_static_route": [
+              "r1_static_route"
+            ],
+            "r2_static_route": [
+              "r2_static_route"
+            ],
+            "r1_ping_r2_lan": [
+              "r1_ping_r2_lan"
+            ],
+            "r2_ping_r1_lan": [
+              "r2_ping_r1_lan"
+            ]
+          },
+          "coverage_ratio": 1.0,
+          "all_tasks_covered": true
+        },
+        "what_is_left": {
+          "failing_requirements": [],
+          "unmet_grader_items": [],
+          "uncovered_tasks": [],
+          "grader_unavailable_reason": "Activity completion status is unavailable.",
+          "is_empty": true
+        },
+        "raw_outputs": [
+          "[pass] R1:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nGigabitEthernet0/0     10.10.12.1      YES manual up                    up \nGigabitEthernet0/1     unassigned      YES unset  administratively down down \nGigabitEthernet0/2     unassigned      YES unset  administratively down down \nLoopback0              10.10.1.1       YES manual up                    up \nVlan1                  unassigned      YES unset  administratively down down\nR1#",
+          "[pass] R1:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nGigabitEthernet0/0     10.10.12.1      YES manual up                    up \nGigabitEthernet0/1     unassigned      YES unset  administratively down down \nGigabitEthernet0/2     unassigned      YES unset  administratively down down \nLoopback0              10.10.1.1       YES manual up                    up \nVlan1                  unassigned      YES unset  administratively down down\nR1#",
+          "[pass] R2:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nGigabitEthernet0/0     10.10.12.2      YES manual up                    up \nGigabitEthernet0/1     unassigned      YES unset  administratively down down \nGigabitEthernet0/2     unassigned      YES unset  administratively down down \nLoopback0              10.10.2.1       YES manual up                    up \nVlan1                  unassigned      YES unset  administratively down down\nR2#",
+          "[pass] R2:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nGigabitEthernet0/0     10.10.12.2      YES manual up                    up \nGigabitEthernet0/1     unassigned      YES unset  administratively down down \nGigabitEthernet0/2     unassigned      YES unset  administratively down down \nLoopback0              10.10.2.1       YES manual up                    up \nVlan1                  unassigned      YES unset  administratively down down\nR2#",
+          "[pass] R1:show ip route\nshow ip route\nCodes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2\n       E1 - OSPF external type 1, E2 - OSPF external type 2, E - EGP\n       i - IS-IS, L1 - IS-IS level-1, L2 - IS-IS level-2, ia - IS-IS inter area\n       * - candidate default, U - per-user static route, o - ODR\n       P - periodic downloaded static route\n\nGateway of last resort is not set\n\n     10.0.0.0/8 is variably subnetted, 5 subnets, 3 masks\nC       10.10.1.0/24 is directly connected, Loopback0\nL       10.10.1.1/32 is directly connected, Loopback0\nS       10.10.2.0/24 [1/0] via 10.10.12.2\nC       10.10.12.0/30 is directly connected, GigabitEthernet0/0\nL       10.10.12.1/32 is directly connected, GigabitEthernet0/0\n\nR1#",
+          "[pass] R2:show ip route\nshow ip route\nCodes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2\n       E1 - OSPF external type 1, E2 - OSPF external type 2, E - EGP\n       i - IS-IS, L1 - IS-IS level-1, L2 - IS-IS level-2, ia - IS-IS inter area\n       * - candidate default, U - per-user static route, o - ODR\n       P - periodic downloaded static route\n\nGateway of last resort is not set\n\n     10.0.0.0/8 is variably subnetted, 5 subnets, 3 masks\nS       10.10.1.0/24 [1/0] via 10.10.12.1\nC       10.10.2.0/24 is directly connected, Loopback0\nL       10.10.2.1/32 is directly connected, Loopback0\nC       10.10.12.0/30 is directly connected, GigabitEthernet0/0\nL       10.10.12.2/32 is directly connected, GigabitEthernet0/0\n\nR2#",
+          "[pass] R1:ping 10.10.2.1\nping 10.10.2.1\n\nType escape sequence to abort.\nSending 5, 100-byte ICMP Echos to 10.10.2.1, timeout is 2 seconds:\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 0/0/0 ms\n\nR1#",
+          "[pass] R2:ping 10.10.1.1\nping 10.10.1.1\n\nType escape sequence to abort.\nSending 5, 100-byte ICMP Echos to 10.10.1.1, timeout is 2 seconds:\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 0/0/0 ms\n\nR2#",
+          "[grader] unavailable: Activity completion status is unavailable."
+        ],
+        "iteration_history": [
+          {
+            "iteration": 1,
+            "elapsed_seconds": 52.156,
+            "overall_passed": false,
+            "verify_passed": 0,
+            "verify_total": 8,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 8
+          },
+          {
+            "iteration": 2,
+            "elapsed_seconds": 67.141,
+            "overall_passed": true,
+            "verify_passed": 8,
+            "verify_total": 8,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 0
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "schema_version": "1.0.0",
+      "run_id": "bench_6c5854b930c8",
+      "timestamp_utc": "2026-11-15T22:54:45.593498+00:00",
+      "lab": "02_vlan_dhcp",
+      "agent": "offline-harness",
+      "model": "live-pt-8.2.2",
+      "mock": false,
+      "mode": "live_pt",
+      "comparability_notice": "LIVE BENCHMARK OUTPUT (live_pt): scored against live Cisco Packet Tracer state.",
+      "tool_profile": "solve_lab",
+      "iterations": 2,
+      "max_iterations": 8,
+      "elapsed_seconds": 79.203,
+      "time_budget_seconds": 900.0,
+      "score_pct": 100.0,
+      "passed": true,
+      "status": "passed",
+      "reference_score": {
+        "source": "human_authored_reference",
+        "reference_path": "benchmarks/reference/02_vlan_dhcp.json",
+        "requirements_passed": 5,
+        "requirements_total": 5,
+        "score_pct": 100.0,
+        "all_reference_requirements_passed": true,
+        "grade_percentage": null,
+        "unmet_reference_items": [],
+        "unmet_grader_items": [],
+        "passed": true
+      },
+      "agent_self_report": null,
+      "evidence": {
+        "reference_score": {
+          "source": "human_authored_reference",
+          "reference_path": "benchmarks/reference/02_vlan_dhcp.json",
+          "requirements_passed": 5,
+          "requirements_total": 5,
+          "score_pct": 100.0,
+          "all_reference_requirements_passed": true,
+          "grade_percentage": null,
+          "unmet_reference_items": [],
+          "unmet_grader_items": [],
+          "passed": true
+        },
+        "agent_self_report": null,
+        "verify_summary": {
+          "total": 5,
+          "passed": 5,
+          "failed": 0,
+          "errors": 0
+        },
+        "grade_summary": {
+          "state": "unavailable",
+          "readable": false,
+          "percentage_complete": null,
+          "items_count": null,
+          "correct_items_count": null,
+          "reason": "Activity completion status is unavailable."
+        },
+        "task_coverage": {
+          "expected_tasks": [
+            "sw1_vlan20",
+            "gw_subif_ip",
+            "gw_dhcp_pool_cfg",
+            "gw_dhcp_lease",
+            "client_ping_gw"
+          ],
+          "covered_tasks": [
+            "sw1_vlan20",
+            "gw_subif_ip",
+            "gw_dhcp_pool_cfg",
+            "gw_dhcp_lease",
+            "client_ping_gw"
+          ],
+          "uncovered_tasks": [],
+          "extra_task_ids": [],
+          "untagged_requirements": 0,
+          "requirements_by_task": {
+            "sw1_vlan20": [
+              "sw1_vlan20"
+            ],
+            "gw_subif_ip": [
+              "gw_subif_ip"
+            ],
+            "gw_dhcp_pool_cfg": [
+              "gw_dhcp_pool_cfg"
+            ],
+            "gw_dhcp_lease": [
+              "gw_dhcp_lease"
+            ],
+            "client_ping_gw": [
+              "client_ping_gw"
+            ]
+          },
+          "coverage_ratio": 1.0,
+          "all_tasks_covered": true
+        },
+        "what_is_left": {
+          "failing_requirements": [],
+          "unmet_grader_items": [],
+          "uncovered_tasks": [],
+          "grader_unavailable_reason": "Activity completion status is unavailable.",
+          "is_empty": true
+        },
+        "raw_outputs": [
+          "[pass] SW1:show vlan brief\nshow vlan brief\n\nVLAN Name                             Status    Ports\n---- -------------------------------- --------- -------------------------------\n1    default                          active    Fa0/1, Fa0/3, Fa0/4, Fa0/5\n                                                Fa0/6, Fa0/7, Fa0/8, Fa0/9\n                                                Fa0/10, Fa0/11, Fa0/12, Fa0/13\n                                                Fa0/14, Fa0/15, Fa0/16, Fa0/17\n                                                Fa0/18, Fa0/19, Fa0/20, Fa0/21\n                                                Fa0/22, Fa0/23, Fa0/24, Gig0/2\n20   WORKSTATIONS                     active    Fa0/2\n1002 fddi-default                     active    \n1003 token-ring-default               active    \n1004 fddinet-default                  active    \n1005 trnet-default                    active    \nSW1#",
+          "[pass] GW:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nGigabitEthernet0/0     unassigned      YES unset  up                    up \nGigabitEthernet0/0.20  172.16.20.1     YES manual up                    up \nGigabitEthernet0/1     unassigned      YES unset  administratively down down \nGigabitEthernet0/2     unassigned      YES unset  administratively down down \nVlan1                  unassigned      YES unset  administratively down down\nGW#",
+          "[pass] GW:show running-config\nshow running-config\nBuilding configuration...\n\nCurrent configuration : 930 bytes\n!\nversion 15.1\nno service timestamps log datetime msec\nno service timestamps debug datetime msec\nno service password-encryption\n!\nhostname GW\n!\n!\n!\n!\nip dhcp excluded-address 172.16.20.1 172.16.20.10\n!\nip dhcp pool WORKSTATIONS\n network 172.16.20.0 255.255.255.0\n default-router 172.16.20.1\n!\n!\n!\n --More--  ip cef\nno ipv6 cef\n!\n!\n!\n!\nlicense udi pid CISCO2911/K9 sn FTX1524W4BE-\n!\n!\n!\n!\n!\n!\n!\n!\n!\nno ip domain-lookup\n!\n!\nspanning-tree mode pvst\n!\n!\n --More-- !\n!\n!\n!\ninterface GigabitEthernet0/0\n no ip address\n duplex auto\n speed auto\n!\ninterface GigabitEthernet0/0.20\n encapsulation dot1Q 20\n ip address 172.16.20.1 255.255.255.0\n!\ninterface GigabitEthernet0/1\n no ip address\n duplex auto\n speed auto\n shutdown\n!\ninterface GigabitEthernet0/2\n no ip address\n duplex auto\n --More--  speed auto\n shutdown\n!\ninterface Vlan1\n no ip address\n shutdown\n!\nip classless\n!\nip flow-export version 9\n!\n!\n!\n!\n!\n!\n!\nline con 0\n!\nline aux 0\n!\nline vty 0 4\n --More--  login\n!\n!\n!\nend\n\n\nGW#GW#GW#GW#",
+          "[pass] GW:show ip dhcp binding\nshow ip dhcp binding\nIP address       Client-ID/              Lease expiration        Type\n                 Hardware address\n172.16.20.11     0003.E4E2.1201           --                     Automatic\nGW#",
+          "[pass] CLIENT:ping 172.16.20.1\nping 172.16.20.1\n\nType escape sequence to abort.\nSending 5, 100-byte ICMP Echos to 172.16.20.1, timeout is 2 seconds:\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 0/0/3 ms\n\nCLIENT#",
+          "[grader] unavailable: Activity completion status is unavailable."
+        ],
+        "iteration_history": [
+          {
+            "iteration": 1,
+            "elapsed_seconds": 48.203,
+            "overall_passed": false,
+            "verify_passed": 0,
+            "verify_total": 5,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 5
+          },
+          {
+            "iteration": 2,
+            "elapsed_seconds": 79.203,
+            "overall_passed": true,
+            "verify_passed": 5,
+            "verify_total": 5,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 0
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "schema_version": "1.0.0",
+      "run_id": "bench_5dfb1b39f27b",
+      "timestamp_utc": "2026-11-15T22:55:43.582967+00:00",
+      "lab": "03_small_voice",
+      "agent": "offline-harness",
+      "model": "live-pt-8.2.2",
+      "mock": false,
+      "mode": "live_pt",
+      "comparability_notice": "LIVE BENCHMARK OUTPUT (live_pt): scored against live Cisco Packet Tracer state.",
+      "tool_profile": "solve_lab",
+      "iterations": 2,
+      "max_iterations": 8,
+      "elapsed_seconds": 50.125,
+      "time_budget_seconds": 900.0,
+      "score_pct": 100.0,
+      "passed": true,
+      "status": "passed",
+      "reference_score": {
+        "source": "human_authored_reference",
+        "reference_path": "benchmarks/reference/03_small_voice.json",
+        "requirements_passed": 5,
+        "requirements_total": 5,
+        "score_pct": 100.0,
+        "all_reference_requirements_passed": true,
+        "grade_percentage": null,
+        "unmet_reference_items": [],
+        "unmet_grader_items": [],
+        "passed": true
+      },
+      "agent_self_report": null,
+      "evidence": {
+        "reference_score": {
+          "source": "human_authored_reference",
+          "reference_path": "benchmarks/reference/03_small_voice.json",
+          "requirements_passed": 5,
+          "requirements_total": 5,
+          "score_pct": 100.0,
+          "all_reference_requirements_passed": true,
+          "grade_percentage": null,
+          "unmet_reference_items": [],
+          "unmet_grader_items": [],
+          "passed": true
+        },
+        "agent_self_report": null,
+        "verify_summary": {
+          "total": 5,
+          "passed": 5,
+          "failed": 0,
+          "errors": 0
+        },
+        "grade_summary": {
+          "state": "unavailable",
+          "readable": false,
+          "percentage_complete": null,
+          "items_count": null,
+          "correct_items_count": null,
+          "reason": "Activity completion status is unavailable."
+        },
+        "task_coverage": {
+          "expected_tasks": [
+            "sw_voice_vlan100",
+            "r_voice_subif_ip",
+            "r_voice_option150",
+            "r_voice_telephony",
+            "r_voice_ephone1"
+          ],
+          "covered_tasks": [
+            "sw_voice_vlan100",
+            "r_voice_subif_ip",
+            "r_voice_option150",
+            "r_voice_telephony",
+            "r_voice_ephone1"
+          ],
+          "uncovered_tasks": [],
+          "extra_task_ids": [],
+          "untagged_requirements": 0,
+          "requirements_by_task": {
+            "sw_voice_vlan100": [
+              "sw_voice_vlan100"
+            ],
+            "r_voice_subif_ip": [
+              "r_voice_subif_ip"
+            ],
+            "r_voice_option150": [
+              "r_voice_option150"
+            ],
+            "r_voice_telephony": [
+              "r_voice_telephony"
+            ],
+            "r_voice_ephone1": [
+              "r_voice_ephone1"
+            ]
+          },
+          "coverage_ratio": 1.0,
+          "all_tasks_covered": true
+        },
+        "what_is_left": {
+          "failing_requirements": [],
+          "unmet_grader_items": [],
+          "uncovered_tasks": [],
+          "grader_unavailable_reason": "Activity completion status is unavailable.",
+          "is_empty": true
+        },
+        "raw_outputs": [
+          "[pass] SW_VOICE:show vlan brief\nshow vlan brief\n\nVLAN Name                             Status    Ports\n---- -------------------------------- --------- -------------------------------\n1    default                          active    Fa0/1, Fa0/2, Fa0/3, Fa0/4\n                                                Fa0/5, Fa0/6, Fa0/7, Fa0/8\n                                                Fa0/9, Fa0/10, Fa0/11, Fa0/12\n                                                Fa0/13, Fa0/14, Fa0/15, Fa0/16\n                                                Fa0/17, Fa0/18, Fa0/19, Fa0/20\n                                                Fa0/21, Fa0/22, Fa0/23, Fa0/24\n                                                Gig0/2\n100  VOICE                            active    Fa0/1\n1002 fddi-default                     active    \n1003 token-ring-default               active    \n1004 fddinet-default                  active    \n1005 trnet-default                    active    \nSW_VOICE#",
+          "[pass] R_VOICE:show ip interface brief\nshow ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol \nFastEthernet0/0        unassigned      YES unset  up                    up \nFastEthernet0/0.100    10.50.100.1     YES manual up                    up \nFastEthernet0/1        unassigned      YES unset  administratively down down \nVlan1                  unassigned      YES unset  administratively down down\nR_VOICE#",
+          "[pass] R_VOICE:show running-config\nshow running-config\nBuilding configuration...\n\nCurrent configuration : 1099 bytes\n!\nversion 12.4\nno service timestamps log datetime msec\nno service timestamps debug datetime msec\nno service password-encryption\n!\nhostname R_VOICE\n!\n!\n!\n!\nip dhcp excluded-address 10.50.100.1 10.50.100.10\n!\nip dhcp pool VOICE_POOL\n network 10.50.100.0 255.255.255.0\n default-router 10.50.100.1\n option 150 ip 10.50.100.1\n!\n!\n --More--  !\nip cef\nno ipv6 cef\n!\n!\n!\n!\n!\n!\n!\n!\n!\n!\nno ip domain-lookup\n!\n!\nspanning-tree mode pvst\n!\n!\n!\n!\n!\n --More-- !\ninterface FastEthernet0/0\n no ip address\n duplex auto\n speed auto\n!\ninterface FastEthernet0/0.100\n encapsulation dot1Q 100\n ip address 10.50.100.1 255.255.255.0\n!\ninterface FastEthernet0/1\n no ip address\n duplex auto\n speed auto\n shutdown\n!\ninterface Vlan1\n no ip address\n shutdown\n!\nip classless\n!\n --More-- ip flow-export version 9\n!\n!\n!\n!\n!\n!\n!\n!\ntelephony-service\n max-ephones 5\n max-dn 10\n ip source-address 10.50.100.1 port 2000\n auto assign 1 to 5\n create cnf-files version-stamp Jan 01 2002 00:00:00\n!\nephone-dn 1\n number 1001\n!\nephone 1\n device-security-mode none\n mac-address 0001.1111.2222\n --More--  type 7960\n button 1:1\n!\nline con 0\n!\nline aux 0\n!\nline vty 0 4\n login\n!\n!\n!\nend\n\n\nR_VOICE#R_VOICE#R_VOICE#R_VOICE#",
+          "[pass] R_VOICE:show telephony-service -> fallback: show running-config (telephony-service section)\ntelephony-service\nmax-ephones 5\nmax-dn 10\nip source-address 10.50.100.1 port 2000\nauto assign 1 to 5\ncreate cnf-files version-stamp Jan 01 2002 00:00:00",
+          "[pass] R_VOICE:show ephone\nshow ephone\n\nephone-1 Mac:0001.1111.2222 TCP socket:[1] activeLine:1 UNREGISTERED\nmediaActive:0 offhook:1 ringing:0 reset:0 reset_sent:0 paging 0 debug:0 caps:8\nIP:0.0.0.0 0 7960   keepalive 43 max_line 2\n button 1: dn 1  number 1001 CH1   DOWN\nR_VOICE#",
+          "[grader] unavailable: Activity completion status is unavailable."
+        ],
+        "iteration_history": [
+          {
+            "iteration": 1,
+            "elapsed_seconds": 35.11,
+            "overall_passed": false,
+            "verify_passed": 0,
+            "verify_total": 5,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 5
+          },
+          {
+            "iteration": 2,
+            "elapsed_seconds": 50.125,
+            "overall_passed": true,
+            "verify_passed": 5,
+            "verify_total": 5,
+            "coverage_ratio": 1.0,
+            "grade_percentage": null,
+            "remaining_items": 0
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

@@ -141,9 +141,9 @@ Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offl
 
 | Evaluation Track | Mode | Result (Live Only) | Reference |
 |---|---|---|---|
-| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading; `gui_attach_ip_phone_power` **experimental: not yet validated by the 5-attempt live protocol**) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
+| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading; `gui_attach_ip_phone_power` **verified live** via script-first `attach_ip_phone_power` / `7960` auto-power, with experimental `SendInput` fallback) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
 | Phase 5 `lab_open` / `lab_save` / `lab_status` Persistence & External `.pkt` Discovery (`list_devices` / `lab_snapshot`) | `live_pt` | **Verified Live** (`6/6` requirements pass pre-save & post-reopen after closing/restarting PT; `dhcp_reservation.pkt`: `10` devices, `4` links, `23` active interfaces) | [TEST_REPORT.md](docs/TEST_REPORT.md) |
-| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Pending live run** (offline mock harness only; zero live AI-agent benchmark runs recorded yet) | [BENCHMARK.md](docs/BENCHMARK.md) |
+| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Verified Live (`3/3` labs, `18/18` checks — `100.0%`)**: `01_static_routing` (`8/8`, `67.1s`), `02_vlan_dhcp` (`5/5`, `79.2s`), `03_small_voice` (`5/5`, `50.1s`) with zero-touch PT auto-launch & `7960` power | [phase5_live_benchmark.json](docs/evidence/phase5_live_benchmark.json) |
 
 ---
 

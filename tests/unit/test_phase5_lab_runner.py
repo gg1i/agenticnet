@@ -638,3 +638,158 @@ def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
     assert "hostname R1-LIVE" in ux_outcome.raw_evidence
     assert ux_backend.sent_cmds == ["show running-config", "enable", "show running-config"]
 
+
+@pytest.mark.unit
+def test_attach_ip_phone_power_script_first_and_gui_fallback(tmp_path: Path) -> None:
+    from netforge.core.exceptions import AdapterUnavailableError
+    from netforge.gui.adapter import NullGuiBackend
+
+    assert "attach_ip_phone_power" in ALLOWED_OPCODES
+    bridge_meta = HttpScriptBridgeBackend()
+    assert "attach_ip_phone_power" in bridge_meta.backend_status().capabilities
+
+    class _PhonePowerBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.powered_calls: list[str] = []
+
+        def attach_ip_phone_power(
+            self, device_name: str, *, timeout_seconds: float = 25.0
+        ) -> dict[str, Any]:
+            self.powered_calls.append(device_name)
+            return {
+                "ok": True,
+                "backend": "script_http",
+                "device_name": device_name,
+                "powered": True,
+                "module_added": True,
+                "method_used": "rootModule.addModuleAt(IP_PHONE_POWER_ADAPTER,0)",
+            }
+
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf", tool_profile="solve_lab")
+    backend = _PhonePowerBackend()
+    gui_mock = NullGuiBackend(settings)
+    gui_mock.attach_ip_phone_power = MagicMock(  # type: ignore[attr-defined]
+        side_effect=AssertionError("GUI fallback must not be called when ScriptBackend works")
+    )
+    server, runtime = create_mcp_server(settings, gui_backend=gui_mock, script_backend=backend)
+    runtime.router.device_aliases["IP_PHONE1"] = "IP Phone0"
+
+    res = _call_tool_sync(server, "gui_attach_ip_phone_power", {"device_name": "IP_PHONE1"})
+    assert res["success"] is True
+    assert res["execution_backend"] == "script_backend"
+    assert res["state_level"] == "verified"
+    assert res["data"]["powered"] is True
+    assert backend.powered_calls == ["IP Phone0"]
+
+    # When ScriptBackend cannot attach power, falls back cleanly to GuiBackend
+    class _UnconnectedPhoneBackend(_MockLabBackend):
+        def is_connected(self) -> bool:
+            return False
+
+        def attach_ip_phone_power(
+            self, device_name: str, *, timeout_seconds: float = 25.0
+        ) -> dict[str, Any]:
+            raise AdapterUnavailableError("disconnected")
+
+    gui_fallback = NullGuiBackend(settings)
+    fallback_spy = MagicMock(
+        return_value={
+            "state_level": "executed",
+            "device_name": "IP_PHONE1",
+            "pt_device_title": "IP_PHONE1",
+            "hwnd": 1,
+            "dpi": 96,
+            "socket_roi_diff_ratio": 0.25,
+        }
+    )
+    gui_fallback.attach_ip_phone_power = fallback_spy  # type: ignore[attr-defined]
+    server2, _ = create_mcp_server(
+        settings, gui_backend=gui_fallback, script_backend=_UnconnectedPhoneBackend()
+    )
+    res2 = _call_tool_sync(server2, "gui_attach_ip_phone_power", {"device_name": "IP_PHONE1"})
+    assert res2["success"] is True
+    assert res2["execution_backend"] == "gui_backend"
+    assert fallback_spy.called
+
+
+@pytest.mark.unit
+def test_zero_touch_auto_launch_and_auto_create_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netforge.adapters.router import BackendRouter
+    from netforge.core.exceptions import ProjectNotOpenError
+    from netforge.storage.project_manager import ProjectManager
+
+    # 1. Settings defaults and env overrides
+    default_s = NetForgeSettings(data_dir=tmp_path / ".nf1")
+    assert default_s.auto_launch_packet_tracer is True
+    assert default_s.auto_create_project is True
+
+    monkeypatch.setenv("NETFORGE_AUTO_LAUNCH_PT", "0")
+    monkeypatch.setenv("NETFORGE_AUTO_CREATE_PROJECT", "false")
+    env_s = NetForgeSettings.from_env()
+    assert env_s.auto_launch_packet_tracer is False
+    assert env_s.auto_create_project is False
+
+    # 2. ProjectManager auto-creates default workspace and re-opens it automatically
+    pm = ProjectManager(default_s)
+    meta, _, _, _ = pm.require_active()
+    assert meta.project_id == "default-workspace"
+    pm.close_project()
+    meta2, _, _, _ = pm.require_active()
+    assert meta2.project_id == "default-workspace"
+
+    pm_manual = ProjectManager(
+        NetForgeSettings(data_dir=tmp_path / ".nf2", auto_create_project=False)
+    )
+    with pytest.raises(ProjectNotOpenError):
+        pm_manual.require_active()
+
+    # 3. BackendRouter.ensure_live_script() auto-connects and lab_open attaches discovery
+    class _AutoConnectingBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self._connected = False
+            self.ensure_calls = 0
+
+        def is_connected(self) -> bool:
+            return self._connected
+
+        def ensure_connected(self, *, timeout_seconds: float = 40.0) -> bool:
+            self.ensure_calls += 1
+            self._connected = True
+            return True
+
+        def list_devices(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "device_count": 1,
+                "link_count": 0,
+                "devices": [
+                    {
+                        "name": "Router0",
+                        "model": "2911",
+                        "type": "router",
+                        "hostname": "R1",
+                        "ports": [],
+                    }
+                ],
+                "links": [],
+            }
+
+    auto_b = _AutoConnectingBackend()
+    router = BackendRouter(script_backend=auto_b)
+    backend_used, add_data, _, _ = router.add_device("R1", "2911")
+    assert backend_used == "script_backend"
+    assert auto_b.ensure_calls == 1
+    assert add_data["device_name"] == "2911"
+
+    srv, _ = create_mcp_server(
+        NetForgeSettings(data_dir=tmp_path / ".nf3", tool_profile="solve_lab"),
+        script_backend=auto_b,
+    )
+    opened = _call_tool_sync(srv, "lab_open", {"path": "sample.pkt"})
+    assert opened["success"] is True
+    assert opened["data"]["discovered_devices"]["device_count"] == 1
+

@@ -51,7 +51,7 @@ class RoutedConsoleTransport(ConsoleTransport):
         return self.router.has_live_script() or self.fallback.is_available()
 
     def open_device(self, device_name: str, profile: DeviceConsoleProfile) -> str:
-        if self.router.has_live_script() and self.router.script_backend is not None:
+        if self.router.ensure_live_script() and self.router.script_backend is not None:
             pt_name = self.router.resolve_pt_device_name(device_name)
             try:
                 res = self.router.script_backend.execute_cli(
@@ -73,7 +73,7 @@ class RoutedConsoleTransport(ConsoleTransport):
         return text
 
     def send_line(self, device_name: str, line: str, *, timeout_s: float = 5.0) -> str:
-        if self.router.has_live_script() and self.router.script_backend is not None:
+        if self.router.ensure_live_script() and self.router.script_backend is not None:
             pt_name = self.router.resolve_pt_device_name(device_name)
             try:
                 res = self.router.script_backend.execute_cli(
@@ -95,7 +95,7 @@ class RoutedConsoleTransport(ConsoleTransport):
         return text
 
     def read_buffer(self, device_name: str) -> str:
-        if self.router.has_live_script() and self.router.script_backend is not None:
+        if self.router.ensure_live_script() and self.router.script_backend is not None:
             if device_name in self._last_output:
                 self.last_execution_backend = "script_backend"
                 return self._last_output[device_name]
@@ -143,6 +143,16 @@ class BackendRouter:
         """Return True when a ScriptBackend is attached and actively connected to PT."""
         return self.script_backend is not None and self.script_backend.is_connected()
 
+    def ensure_live_script(self) -> bool:
+        """Return True if ScriptBackend is live, auto-launching Packet Tracer when configured."""
+        if self.has_live_script():
+            return True
+        if self.script_backend is not None:
+            ensure_fn = getattr(self.script_backend, "ensure_connected", None)
+            if callable(ensure_fn):
+                ensure_fn()
+        return self.has_live_script()
+
     def has_live_gui(self) -> bool:
         """Return True when a live GuiBackend is available."""
         return self.gui_backend is not None and self.gui_backend.is_available()
@@ -169,7 +179,7 @@ class BackendRouter:
                 ["Dry-run: recorded device in topology model without live PT dispatch."],
                 [],
             )
-        if not self.has_live_script() or self.script_backend is None:
+        if not self.ensure_live_script() or self.script_backend is None:
             return ("offline_model", {}, [], [])
 
         cat_str = category.value if isinstance(category, DeviceCategory) else str(category)
@@ -240,7 +250,7 @@ class BackendRouter:
                 ["Dry-run: recorded link in topology model without live PT dispatch."],
                 [],
             )
-        if not self.has_live_script() or self.script_backend is None:
+        if not self.ensure_live_script() or self.script_backend is None:
             return ("offline_model", {}, [], [])
 
         pt_d1 = self.resolve_pt_device_name(source_device)
@@ -289,7 +299,7 @@ class BackendRouter:
     ) -> tuple[ExecutionBackend, str, list[str], list[str]]:
         """Read running-config or a show command live via ScriptBackend or console fallback."""
         pt_name = self.resolve_pt_device_name(device_name)
-        if self.has_live_script() and self.script_backend is not None:
+        if self.ensure_live_script() and self.script_backend is not None:
             res = self.script_backend.execute_cli(
                 pt_name,
                 ["terminal length 0", command],
@@ -330,7 +340,7 @@ class BackendRouter:
 
     def read_activity_status(self) -> dict[str, Any]:
         """Read .pka grader state fail-closed: never attempt password or lock bypass."""
-        if not self.has_live_script() or self.script_backend is None:
+        if not self.ensure_live_script() or self.script_backend is None:
             return {
                 "state": "unavailable",
                 "readable": False,
@@ -397,7 +407,7 @@ class BackendRouter:
         cleaned = str(path or "").strip()
         if not cleaned:
             raise ValidationError("Lab file path must not be empty.")
-        if self.has_live_script() and self.script_backend is not None:
+        if self.ensure_live_script() and self.script_backend is not None:
             open_fn = getattr(self.script_backend, "open_file", None)
             if not callable(open_fn):
                 raise AdapterUnavailableError(
@@ -427,7 +437,7 @@ class BackendRouter:
         cleaned = str(path).strip() if path is not None else None
         if path is not None and not cleaned:
             raise ValidationError("Destination path must not be blank when provided.")
-        if self.has_live_script() and self.script_backend is not None:
+        if self.ensure_live_script() and self.script_backend is not None:
             save_fn = getattr(self.script_backend, "save_file", None)
             if not callable(save_fn):
                 raise AdapterUnavailableError(
@@ -459,7 +469,7 @@ class BackendRouter:
         timeout_seconds: float = 30.0,
     ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
         """Query live Packet Tracer devices, links, and interface statuses through ScriptBackend."""
-        if self.has_live_script() and self.script_backend is not None:
+        if self.ensure_live_script() and self.script_backend is not None:
             list_fn = getattr(self.script_backend, "list_devices", None)
             if not callable(list_fn):
                 raise AdapterUnavailableError(
@@ -482,5 +492,37 @@ class BackendRouter:
             )
         raise AdapterUnavailableError(
             "Cannot inspect live devices: no live ScriptBackend connected.",
+            remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
+        )
+
+    def attach_ip_phone_power(
+        self,
+        device_name: str,
+        *,
+        timeout_seconds: float = 25.0,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Attach AC power adapter onto a 7960 IP Phone via live ScriptBackend."""
+        if self.ensure_live_script() and self.script_backend is not None:
+            pt_name = self.resolve_pt_device_name(device_name)
+            data = dict(
+                self.script_backend.attach_ip_phone_power(
+                    pt_name,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            powered = bool(data.get("powered", False))
+            method = str(data.get("method_used") or "script_bridge")
+            return (
+                "script_backend",
+                data,
+                [
+                    f"Attached 7960 power adapter on '{pt_name}' via {method} "
+                    f"(powered={powered})."
+                ],
+                [],
+            )
+        raise AdapterUnavailableError(
+            f"Cannot attach 7960 power adapter on '{device_name}': "
+            "no live ScriptBackend connected.",
             remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
         )

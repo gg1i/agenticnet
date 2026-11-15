@@ -8,7 +8,7 @@ from typing import Any, Literal
 from mcp.server.mcpserver import MCPServer
 
 from netforge.core.enums import PermissionTier, StateLevel
-from netforge.core.exceptions import ValidationError
+from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.core.models import OperationResult
 from netforge.mcp.registry import NetForgeRuntime
 
@@ -347,6 +347,27 @@ def register_gui_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         """
 
         def _run() -> OperationResult:
+            if not dry_run and runtime.router.ensure_live_script():
+                try:
+                    backend, data, ev, warnings = runtime.router.attach_ip_phone_power(device_name)
+                    state_lvl = (
+                        StateLevel.VERIFIED if data.get("powered") else StateLevel.EXECUTED
+                    )
+                    return OperationResult.ok(
+                        "gui_attach_ip_phone_power",
+                        (
+                            f"Attached 7960 AC power adapter onto '{device_name}' "
+                            f"via {backend} (powered={bool(data.get('powered'))})."
+                        ),
+                        data=data,
+                        state_level=state_lvl,
+                        execution_backend=backend,
+                        warnings=warnings,
+                        evidence=ev,
+                    )
+                except (AdapterUnavailableError, NotImplementedError):
+                    pass
+
             fn = getattr(runtime.gui, "attach_ip_phone_power", None)
             if fn is None:
                 raise ValidationError(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import threading
 import time
 import urllib.error
@@ -18,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from netforge.adapters.base import AdapterConnectionState, BackendStatus, ScriptBackend
+from netforge.adapters.discovery import detect_packet_tracer_binary, is_packet_tracer_running
 from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.gui.safety import EmergencyStopController
 
@@ -31,6 +33,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "open_file",
         "save_file",
         "list_devices",
+        "attach_ip_phone_power",
     }
 )
 
@@ -517,6 +520,8 @@ class HttpScriptBridgeBackend(ScriptBackend):
         *,
         safety: EmergencyStopController | None = None,
         default_timeout_seconds: float = 25.0,
+        auto_launch_pt: bool = False,
+        packet_tracer_path: str | None = None,
     ) -> None:
         self._owns_server = server is None
         self.server = server or HttpScriptBridgeServer()
@@ -526,9 +531,29 @@ class HttpScriptBridgeBackend(ScriptBackend):
             max_actions_per_minute=300,
         )
         self.default_timeout_seconds = default_timeout_seconds
+        self.auto_launch_pt = auto_launch_pt
+        self.packet_tracer_path = packet_tracer_path
+        self._launch_lock = threading.Lock()
+
+    def _ensure_installed_pts(self) -> None:
+        """Ensure the bundled `netforge_bridge.pts` is present alongside the session file."""
+        if self.server.session_file is None:
+            return
+        try:
+            asset = resources.files("netforge.adapters.assets").joinpath("netforge_bridge.pts")
+            if not asset.is_file():
+                return
+            expected_bytes = asset.read_bytes()
+            dest = self.server.session_file.parent / "netforge_bridge.pts"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.exists() or dest.read_bytes() != expected_bytes:
+                dest.write_bytes(expected_bytes)
+        except OSError:
+            return
 
     def start(self) -> None:
         """Start the underlying HTTP bridge server."""
+        self._ensure_installed_pts()
         self.server.start()
 
     def stop(self) -> None:
@@ -538,6 +563,27 @@ class HttpScriptBridgeBackend(ScriptBackend):
     def is_connected(self) -> bool:
         """Return True if a live Packet Tracer extension client is connected."""
         return self.server.is_connected()
+
+    def ensure_connected(self, *, timeout_seconds: float = 40.0) -> bool:
+        """Auto-launch Packet Tracer if needed and wait until the Script Module connects."""
+        if self.is_connected():
+            return True
+        if not self.auto_launch_pt or self.server._httpd is None:
+            return False
+        pt_exe = detect_packet_tracer_binary(self.packet_tracer_path)
+        if pt_exe is None:
+            return False
+        with self._launch_lock:
+            if self.is_connected():
+                return True
+            if not is_packet_tracer_running():
+                subprocess.Popen([str(pt_exe)])
+            deadline = time.monotonic() + max(timeout_seconds, 1.0)
+            while time.monotonic() < deadline:
+                if self.is_connected():
+                    return True
+                time.sleep(0.5)
+        return self.is_connected()
 
     def ping(self) -> dict[str, Any]:
         """Run an authenticated end-to-end ping through Packet Tracer's Script Module."""
@@ -571,7 +617,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
             },
             timeout_seconds=self.default_timeout_seconds,
         )
-        return {
+        out: dict[str, Any] = {
             "ok": True,
             "backend": "script_http",
             "device_name": str(data.get("device_name", "")),
@@ -580,6 +626,11 @@ class HttpScriptBridgeBackend(ScriptBackend):
             "x": float(x),
             "y": float(y),
         }
+        if "auto_powered" in data:
+            out["auto_powered"] = bool(data["auto_powered"])
+        if "power_details" in data:
+            out["power_details"] = data["power_details"]
+        return out
 
     def create_link(
         self,
@@ -774,6 +825,26 @@ class HttpScriptBridgeBackend(ScriptBackend):
             **data,
         }
 
+    def attach_ip_phone_power(
+        self,
+        device_name: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Attach the AC power adapter onto a 7960 IP Phone via PT's Script Module IPC."""
+        dev = _require_non_empty(device_name, "device_name")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "attach_ip_phone_power",
+            {"device_name": dev},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
     def backend_status(self) -> BackendStatus:
         """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
         return BackendStatus(
@@ -793,6 +864,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 "open_file",
                 "save_file",
                 "list_devices",
+                "attach_ip_phone_power",
             ],
             notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
         )

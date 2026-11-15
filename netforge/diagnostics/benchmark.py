@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from netforge.adapters.base import ScriptBackend
 from netforge.adapters.router import BackendRouter
+from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
+from netforge.core.settings import NetForgeSettings
 from netforge.diagnostics.lab_runner import evaluate_lab_status
 
 DEFAULT_REFERENCE_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "reference"
@@ -564,3 +568,172 @@ def run_offline_mock_benchmark(
         agent_requirements=agent_requirements,
         agent_task_ids=agent_task_ids,
     )
+
+
+def _kill_packet_tracer_instances() -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "PacketTracer.exe"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        subprocess.run(
+            ["pkill", "-f", "PacketTracer"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    time.sleep(1.0)
+
+
+def run_live_pt_benchmark(
+    lab_path: Path,
+    *,
+    agent_name: str = "netforge-auto-solver",
+    model_name: str = "live-pt-8.2.2",
+    max_iterations: int = 8,
+    time_budget_seconds: float = 900.0,
+    tool_profile: str = "solve_lab",
+    reference_dir: Path | None = None,
+) -> BenchmarkResult:
+    """Execute a zero-touch live Packet Tracer benchmark scored against the reference set."""
+    t0 = time.monotonic()
+    lab_file = Path(lab_path)
+    lab_id = lab_file.stem
+    spec = json.loads(lab_file.read_text(encoding="utf-8"))
+    ref_path, ref_spec = load_reference_spec(lab_id, reference_dir=reference_dir)
+    ref_reqs = ref_spec.get("requirements", [])
+    ref_task_ids = ref_spec.get("task_ids") or [
+        str(r["id"]) for r in ref_reqs if r.get("id")
+    ]
+    ref_payload = {
+        "lab_name": ref_spec.get("lab_name", lab_id),
+        "task_ids": ref_task_ids,
+        "requirements": ref_reqs,
+    }
+    try:
+        rel_ref = str(ref_path.relative_to(DEFAULT_REFERENCE_DIR.parents[1])).replace("\\", "/")
+    except ValueError:
+        rel_ref = f"benchmarks/reference/{ref_path.name}"
+
+    settings = NetForgeSettings.from_env()
+    bridge = HttpScriptBridgeBackend(
+        HttpScriptBridgeServer(session_file=settings.data_dir / "bridge_session.json"),
+        default_timeout_seconds=30.0,
+        auto_launch_pt=True,
+        packet_tracer_path=settings.packet_tracer_path,
+    )
+    router = BackendRouter(script_backend=bridge)
+    history: list[BenchmarkIterationRecord] = []
+
+    _kill_packet_tracer_instances()
+    bridge.start()
+    try:
+        if not bridge.ensure_connected(timeout_seconds=45.0):
+            return finalize_benchmark_result(
+                lab=lab_id,
+                agent=agent_name,
+                model=model_name,
+                mode="live_pt",
+                tool_profile=tool_profile,
+                max_iterations=max_iterations,
+                time_budget_seconds=time_budget_seconds,
+                elapsed_seconds=time.monotonic() - t0,
+                history=history,
+                final_status_data={"verify": {"summary": {"passed": 0, "total": len(ref_reqs)}}},
+                reference_path=rel_ref,
+                error="Packet Tracer Script Module bridge did not connect within timeout.",
+                blocked=True,
+            )
+
+        for dev in spec.get("devices", []):
+            backend, add_data, _, add_errs = router.add_device(
+                dev["name"],
+                dev["model"],
+                category=dev.get("category", "router"),
+                x=float(dev.get("x", 100.0)),
+                y=float(dev.get("y", 100.0)),
+            )
+            if backend != "script_backend" or add_errs:
+                raise RuntimeError(f"Failed adding live device '{dev['name']}': {add_errs}")
+            if (
+                dev.get("category") == "ip_phone" or str(dev.get("model")) == "7960"
+            ) and not add_data.get("auto_powered"):
+                router.attach_ip_phone_power(dev["name"])
+
+        for link in spec.get("links", []):
+            backend, _, _, lnk_errs = router.create_link(
+                link["device1"],
+                link["port1"],
+                link["device2"],
+                link["port2"],
+                cable_type=link.get("conn_type", "auto"),
+            )
+            if backend != "script_backend" or lnk_errs:
+                raise RuntimeError(f"Failed linking '{link}': {lnk_errs}")
+
+        time.sleep(12.0)
+
+        # Iteration 1: baseline unconfigured lab checked against reference
+        status_1 = evaluate_lab_status(
+            router,
+            requirements=ref_payload,
+            task_ids=ref_task_ids,
+            include_activity_grade=True,
+            poll_wait_seconds=0.0,
+        )
+        history.append(build_iteration_record(1, time.monotonic() - t0, status_1))
+
+        if max_iterations >= 2:
+            def _apply_cli_config_with_retry(dev_name: str, cmds: list[str], phase: str) -> None:
+                pt_name = router.resolve_pt_device_name(dev_name)
+                res = bridge.execute_cli(pt_name, cmds, timeout_seconds=45.0)
+                if res.get("timed_out"):
+                    bridge.execute_cli(pt_name, ["end"], timeout_seconds=10.0)
+                    res = bridge.execute_cli(pt_name, cmds, timeout_seconds=45.0)
+                if res.get("timed_out"):
+                    raise RuntimeError(f"Timed out {phase} {dev_name} ({pt_name}).")
+
+            for dev_name, cmds in spec.get("configs", {}).items():
+                _apply_cli_config_with_retry(dev_name, list(cmds), "configuring")
+
+            pre_settle = float(spec.get("pre_settle_seconds", 0.0))
+            if pre_settle > 0:
+                time.sleep(pre_settle)
+
+            for dev_name, cmds in spec.get("post_configs", {}).items():
+                _apply_cli_config_with_retry(dev_name, list(cmds), "post-configuring")
+
+            settle = float(spec.get("settle_seconds", 3.0))
+            if settle > 0:
+                time.sleep(settle)
+
+            status_2 = evaluate_lab_status(
+                router,
+                requirements=ref_payload,
+                task_ids=ref_task_ids,
+                include_activity_grade=True,
+                poll_wait_seconds=45.0,
+            )
+            history.append(build_iteration_record(2, time.monotonic() - t0, status_2))
+
+        return evaluate_benchmark_with_reference(
+            router,
+            lab_id=lab_id,
+            agent_name=agent_name,
+            model_name=model_name,
+            mode="live_pt",
+            tool_profile=tool_profile,
+            max_iterations=max_iterations,
+            time_budget_seconds=time_budget_seconds,
+            elapsed_seconds=time.monotonic() - t0,
+            history=history,
+            reference_dir=ref_path.parent,
+            agent_requirements=None,
+            agent_task_ids=None,
+        )
+    finally:
+        bridge.stop()
+        _kill_packet_tracer_instances()

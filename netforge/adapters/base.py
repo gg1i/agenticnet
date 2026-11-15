@@ -219,6 +219,15 @@ class ScriptBackend(ABC):
         """List live Packet Tracer devices, links, and ports."""
         raise AdapterUnavailableError(f"{self.__class__.__name__} does not implement list_devices.")
 
+    def attach_ip_phone_power(
+        self,
+        device_name: str,
+        *,
+        timeout_seconds: float = 25.0,
+    ) -> dict[str, Any]:
+        """Attach AC power adapter onto a 7960 IP Phone in Packet Tracer via ScriptBackend."""
+        raise NotImplementedError("ScriptBackend does not implement 'attach_ip_phone_power'.")
+
     def backend_status(self) -> BackendStatus:
         """Describe script backend connection state and supported capabilities."""
         return BackendStatus(

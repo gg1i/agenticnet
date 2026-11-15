@@ -58,6 +58,8 @@ class NetForgeSettings(BaseModel):
     packet_tracer_path: str | None = None
     operation_timeout_seconds: float = 30.0
     gui_background_mode: bool = True
+    auto_launch_packet_tracer: bool = True
+    auto_create_project: bool = True
 
     @property
     def db_path(self) -> Path:
@@ -112,6 +114,14 @@ class NetForgeSettings(BaseModel):
             packet_tracer_path=os.environ.get("NETFORGE_PT_PATH"),
             operation_timeout_seconds=float(os.environ.get("NETFORGE_TIMEOUT", "30.0")),
             gui_background_mode=os.environ.get("NETFORGE_GUI_BACKGROUND", "true")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
+            auto_launch_packet_tracer=os.environ.get("NETFORGE_AUTO_LAUNCH_PT", "true")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
+            auto_create_project=os.environ.get("NETFORGE_AUTO_CREATE_PROJECT", "true")
             .strip()
             .lower()
             not in {"0", "false", "no", "off"},

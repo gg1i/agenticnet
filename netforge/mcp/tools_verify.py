@@ -188,6 +188,21 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
                 cleaned,
                 timeout_seconds=timeout_seconds,
             )
+            try:
+                _, snap_data, snap_ev, _ = runtime.router.list_devices(
+                    timeout_seconds=min(timeout_seconds, 15.0)
+                )
+                devs = snap_data.get("devices", [])
+                links = snap_data.get("links", [])
+                data["discovered_devices"] = {
+                    "device_count": snap_data.get("device_count", len(devs)),
+                    "link_count": snap_data.get("link_count", len(links)),
+                    "devices": devs,
+                    "links": links,
+                }
+                ev = [*ev, *snap_ev]
+            except Exception:
+                pass
             return OperationResult.ok(
                 "lab_open",
                 f"Opened '{cleaned}' in Packet Tracer via {backend}.",

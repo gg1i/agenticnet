@@ -63,7 +63,17 @@ class ProjectManager:
         return self._active_metadata.project_id if self._active_metadata else None
 
     def require_active(self) -> tuple[ProjectMetadata, TopologyEngine, IPAMEngine, ConfigHistory]:
-        """Return active engines or raise ProjectNotOpenError."""
+        """Return active engines, auto-initializing a workspace when configured."""
+        if self._active_metadata is None and getattr(self.settings, "auto_create_project", False):
+            existing = self.store.list_projects()
+            if existing:
+                self.open_project(existing[0].project_id)
+            else:
+                self.create_project(
+                    "Default Workspace",
+                    project_id="default-workspace",
+                    description="Auto-initialized NetForge workspace",
+                )
         if (
             self._active_metadata is None
             or self._topology is None
