@@ -1,0 +1,382 @@
+"""Offline tests for Phase 5 lab runner, solve_lab prompt/resource, tool profiles, and benchmark."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from netforge.adapters.base import ScriptBackend
+from netforge.adapters.script_bridge import ALLOWED_OPCODES, HttpScriptBridgeBackend
+from netforge.core.exceptions import ValidationError
+from netforge.core.settings import NetForgeSettings
+from netforge.diagnostics.benchmark import BenchmarkResult
+from netforge.mcp.profiles import SOLVE_LAB_TOOLS, resolve_tool_profile
+from netforge.mcp.server import create_mcp_server
+
+
+def _call_tool_sync(server: Any, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    res = asyncio.run(server.call_tool(name, args or {}))
+    assert res.structured_content is not None
+    return dict(res.structured_content)
+
+
+class _MockLabBackend(ScriptBackend):
+    def __init__(self) -> None:
+        self.opened: list[str] = []
+        self.saved: list[dict[str, Any]] = []
+        self.activity: dict[str, Any] = {
+            "ok": True,
+            "is_activity_file": True,
+            "state": "available",
+            "readable": True,
+            "percentage_complete": 100.0,
+            "percentage_complete_score": 100.0,
+            "items_count": 2,
+            "correct_items_count": 2,
+            "score_count": 2.0,
+            "correct_score_count": 2.0,
+            "leaves": [
+                {
+                    "path": "Network > R1 > Hostname",
+                    "name": "Hostname",
+                    "value": "R1",
+                    "met": True,
+                    "leafCount": 1,
+                    "checkLeafCount": 1,
+                    "totalLeafPoints": 1.0,
+                    "checkLeafPoints": 1.0,
+                    "incorrectFeedback": "",
+                }
+            ],
+        }
+        self.cli_outputs: dict[str, str] = {
+            "show ip interface brief": (
+                "Interface              IP-Address      OK? Method Status                Protocol\n"
+                "GigabitEthernet0/0     10.0.0.1        YES manual up                    up\n"
+            ),
+            "ping 10.0.0.2": "Success rate is 100 percent (5/5)",
+        }
+
+    def is_connected(self) -> bool:
+        return True
+
+    def ping(self) -> dict[str, Any]:
+        return {"ok": True}
+
+    def add_device(
+        self,
+        model: str,
+        *,
+        device_type: int | str = 0,
+        x: float = 100.0,
+        y: float = 100.0,
+    ) -> dict[str, Any]:
+        return {"ok": True, "device_name": model}
+
+    def create_link(
+        self,
+        device1: str,
+        port1: str,
+        device2: str,
+        port2: str,
+        *,
+        conn_type: int | str = 8107,
+    ) -> dict[str, Any]:
+        return {"ok": True}
+
+    def read_activity_status(self) -> dict[str, Any]:
+        return dict(self.activity)
+
+    def execute_cli(
+        self,
+        device_name: str,
+        commands: list[str],
+        *,
+        ensure_privileged: bool = True,
+        timeout_seconds: float = 25.0,
+    ) -> dict[str, Any]:
+        cmd = commands[-1] if commands else ""
+        txt = self.cli_outputs.get(cmd, "")
+        return {"ok": True, "raw_output": txt, "results": [{"command": cmd, "status": 0}]}
+
+    def open_file(self, path: str, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        self.opened.append(path)
+        return {
+            "ok": True,
+            "path": path,
+            "saved_filename": path,
+            "is_activity_file": path.lower().endswith(".pka"),
+        }
+
+    def save_file(
+        self,
+        path: str | None = None,
+        *,
+        overwrite: bool = True,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        self.saved.append({"path": path, "overwrite": overwrite})
+        return {
+            "ok": True,
+            "saved": True,
+            "path": path or "active.pka",
+            "method": "fileSaveAsNoPrompt" if path else "fileSave",
+        }
+
+
+@pytest.mark.unit
+def test_lab_open_and_lab_save_live_mocked_and_fail_closed(tmp_path: Path) -> None:
+    backend = _MockLabBackend()
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    srv_live, _ = create_mcp_server(settings=settings, script_backend=backend)
+
+    # Dry-run checks require zero live bridge
+    srv_off, _ = create_mcp_server(settings=settings)
+    dry_open = _call_tool_sync(srv_off, "lab_open", {"path": "demo.pka", "dry_run": True})
+    assert dry_open["success"] is True
+    assert dry_open["execution_backend"] == "offline_model"
+    assert dry_open["state_level"] == "planned"
+
+    dry_save = _call_tool_sync(
+        srv_off, "lab_save", {"path": "out.pkt", "overwrite": True, "dry_run": True}
+    )
+    assert dry_save["success"] is True
+    assert dry_save["data"]["method"] == "fileSaveAsNoPrompt"
+
+    # Disconnected non-dry calls fail closed
+    fail_open = _call_tool_sync(srv_off, "lab_open", {"path": "demo.pka"})
+    fail_save = _call_tool_sync(srv_off, "lab_save", {})
+    assert fail_open["success"] is False
+    assert fail_save["success"] is False
+
+    # Live mocked calls route to script_backend
+    live_open = _call_tool_sync(srv_live, "lab_open", {"path": "C:/labs/demo.pka"})
+    assert live_open["success"] is True
+    assert live_open["execution_backend"] == "script_backend"
+    assert live_open["state_level"] == "executed"
+    assert backend.opened == ["C:/labs/demo.pka"]
+
+    live_save_inplace = _call_tool_sync(srv_live, "lab_save", {})
+    assert live_save_inplace["success"] is True
+    assert live_save_inplace["execution_backend"] == "script_backend"
+    assert backend.saved[-1] == {"path": None, "overwrite": True}
+
+    live_save_as = _call_tool_sync(
+        srv_live, "lab_save", {"path": "C:/labs/solved.pka", "overwrite": True}
+    )
+    assert live_save_as["success"] is True
+    assert backend.saved[-1] == {"path": "C:/labs/solved.pka", "overwrite": True}
+
+    # Blank path validation fails closed
+    bad_open = _call_tool_sync(srv_live, "lab_open", {"path": "   "})
+    bad_save = _call_tool_sync(srv_live, "lab_save", {"path": "   "})
+    assert bad_open["success"] is False
+    assert bad_save["success"] is False
+
+
+@pytest.mark.unit
+def test_http_script_bridge_save_file_opcode() -> None:
+    assert "save_file" in ALLOWED_OPCODES
+    mock_srv = MagicMock()
+    mock_srv.is_connected.return_value = True
+    mock_srv.enqueue_command.return_value = {"saved": True, "path": "out.pka"}
+    bridge = HttpScriptBridgeBackend(mock_srv)
+    out = bridge.save_file("out.pka", overwrite=False, timeout_seconds=10.0)
+    mock_srv.enqueue_command.assert_called_once_with(
+        "save_file",
+        {"overwrite": False, "path": "out.pka"},
+        timeout_seconds=10.0,
+    )
+    assert out["ok"] is True
+    assert "save_file" in bridge.backend_status().capabilities
+
+
+@pytest.mark.unit
+def test_lab_status_what_is_left_and_fail_closed_grading(tmp_path: Path) -> None:
+    backend = _MockLabBackend()
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    server, _ = create_mcp_server(settings=settings, script_backend=backend)
+
+    reqs = {
+        "lab_name": "Unit Status Check",
+        "requirements": [
+            {
+                "id": "r1_ip",
+                "task_id": "T1_IP",
+                "type": "ip_assigned",
+                "device": "R1",
+                "interface": "GigabitEthernet0/0",
+                "ip": "10.0.0.1",
+            },
+            {
+                "id": "r1_ping",
+                "task_id": "T2_PING",
+                "type": "reachable",
+                "from": "R1",
+                "to": "10.0.0.2",
+            },
+        ],
+    }
+
+    # 1. Partial grader + uncovered task + failing reachability => overall_passed False
+    backend.cli_outputs["ping 10.0.0.2"] = "Success rate is 0 percent (0/5)"
+    backend.activity["percentage_complete"] = 50.0
+    backend.activity["correct_items_count"] = 1
+    backend.activity["leaves"].append(
+        {
+            "path": "Network > R1 > Ping",
+            "name": "Reachability",
+            "value": "ok",
+            "met": False,
+            "leafCount": 1,
+            "checkLeafCount": 0,
+            "totalLeafPoints": 1.0,
+            "checkLeafPoints": 0.0,
+            "incorrectFeedback": "Target not reachable",
+        }
+    )
+    incomplete = _call_tool_sync(
+        server,
+        "lab_status",
+        {"requirements": reqs, "task_ids": ["T1_IP", "T2_PING", "T3_SAVE"]},
+    )
+    assert incomplete["success"] is True
+    d1 = incomplete["data"]
+    assert d1["overall_passed"] is False
+    assert len(d1["what_is_left"]["failing_requirements"]) == 1
+    assert len(d1["what_is_left"]["unmet_grader_items"]) == 1
+    assert d1["what_is_left"]["uncovered_tasks"] == ["T3_SAVE"]
+    assert d1["what_is_left"]["is_empty"] is False
+    assert any("ping" in ev.lower() for ev in d1["raw_evidence"])
+
+    # 2. All requirements pass & 100% task coverage, grader 100% => overall_passed True
+    backend.cli_outputs["ping 10.0.0.2"] = "Success rate is 100 percent (5/5)"
+    backend.activity["percentage_complete"] = 100.0
+    backend.activity["correct_items_count"] = 2
+    backend.activity["leaves"] = [backend.activity["leaves"][0]]
+    complete = _call_tool_sync(
+        server,
+        "lab_status",
+        {"requirements": reqs, "task_ids": ["T1_IP", "T2_PING"]},
+    )
+    d2 = complete["data"]
+    assert d2["overall_passed"] is True
+    assert d2["state_level"] == "verified"
+    assert d2["what_is_left"]["is_empty"] is True
+
+    # 3. Assessment-locked .pka fails closed on grader without blocking verify_lab pass
+    backend.activity = {
+        "ok": True,
+        "is_activity_file": True,
+        "locked": True,
+        "assessment_mode": True,
+        "state": "unavailable",
+        "readable": False,
+        "reason": "Assessment mode lock enabled.",
+    }
+    locked_status = _call_tool_sync(
+        server,
+        "lab_status",
+        {"requirements": reqs, "task_ids": ["T1_IP", "T2_PING"]},
+    )
+    d3 = locked_status["data"]
+    assert d3["overall_passed"] is True
+    assert d3["grade"]["state"] == "unavailable"
+    assert d3["grade"]["fallback"] == "verify_lab"
+    assert "Assessment" in d3["what_is_left"]["grader_unavailable_reason"]
+
+
+@pytest.mark.unit
+def test_solve_lab_prompt_and_resource(tmp_path: Path) -> None:
+    settings = NetForgeSettings(data_dir=tmp_path / ".nf")
+    server, runtime = create_mcp_server(settings=settings)
+    assert "solve_lab" in runtime.registry.prompt_names
+    assert "netforge://workflows/solve_lab" in runtime.registry.resource_uris
+
+    prompt_res = asyncio.run(
+        server.get_prompt(
+            "solve_lab",
+            arguments={
+                "lab_goal": "Configure OSPF lab",
+                "max_iterations": 6,
+                "time_budget_minutes": 10,
+            },
+        )
+    )
+    text = str(prompt_res.messages[0].content.text)
+    for required in (
+        "lab_open",
+        "task_ids",
+        "lab_status",
+        "what_is_left",
+        "lab_save",
+        "max_iterations=6",
+        "time_budget_minutes=10",
+        "NEVER bypass",
+    ):
+        assert required in text
+
+    resources = asyncio.run(server.read_resource("netforge://workflows/solve_lab"))
+    res_text = "".join(str(getattr(c, "content", c)) for c in resources)
+    assert "lab_status" in res_text and "lab_save" in res_text
+
+
+@pytest.mark.unit
+def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
+    default_settings = NetForgeSettings(data_dir=tmp_path / ".nf1")
+    assert default_settings.tool_profile == "solve_lab"
+    srv_default, rt_default = create_mcp_server(default_settings)
+    default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
+    assert default_names == SOLVE_LAB_TOOLS
+    assert len(default_names) == 20
+    assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
+    assert "configure_ospf" not in default_names
+
+    adv_settings = NetForgeSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
+    srv_adv, rt_adv = create_mcp_server(adv_settings)
+    adv_names = {t.name for t in asyncio.run(srv_adv.list_tools())}
+    assert len(adv_names) == 77
+    assert default_names < adv_names
+    assert rt_adv.build_manifest()["tool_profile"] == "advanced"
+
+    with pytest.raises(ValidationError):
+        resolve_tool_profile("nonexistent_profile")
+
+
+@pytest.mark.unit
+def test_benchmark_runner_mock_and_fail_closed_live(tmp_path: Path) -> None:
+    import scripts.run_benchmark as bench_cli
+
+    out_file = tmp_path / "bench_out.json"
+    rc = bench_cli.main(["--all-sample-labs", "--mock", "--output", str(out_file)])
+    assert rc == 0
+    report = json.loads(out_file.read_text(encoding="utf-8"))
+    assert report["total"] == 3
+    assert report["passed"] == 3
+    for item in report["results"]:
+        validated = BenchmarkResult.model_validate(item)
+        assert validated.passed is True
+        assert validated.status == "passed"
+        assert validated.mode == "offline_mock"
+        assert validated.iterations == 2
+        assert validated.evidence.task_coverage is not None
+        assert validated.evidence.task_coverage["all_tasks_covered"] is True
+
+    # Budget limit test (--max-iterations 1 leaves lab broken -> budget_exceeded)
+    budget_file = tmp_path / "bench_budget.json"
+    rc_budget = bench_cli.main(
+        ["--mock", "--max-iterations", "1", "--output", str(budget_file)]
+    )
+    assert rc_budget == 1
+    single = BenchmarkResult.model_validate_json(budget_file.read_text(encoding="utf-8"))
+    assert single.passed is False
+    assert single.status == "budget_exceeded"
+    assert single.iterations == 1
+
+    # Live mode refuses when run in offline skeleton
+    assert bench_cli.main(["--live"]) == 2

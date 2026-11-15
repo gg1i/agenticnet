@@ -37,7 +37,7 @@
     "solve_lab",
     "advanced"
   ],
-  "tool_count": 74,
+  "tool_count": 77,
   "categories": {
     "project": 7,
     "topology": 6,
@@ -48,7 +48,7 @@
     "cli": 5,
     "gui": 10,
     "simulation": 6,
-    "diagnostics": 10
+    "diagnostics": 13
   },
   "tools": [
     {
@@ -713,6 +713,33 @@
       "category": "diagnostics",
       "permission_tier": "read_only",
       "description": "Read native `.pka` activity score and unmet comparator leaves fail-closed.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
+    },
+    {
+      "name": "lab_open",
+      "category": "diagnostics",
+      "permission_tier": "configuration",
+      "description": "Open a `.pkt` or `.pka` lab inside Packet Tracer via the bridge (`fileOpen`).",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "lab_save",
+      "category": "diagnostics",
+      "permission_tier": "configuration",
+      "description": "Save the active Packet Tracer lab via bridge (`fileSave` or `fileSaveAsNoPrompt`).",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "lab_status",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.",
       "status": "stable",
       "read_only": true,
       "destructive": false

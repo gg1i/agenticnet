@@ -29,6 +29,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "cli_exec",
         "get_activity_status",
         "open_file",
+        "save_file",
     }
 )
 
@@ -728,6 +729,29 @@ class HttpScriptBridgeBackend(ScriptBackend):
             **data,
         }
 
+    def save_file(
+        self,
+        path: str | None = None,
+        *,
+        overwrite: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Save the active PT file via `fileSave()` or `fileSaveAsNoPrompt()`."""
+        self.safety.check_safe_to_act(live_input=False, count_action=False)
+        payload: dict[str, Any] = {"overwrite": bool(overwrite)}
+        if path is not None:
+            payload["path"] = str(path)
+        data = self.server.enqueue_command(
+            "save_file",
+            payload,
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
     def backend_status(self) -> BackendStatus:
         """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
         return BackendStatus(
@@ -745,6 +769,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 "cli_exec",
                 "get_activity_status",
                 "open_file",
+                "save_file",
             ],
             notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
         )

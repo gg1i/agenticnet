@@ -109,3 +109,11 @@ Findings (including failures):
 | `7960` Physical-tab geometry (`1920x1080`, `120 DPI` / `1.25x`) | **VERIFIED LIVE** | Canvas `(500, 180)` maps to client `(503, 305)` (`PrintWindow` icon centroid `(503, 311)`); `7960` device dialog (`893x897`) opens on `Physical` with `IP_PHONE_POWER_ADAPTER` visible at relative `(0.9194, 0.8640)` and DC jack at `(0.3606, 0.3378)`. |
 | `7960` Qt `QDrag` via `PostMessageW` in `exebox-*` | **VERIFIED LIVE (FAILURE RECORDED)** | Testing `PostMessageW` drag on `IP Phone0` (`task-4969`) and `SendMessageW(top, WM_ACTIVATE, 1, 0)` + slow `PostMessageW` drag (`task-5092`) inside isolated desktop `WinSta0\exebox-*` yielded `SOCKET_DIFF_RATIO: 0.0` (`FULL_DIFF: 0.00016`) and `show ephone` stayed `UNREGISTERED`. Qt `QDrag` requires real OS cursor/capture (`SendInput` + `GetForegroundWindow() != 0`). |
 | `gui_attach_ip_phone_power` 5-attempt live `SendInput` check | **BLOCKED IN AGENT SANDBOX (`0/5` run)** | Blocked in `run_command` by Windows desktop isolation (`WinSta0\exebox-*` returns `GetForegroundWindow() == 0` and `SendInput() == 0`, even with the user desktop unlocked). `gui_attach_ip_phone_power` fails closed on `GetForegroundWindow() == 0`; `scripts/verify_7960_power_reliability.py` is provided for direct execution on an unlocked interactive `WinSta0\Default` desktop. |
+
+---
+
+## 8. Phase 5 Offline Probes: Lab Save API (`AppWindow`)
+
+| Capability / Probe | Status | Evidence & Notes |
+|---|---|---|
+| PT `AppWindow` Save methods (`IpcAPI/class_app_window.html`) | **DOCS INSPECTED / UNTESTED LIVE** | Local PT `8.2.2` IPC documentation defines `bool AppWindow::fileSave()`, `bool AppWindow::fileSaveAs(QString)` (deprecated), `void AppWindow::fileSaveAsAsync(QString)`, and `void AppWindow::fileSaveAsNoPrompt(QString, bool bAsync)` ("Same as `fileSaveAs()` except it does not prompt to overwrite the file"). Live PT execution & `.pts` export for the `save_file` opcode await live PT availability (`UNTESTED LIVE`). |

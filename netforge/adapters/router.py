@@ -11,7 +11,7 @@ from netforge.adapters.script_bridge import resolve_connect_type, resolve_device
 from netforge.console.models import DeviceConsoleProfile
 from netforge.console.transport import ConsoleTransport, UnavailableConsoleTransport
 from netforge.core.enums import DeviceCategory
-from netforge.core.exceptions import AdapterUnavailableError
+from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.core.models import ExecutionBackend
 from netforge.security.redaction import redact_cli_text
 
@@ -386,3 +386,69 @@ class BackendRouter:
             "locked": False,
             "execution_backend": "script_backend",
         }
+
+    def open_file(
+        self,
+        path: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Open a `.pkt`/`.pka` lab inside live Packet Tracer through `ScriptBackend`."""
+        cleaned = str(path or "").strip()
+        if not cleaned:
+            raise ValidationError("Lab file path must not be empty.")
+        if self.has_live_script() and self.script_backend is not None:
+            open_fn = getattr(self.script_backend, "open_file", None)
+            if not callable(open_fn):
+                raise AdapterUnavailableError(
+                    "Connected ScriptBackend does not implement 'open_file'.",
+                    remediation="Update netforge_bridge.pts to expose the 'open_file' opcode.",
+                )
+            data = dict(open_fn(cleaned, timeout_seconds=timeout_seconds))
+            return (
+                "script_backend",
+                data,
+                [f"Opened '{cleaned}' inside Packet Tracer via script_backend (fileOpen)."],
+                [],
+            )
+        raise AdapterUnavailableError(
+            f"Cannot open '{cleaned}' in Packet Tracer: no live ScriptBackend connected.",
+            remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
+        )
+
+    def save_file(
+        self,
+        path: str | None = None,
+        *,
+        overwrite: bool = True,
+        timeout_seconds: float = 30.0,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Save the active Packet Tracer lab through `ScriptBackend`."""
+        cleaned = str(path).strip() if path is not None else None
+        if path is not None and not cleaned:
+            raise ValidationError("Destination path must not be blank when provided.")
+        if self.has_live_script() and self.script_backend is not None:
+            save_fn = getattr(self.script_backend, "save_file", None)
+            if not callable(save_fn):
+                raise AdapterUnavailableError(
+                    "Connected ScriptBackend does not implement 'save_file'.",
+                    remediation="Update netforge_bridge.pts with the 'save_file' opcode.",
+                )
+            data = dict(save_fn(cleaned, overwrite=overwrite, timeout_seconds=timeout_seconds))
+            if data.get("ok") is False:
+                raise AdapterUnavailableError(
+                    str(data.get("error") or "Packet Tracer save_file reported failure."),
+                    details=data,
+                    remediation="Verify destination path permissions and active PT file state.",
+                )
+            target_desc = cleaned or str(data.get("saved_filename") or "active file")
+            return (
+                "script_backend",
+                data,
+                [f"Saved Packet Tracer workspace to '{target_desc}' via script_backend."],
+                [],
+            )
+        raise AdapterUnavailableError(
+            "Cannot save Packet Tracer workspace: no live ScriptBackend connected.",
+            remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
+        )

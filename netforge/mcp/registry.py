@@ -57,6 +57,7 @@ class ToolRegistry:
     """Tracks registered tools, resources, and prompts to emit a capability manifest."""
 
     def __init__(self, allowed_tool_names: frozenset[str] | None = None) -> None:
+        self.allowed_tool_names = allowed_tool_names
         self.tools: list[ToolDescriptor] = []
         self.resource_uris: list[str] = []
         self.prompt_names: list[str] = []
