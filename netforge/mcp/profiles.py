@@ -21,13 +21,11 @@ RAW_GUI_INPUT_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Curated 20-tool default profile for client agents solving labs cleanly:
+# Curated default profile for client agents solving labs cleanly:
 # keeps purpose-built GUI actions (`gui_attach_ip_phone_power`) and excludes raw GUI input tools.
+# On master, contains all verified registered lab-solving tools (17 tools).
 SOLVE_LAB_TOOLS: frozenset[str] = frozenset(
     {
-        "lab_open",
-        "lab_save",
-        "lab_status",
         "project_create",
         "project_status",
         "device_capabilities",

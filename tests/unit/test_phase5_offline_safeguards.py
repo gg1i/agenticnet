@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -19,7 +20,7 @@ from netforge.diagnostics.benchmark import (
     load_reference_spec,
     run_offline_mock_benchmark,
 )
-from netforge.mcp.profiles import RAW_GUI_INPUT_TOOLS, SOLVE_LAB_TOOLS
+from netforge.mcp.profiles import RAW_GUI_INPUT_TOOLS, SOLVE_LAB_TOOLS, resolve_tool_profile
 from netforge.mcp.server import create_mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -323,3 +324,24 @@ def test_benchmark_isolation_doc_and_experimental_gui_phone_marker(tmp_path: Pat
     tools = {t.name: t for t in asyncio.run(srv.list_tools())}
     desc = (tools["gui_attach_ip_phone_power"].description or "").lower()
     assert "experimental: not yet validated by the 5-attempt live protocol" in desc
+
+
+@pytest.mark.unit
+def test_every_default_profile_and_prompt_tool_is_registered(tmp_path: Path) -> None:
+    srv, runtime = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_strict_reg"))
+    registered_tools = {t.name for t in asyncio.run(srv.list_tools())}
+
+    # 1. Every tool in resolve_tool_profile("solve_lab") must be registered
+    allowed_default = resolve_tool_profile("solve_lab")
+    assert allowed_default is not None
+    assert allowed_default == registered_tools
+
+    # 2. Every tool named in solve_lab prompt must be registered
+    prompt_res = asyncio.run(srv.get_prompt("solve_lab", arguments={}))
+    prompt_text = str(prompt_res.messages[0].content.text)
+    backticked = set(re.findall(r"`([a-z0-9_]+)`", prompt_text))
+    non_tool_words = {"task_ids", "requirements", "pkt", "pka", "json", "notes"}
+    prompt_tools = backticked - non_tool_words
+    unregistered_in_prompt = prompt_tools - registered_tools
+    assert not unregistered_in_prompt, f"Unregistered tools named in prompt: {unregistered_in_prompt}"
+
