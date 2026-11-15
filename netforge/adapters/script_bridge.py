@@ -34,6 +34,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "save_file",
         "list_devices",
         "attach_ip_phone_power",
+        "configure_host",
     }
 )
 

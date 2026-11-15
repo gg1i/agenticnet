@@ -440,6 +440,112 @@ function attachIpPhonePowerOnDevice(dev) {
     };
 }
 
+function attachRouterSerialModulesOnDevice(dev) {
+    if (!dev) {
+        return { ok: false, hwics_added: 0, serial_ports: [] };
+    }
+    var serialPorts = [];
+    var pc = 0;
+    try { pc = Number(dev.getPortCount()); } catch (ePc) {}
+    for (var pi = 0; pi < pc; pi++) {
+        try {
+            var p = dev.getPortAt(pi);
+            if (p) {
+                var pName = String(p.getName() || "");
+                if (pName.indexOf("Serial") === 0) {
+                    serialPorts.push(pName);
+                }
+            }
+        } catch (eGp) {}
+    }
+    if (serialPorts.length > 0) {
+        return { ok: true, already_has_serial: true, hwics_added: 0, serial_ports: serialPorts };
+    }
+
+    var suppList = [];
+    var hwicSupported = false;
+    try {
+        if (typeof dev.getSupportedModule === "function") {
+            var rawSupp = dev.getSupportedModule();
+            if (rawSupp && typeof rawSupp.length === "number") {
+                for (var si = 0; si < rawSupp.length; si++) {
+                    var entry = String(rawSupp[si]);
+                    suppList.push(entry);
+                    if (entry.indexOf("HWIC-2T") === 0) {
+                        hwicSupported = true;
+                    }
+                }
+            }
+        }
+    } catch (eSupp) {}
+
+    if (!hwicSupported) {
+        return { ok: true, hwics_added: 0, serial_ports: [], reason: "HWIC-2T not supported" };
+    }
+
+    var rootMod = null;
+    try { rootMod = dev.getRootModule ? dev.getRootModule() : null; } catch (eRm) {}
+    try { if (typeof dev.setPower === "function") { dev.setPower(false); } } catch (eOff) {}
+
+    var hwicsAdded = 0;
+    var methods = [];
+    var targetSlots = [0, 1];
+    var devSlotsByIdx = {
+        0: ["0/0", "0"],
+        1: ["0/1", "1"]
+    };
+
+    for (var ti = 0; ti < targetSlots.length; ti++) {
+        var slotIdx = targetSlots[ti];
+        var slotOk = false;
+        if (rootMod && typeof rootMod.addModuleAt === "function") {
+            try {
+                if (rootMod.addModuleAt("HWIC-2T", slotIdx)) {
+                    slotOk = true;
+                    hwicsAdded += 1;
+                    methods.push("rootModule.addModuleAt(HWIC-2T," + slotIdx + ")");
+                }
+            } catch (eAma) {}
+        }
+        if (!slotOk && typeof dev.addModule === "function") {
+            var cands = devSlotsByIdx[slotIdx] || [String(slotIdx)];
+            for (var ci = 0; ci < cands.length; ci++) {
+                try {
+                    if (dev.addModule(cands[ci], 2, "HWIC-2T")) {
+                        slotOk = true;
+                        hwicsAdded += 1;
+                        methods.push("device.addModule(" + cands[ci] + ",2,HWIC-2T)");
+                        break;
+                    }
+                } catch (eAm) {}
+            }
+        }
+    }
+
+    try { if (typeof dev.setPower === "function") { dev.setPower(true); } } catch (eOn) {}
+
+    var afterSerial = [];
+    var afterPc = 0;
+    try { afterPc = Number(dev.getPortCount()); } catch (eApc) {}
+    for (var api = 0; api < afterPc; api++) {
+        try {
+            var ap = dev.getPortAt(api);
+            if (ap) {
+                var apName = String(ap.getName() || "");
+                if (apName.indexOf("Serial") === 0) {
+                    afterSerial.push(apName);
+                }
+            }
+        } catch (eAgp) {}
+    }
+    return {
+        ok: true,
+        hwics_added: hwicsAdded,
+        methods_used: methods,
+        serial_ports: afterSerial
+    };
+}
+
 function netforgeOnCommand(requestId, opcode, paramsJson) {
     var params = {};
     try { params = paramsJson ? JSON.parse(paramsJson) : {}; } catch (e) {}
@@ -481,9 +587,10 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     model: dModelStr,
                     device_type: dTypeNum
                 };
+                var createdDev = null;
+                try { createdDev = ipc.network().getDevice(String(name)); } catch (eCd) {}
                 if (params.auto_power !== false && (dTypeNum === 12 || dModelStr === "7960")) {
                     try {
-                        var createdDev = ipc.network().getDevice(String(name));
                         var pwrInfo = attachIpPhonePowerOnDevice(createdDev);
                         addOut.auto_powered = Boolean(pwrInfo.powered);
                         addOut.power_details = pwrInfo;
@@ -491,7 +598,77 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                         addOut.auto_powered = false;
                     }
                 }
+                if (params.auto_serial_modules !== false && dTypeNum === 0) {
+                    try {
+                        var serInfo = attachRouterSerialModulesOnDevice(createdDev);
+                        addOut.serial_modules = serInfo;
+                    } catch (eSerAdd) {}
+                }
+                if (createdDev && params.display_name) {
+                    try {
+                        createdDev.setName(String(params.display_name));
+                        addOut.device_name = String(createdDev.getName() || name);
+                    } catch (eSetName) {}
+                }
                 sendBridgeResult(requestId, true, addOut, null);
+                return;
+            }
+            case "configure_host": {
+                var hDevName = String(params.device_name || "");
+                var hDev = ipc.network().getDevice(hDevName);
+                if (!hDev) {
+                    sendBridgeResult(requestId, false, {}, "Device not found: " + hDevName);
+                    return;
+                }
+                var hPortName = String(params.port || "FastEthernet0");
+                var hPort = null;
+                try { hPort = hDev.getPort(hPortName); } catch (eGpH) {}
+                if (!hPort) {
+                    try {
+                        if (hDev.getPortCount() > 0) {
+                            hPort = hDev.getPortAt(0);
+                        }
+                    } catch (eGpH0) {}
+                }
+                if (!hPort) {
+                    sendBridgeResult(requestId, false, {}, "Host port not found: " + hPortName);
+                    return;
+                }
+                var useDhcp = Boolean(params.dhcp);
+                try {
+                    if (typeof hPort.setDhcpClientFlag === "function") {
+                        hPort.setDhcpClientFlag(useDhcp);
+                    }
+                } catch (eDhcp) {}
+                var hIp = params.ip ? String(params.ip) : "";
+                var hMask = params.subnet_mask ? String(params.subnet_mask) : "";
+                if (!useDhcp && hIp && hMask && typeof hPort.setIpSubnetMask === "function") {
+                    hPort.setIpSubnetMask(hIp, hMask);
+                }
+                var hGw = params.default_gateway ? String(params.default_gateway) : "";
+                if (hGw) {
+                    try {
+                        if (typeof hPort.setDefaultGateway === "function") {
+                            hPort.setDefaultGateway(hGw);
+                        }
+                    } catch (eGw1) {}
+                    try {
+                        if (typeof hDev.setDefaultGateway === "function") {
+                            hDev.setDefaultGateway(hGw);
+                        }
+                    } catch (eGw2) {}
+                }
+                if (params.display_name) {
+                    try { hDev.setName(String(params.display_name)); } catch (eDn) {}
+                }
+                sendBridgeResult(requestId, true, {
+                    device_name: String(hDev.getName() || hDevName),
+                    port: hPortName,
+                    dhcp: useDhcp,
+                    ip: hIp,
+                    subnet_mask: hMask,
+                    default_gateway: hGw
+                }, null);
                 return;
             }
             case "create_link": {
