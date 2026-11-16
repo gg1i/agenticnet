@@ -6,6 +6,17 @@ An open-source agentic networking platform (**current development focus: Cisco P
 
 > **Independent Community Project:** AgenticNet is an open-source MIT project and is **not affiliated with, sponsored by, or endorsed by Cisco Systems, Inc.** Cisco Packet Tracer is a trademark of Cisco Systems, Inc. This repository contains no Cisco binaries or copyrighted lab files.
 
+<p align="center">
+  <a href="https://github.com/gg1i/agenticnet/blob/main/promo-pro/render/agenticnet-pro-promo.mp4?raw=true">
+    <img src="docs/media/agenticnet-promo.webp" alt="AgenticNet Promo Video Preview" width="820">
+  </a>
+</p>
+<p align="center">
+  <strong><a href="https://github.com/gg1i/agenticnet/blob/main/promo-pro/render/agenticnet-pro-promo.mp4?raw=true">Watch Full 1080p MP4</a></strong> ·
+  <a href="promo/index.html">Interactive Web Promo (30s GSAP)</a> ·
+  <a href="promo-pro/index.html">3D Overlapping-Null Canvas Source</a>
+</p>
+
 ---
 
 ## What You Can Ask Your AI To Do
@@ -101,6 +112,9 @@ agenticnet/
 ├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
 └── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts, manifest
 netforge/         # Legacy Python/CLI compatibility shim redirecting cleanly to agenticnet
+promo/            # Standalone 30s interactive GSAP promo (`index.html`, opens directly via file://)
+promo-pro/        # 3D overlapping-null Canvas source & rendered 1080p MP4 (`render/agenticnet-pro-promo.mp4`)
+docs/media/       # Animated WebP preview (`agenticnet-promo.webp`) embedded above
 ```
 
 ---

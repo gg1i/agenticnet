@@ -1,0 +1,1203 @@
+<!doctype html>
+<html lang="en">
+<!-- Built with Bang Motion v1.19.0 (MIT) — Style Brief: AgenticNet "Topology Graph as Stage" -->
+<head>
+<meta charset="utf-8">
+<title>AgenticNet — Networks. Understood. Engineered. Automated.</title>
+<!--
+  ===== STYLE BRIEF (Approved) =====
+  Brand / Mood               : AgenticNet — Methodical, Engineered, Live-Verified
+  Selected Concept           : Candidate B — Topology Graph as Stage (1 continuous #world)
+  Structural Fingerprint     : Topology-Graph Stage · 6 camera beats · Broken Link / VLSM Grid /
+                               IOS Terminal / Ping Proof / Graph-to-Emblem Pullback ·
+                               Opens mid-timeout on pulsing fault link · Pullback into emblem + tagline
+  Palette                    : Light Canvas #F3F5F2 | Terminal Slate #0E151B | Link Teal #0F766E / #14B8A6 |
+                               Fault Coral-Amber #E05A2B | Ink Light #14191F / Ink Dark #F8FAFC
+  Fonts                      : Display: Space Grotesk (500/600/700) · Diegetic UI/CLI: JetBrains Mono
+  Text Emphasis              : `box` variant (`0.04em` frame) on key focus words; max 1 short line HUD per beat
+  Background Motion (§7c)    : Breathing blueprint dot-grid (#8) + deterministic 12fps film grain (#4)
+  Background Surface (§7d)   : Architectural warm paper + radial tint -> Terminal deep slate + teal horizon glow
+  Object Render (§7e)        : Flat technical vector topology nodes + diegetic UI terminal/grid cards
+  Motion Signature           : Animated SVG Packet Signal Trace along cables pulling camera focus
+  Special Moment (✦)         : Wide Graph-to-Emblem Pullback (24.5s–28.8s)
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<style>
+:root {
+  --bg-light: #F3F5F2;
+  --bg-dark: #0E151B;
+  --bg-emblem: #091115;
+  --teal: #0F766E;
+  --teal-bright: #14B8A6;
+  --fault: #E05A2B;
+  --amber: #D97706;
+  --ink-dark: #14191F;
+  --ink-muted: #52606D;
+  --ink-light: #F8FAFC;
+  --font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: #070A0D;
+  overflow: hidden;
+  font-family: var(--font-display);
+  color: var(--ink-dark);
+}
+
+#filters { position: fixed; width: 0; height: 0; opacity: 0; pointer-events: none; }
+
+/* Fixed 1920x1080 architectural stage scaled proportionally to any viewport */
+#stage {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 1920px;
+  height: 1080px;
+  transform: translate(-50%, -50%) scale(1);
+  overflow: hidden;
+  background: var(--bg-light);
+}
+
+/* Layered architectural paper surface (light base) */
+#bg-light-layer {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(62% 54% at 78% 18%, rgba(15, 118, 110, 0.08), transparent 68%),
+    radial-gradient(50% 48% at 20% 84%, rgba(224, 90, 43, 0.07), transparent 64%),
+    linear-gradient(155deg, #F7F8F5 0%, #EFF2EC 58%, #E7ECE5 100%);
+}
+
+/* Dark terminal surface triggered cleanly on CLI dive */
+#bg-dark-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background:
+    radial-gradient(72% 46% at 50% 106%, rgba(20, 184, 166, 0.28), rgba(15, 118, 110, 0.08) 50%, transparent 74%),
+    radial-gradient(55% 44% at 50% 35%, rgba(15, 118, 110, 0.14), transparent 70%),
+    linear-gradient(180deg, #090E13 0%, #0E151B 58%, #0B161B 100%);
+}
+
+/* Polarity portal disk expanding from R1 console port */
+#polarity-portal {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2600px;
+  height: 2600px;
+  margin: -1300px 0 0 -1300px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #0E151B 0%, #091115 74%, #0F766E 100%);
+  transform: scale(0);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Oversized camera-driven vector world (3200 x 2000), transform-origin locked at 0 0 */
+#world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3200px;
+  height: 2000px;
+  transform-origin: 0 0;
+  will-change: transform;
+  z-index: 6;
+}
+
+/* Breathing blueprint dot grid inside #world */
+#dot-grid {
+  position: absolute;
+  inset: -120px;
+  background-image: radial-gradient(circle, rgba(20, 25, 31, 0.16) 1.6px, transparent 1.6px);
+  background-size: 48px 48px;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+
+#dot-grid-dark {
+  position: absolute;
+  inset: -120px;
+  opacity: 0;
+  background-image: radial-gradient(circle, rgba(20, 184, 166, 0.18) 1.5px, transparent 1.5px);
+  background-size: 48px 48px;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+
+/* Main topology SVG canvas inside #world */
+#topo-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3200px;
+  height: 2000px;
+  overflow: visible;
+}
+
+/* Diegetic floating world cards inside #world */
+.world-card {
+  position: absolute;
+  opacity: 0;
+  border-radius: 16px;
+  font-family: var(--font-mono);
+}
+
+/* Ping fault pill near broken cable */
+#fault-ping-card {
+  left: 1135px;
+  top: 845px;
+  padding: 12px 18px;
+  background: rgba(255, 252, 249, 0.96);
+  border: 2px solid var(--fault);
+  box-shadow: 0 12px 28px rgba(224, 90, 43, 0.14);
+  color: var(--ink-dark);
+  font-size: 18px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fault-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fault);
+  flex-shrink: 0;
+}
+
+/* Node diagnostic pills */
+.diag-chip {
+  position: absolute;
+  opacity: 0;
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+#chip-r1-err {
+  left: 930px;
+  top: 1146px;
+  background: #FFF1EB;
+  border: 1.5px solid var(--fault);
+  color: #B93815;
+}
+#chip-sw-err {
+  left: 1465px;
+  top: 1146px;
+  background: #FEF6E7;
+  border: 1.5px solid var(--amber);
+  color: #92400E;
+}
+#chip-models {
+  left: 880px;
+  top: 760px;
+  background: #E6F4F1;
+  border: 1.5px solid var(--teal);
+  color: #0F514B;
+}
+
+/* VLSM Address Blueprint Grid in Region 3 */
+#vlsm-board {
+  left: 1715px;
+  top: 430px;
+  width: 760px;
+  padding: 26px 28px 28px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 2px solid #BAC7C0;
+  box-shadow: 0 22px 48px rgba(15, 23, 32, 0.1);
+}
+
+.vlsm-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink-dark);
+}
+
+.vlsm-tag {
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: rgba(15, 118, 110, 0.14);
+  color: var(--teal);
+  font-size: 15px;
+}
+
+.vlsm-bar {
+  display: grid;
+  grid-template-columns: 4fr 2fr 1.25fr 0.9fr;
+  gap: 8px;
+  height: 120px;
+}
+
+.vlsm-block {
+  border-radius: 10px;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1.5px solid rgba(15, 118, 110, 0.42);
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--ink-dark);
+  transform-origin: left center;
+}
+.vlsm-block.b1 { background: rgba(15, 118, 110, 0.14); border-color: var(--teal); }
+.vlsm-block.b2 { background: rgba(20, 184, 166, 0.12); border-color: #0D9488; }
+.vlsm-block.b3 { background: rgba(15, 118, 110, 0.07); }
+.vlsm-block.b4 { background: rgba(224, 90, 43, 0.09); border-color: rgba(224, 90, 43, 0.45); }
+
+.vlsm-cidr { font-size: 17px; font-weight: 700; color: var(--teal); }
+.vlsm-block.b4 .vlsm-cidr { color: #B93815; }
+.vlsm-lbl { font-size: 13px; color: var(--ink-muted); line-height: 1.3; }
+
+/* IOS Console Window in Region 4 (pushed lower so upper topology sits cleanly above viewport) */
+#ios-terminal {
+  left: 780px;
+  top: 1390px;
+  width: 850px;
+  padding: 24px 28px 28px;
+  background: rgba(14, 21, 27, 0.96);
+  border: 1.5px solid rgba(20, 184, 166, 0.48);
+  box-shadow: 0 28px 68px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  color: #E2E8F0;
+}
+
+.term-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 14px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  color: #94A3B8;
+}
+
+.term-badge {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(20, 184, 166, 0.16);
+  color: var(--teal-bright);
+  font-weight: 600;
+}
+
+.term-line {
+  font-size: 20px;
+  line-height: 1.68;
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 0;
+}
+.term-line .pmt { color: var(--teal-bright); }
+.term-line .cmd { color: #F8FAFC; }
+.term-line .ok  { color: #34D399; font-weight: 600; }
+
+/* Verified Ping & State Card in Region 5 */
+#verify-card {
+  left: 1850px;
+  top: 960px;
+  width: 620px;
+  padding: 22px 26px;
+  background: rgba(13, 24, 29, 0.96);
+  border: 1.5px solid var(--teal-bright);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.48), 0 0 26px rgba(20, 184, 166, 0.18);
+  color: var(--ink-light);
+}
+
+.ver-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 17px;
+  margin-bottom: 10px;
+}
+.ver-row:last-child { margin-bottom: 0; }
+.ver-pill {
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  color: #34D399;
+  font-size: 14px;
+  font-weight: 700;
+}
+.ver-mono {
+  font-size: 16px;
+  color: #CBD5E1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* HUD layer outside camera rig so display typography stays unclipped & sharp */
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* Soft contrast backing behind HUD text when needed */
+#hud-pocket-dark {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(64% 40% at 50% 24%, rgba(6, 10, 14, 0.62), transparent 72%);
+}
+
+.hud-line {
+  position: absolute;
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.06;
+  white-space: nowrap;
+  opacity: 0;
+}
+.hud-line.light-ink {
+  color: var(--ink-light);
+  text-shadow: 0 6px 32px rgba(0, 0, 0, 0.55);
+}
+.hud-line.dark-ink {
+  color: var(--ink-dark);
+}
+.hud-line.sm { font-size: 74px; }
+.hud-line.md { font-size: 88px; }
+.hud-line.lg { font-size: 112px; }
+.hud-line.xl { font-size: 136px; font-weight: 600; }
+.hud-line.emph {
+  font-size: 116px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* Explicit positioning per beat so no two consecutive beats repeat placement */
+#h1 { left: 120px; top: 96px; }
+#h2 { left: 120px; bottom: 110px; }
+#h3 { right: 120px; top: 96px; text-align: right; }
+#h4 { left: 50%; top: 82px; transform: translateX(-50%); }
+#h5 { left: 120px; bottom: 100px; }
+
+/* Final emblem lockup centered cleanly below orbiting topology emblem */
+#lockup {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  perspective: 1200px;
+}
+
+#h6 {
+  position: relative;
+  text-align: center;
+}
+
+#tagline {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: #A7F3D0;
+  opacity: 0;
+  white-space: nowrap;
+}
+
+.wd { display: inline-block; white-space: nowrap; }
+.ch { display: inline-block; will-change: transform, opacity, filter; opacity: 0; }
+.txt2 { display: inline-block; opacity: 0; }
+
+/* Box emphasis rule from Style Brief */
+.hl { position: relative; display: inline-block; }
+.hl.box { padding: 0.02em 0.18em 0.04em; }
+.hl.box i {
+  position: absolute;
+  inset: -0.04em -0.06em;
+  border: 0.045em solid var(--fault);
+  border-radius: 0.12em;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  pointer-events: none;
+}
+.hl.box.teal-box i { border-color: var(--teal-bright); }
+.hl-t { position: relative; opacity: 0; }
+
+/* Deterministic 12fps film grain overlay */
+#grain {
+  position: absolute;
+  inset: -60px;
+  pointer-events: none;
+  filter: url(#grain-filter);
+  opacity: 0.12;
+  mix-blend-mode: multiply;
+  z-index: 30;
+}
+
+/* Soft edge vignette (subtle on light, cinematic on dark) */
+#vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.18;
+  background: radial-gradient(ellipse 84% 78% at 50% 50%, transparent 56%, rgba(8, 12, 16, 0.72) 100%);
+  z-index: 25;
+}
+
+/* Loop return veil in final 0.45s back to clean canvas */
+#loop-veil {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-light);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+
+/* Hidden debug scrub bar (?debug=1 or press H) */
+#ui {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 18px;
+  border-radius: 16px;
+  background: rgba(14, 16, 22, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: #CBD5E1;
+  z-index: 50;
+}
+#ui.on { display: flex; }
+#ui button {
+  background: #1E293B;
+  color: #fff;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+#scrub { width: 340px; accent-color: var(--teal-bright); }
+#clock { font-variant-numeric: tabular-nums; min-width: 5.4ch; text-align: right; }
+</style>
+</head>
+<body>
+
+<svg id="filters">
+  <defs>
+    <filter id="grain-filter" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.78" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+  </defs>
+</svg>
+
+<div id="stage">
+  <div id="bg-light-layer"></div>
+  <div id="bg-dark-layer"></div>
+  <div id="polarity-portal"></div>
+
+  <!-- Continuous oversized world moved cleanly by deterministic CAM rig -->
+  <div id="world">
+    <div id="dot-grid"></div>
+    <div id="dot-grid-dark"></div>
+
+    <!-- Single continuous network topology vector universe -->
+    <svg id="topo-svg" viewBox="0 0 3200 2000">
+      <defs>
+        <filter id="teal-glow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#14B8A6" flood-opacity="0.55"/>
+        </filter>
+      </defs>
+
+      <!-- Cables (continuous across beats) -->
+      <!-- Broken / primary R1 <-> SW1 Ethernet link -->
+      <path id="link-r1-sw1-fault" d="M 1068 1020 L 1492 1020"
+            stroke="#E05A2B" stroke-width="5" stroke-dasharray="14 10" fill="none" stroke-linecap="round"/>
+      <path id="link-r1-sw1-teal" d="M 1068 1020 L 1492 1020"
+            stroke="#14B8A6" stroke-width="5" fill="none" stroke-linecap="round"
+            stroke-dasharray="424" stroke-dashoffset="424"/>
+
+      <!-- R1 <-> SW-DIST -->
+      <path id="link-r1-dist" d="M 1052 982 L 1540 735"
+            stroke="#0F766E" stroke-width="4" fill="none" stroke-linecap="round"
+            stroke-dasharray="548" stroke-dashoffset="548"/>
+
+      <!-- SW1 <-> PC1 (trunk/access chain) -->
+      <path id="link-sw1-pc1" d="M 1588 1052 L 2108 1315"
+            stroke="#14B8A6" stroke-width="4.5" fill="none" stroke-linecap="round"
+            stroke-dasharray="585" stroke-dashoffset="585"/>
+
+      <!-- SW1 <-> SRV-WEB -->
+      <path id="link-sw1-srv" d="M 1592 1008 L 2108 885"
+            stroke="#0F766E" stroke-width="4" fill="none" stroke-linecap="round"
+            stroke-dasharray="532" stroke-dashoffset="532"/>
+
+      <!-- R1 -> VLSM blueprint trace -->
+      <path id="link-r1-vlsm" d="M 1020 960 C 1020 690, 1420 560, 1730 560"
+            stroke="#0F766E" stroke-width="3" stroke-dasharray="8 8" fill="none" opacity="0"/>
+
+      <!-- R1 -> Console Terminal dive cable -->
+      <path id="link-r1-cli" d="M 1020 1072 C 1020 1240, 1020 1320, 1020 1390"
+            stroke="#14B8A6" stroke-width="4" fill="none" stroke-dasharray="325" stroke-dashoffset="325"/>
+
+      <!-- Animated signal packet orbs riding cables -->
+      <circle id="fault-pulse" cx="1150" cy="1020" r="9" fill="#E05A2B"/>
+      <circle id="packet-orb" cx="1068" cy="1020" r="10" fill="#14B8A6" opacity="0" filter="url(#teal-glow)"/>
+      <circle id="verify-orb" cx="1588" cy="1052" r="11" fill="#34D399" opacity="0" filter="url(#teal-glow)"/>
+
+      <!-- Expanding discovery sonar ring from R1 -->
+      <circle id="scan-ring" cx="1020" cy="1020" r="60" fill="none" stroke="#0F766E" stroke-width="3" opacity="0"/>
+
+      <!-- Link status triangles (Cisco PT style red/amber -> emerald) -->
+      <polygon id="led-r1-f" points="1102,1005 1118,1020 1102,1035" fill="#E05A2B"/>
+      <polygon id="led-sw-f" points="1458,1005 1442,1020 1458,1035" fill="#E05A2B"/>
+
+      <!-- Topology Nodes (grouped so Emblem Pullback ✦ can orbit them cleanly) -->
+      <!-- Node 1: R1 (2911) -->
+      <g id="node-r1" transform="translate(1020, 1020)">
+        <circle class="node-body" r="48" fill="#FFFFFF" stroke="#14191F" stroke-width="3.5"/>
+        <circle r="38" fill="none" stroke="#0F766E" stroke-width="1.8" opacity="0.35"/>
+        <path class="node-glyph" d="M-20 0 H20 M0 -20 V20 M-14 -14 L14 14 M14 -14 L-14 14" stroke="#14191F" stroke-width="2.5" stroke-linecap="round"/>
+        <rect x="-62" y="60" width="124" height="30" rx="8" fill="#14191F"/>
+        <text x="0" y="80" text-anchor="middle" fill="#F8FAFC" font-family="JetBrains Mono" font-size="14" font-weight="600">R1 · 2911</text>
+      </g>
+
+      <!-- Node 2: SW1 (2960-24TT) -->
+      <g id="node-sw1" transform="translate(1540, 1020)">
+        <rect class="node-body" x="-52" y="-36" width="104" height="72" rx="14" fill="#FFFFFF" stroke="#14191F" stroke-width="3.5"/>
+        <path d="M-26 -10 H24 M16 -17 L24 -10 L16 -3 M26 10 H-24 M-16 3 L-24 10 L-16 17"
+              stroke="#0F766E" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="-70" y="48" width="140" height="30" rx="8" fill="#14191F"/>
+        <text x="0" y="68" text-anchor="middle" fill="#F8FAFC" font-family="JetBrains Mono" font-size="14" font-weight="600">SW1 · 2960</text>
+      </g>
+
+      <!-- Node 3: SW-DIST (3560-24PS) -->
+      <g id="node-dist" transform="translate(1585, 710)" opacity="0">
+        <rect class="node-body" x="-52" y="-36" width="104" height="72" rx="14" fill="#FFFFFF" stroke="#0F766E" stroke-width="3.5"/>
+        <circle cx="0" cy="0" r="14" fill="none" stroke="#0F766E" stroke-width="2.5"/>
+        <path d="M-28 0 H-18 M18 0 H28 M0 -22 V-16 M0 16 V22" stroke="#0F766E" stroke-width="2.5" stroke-linecap="round"/>
+        <rect x="-70" y="48" width="140" height="28" rx="8" fill="#0F766E"/>
+        <text x="0" y="67" text-anchor="middle" fill="#FFFFFF" font-family="JetBrains Mono" font-size="13" font-weight="600">SW-DIST · L3</text>
+      </g>
+
+      <!-- Node 4: SRV-WEB -->
+      <g id="node-srv" transform="translate(2160, 875)" opacity="0">
+        <rect class="node-body" x="-36" y="-44" width="72" height="88" rx="12" fill="#FFFFFF" stroke="#14191F" stroke-width="3.5"/>
+        <line x1="-18" y1="-18" x2="18" y2="-18" stroke="#0F766E" stroke-width="3" stroke-linecap="round"/>
+        <line x1="-18" y1="0" x2="18" y2="0" stroke="#0F766E" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="0" cy="20" r="6" fill="#14B8A6"/>
+        <rect x="-60" y="54" width="120" height="28" rx="8" fill="#14191F"/>
+        <text x="0" y="73" text-anchor="middle" fill="#F8FAFC" font-family="JetBrains Mono" font-size="13" font-weight="600">SRV-WEB</text>
+      </g>
+
+      <!-- Node 5: PC1 (PC-PT) -->
+      <g id="node-pc1" transform="translate(2160, 1340)">
+        <rect class="node-body" x="-46" y="-34" width="92" height="62" rx="10" fill="#FFFFFF" stroke="#14191F" stroke-width="3.5"/>
+        <rect x="-34" y="-22" width="68" height="38" rx="4" fill="#E6F4F1"/>
+        <rect x="-24" y="28" width="48" height="10" rx="3" fill="#14191F"/>
+        <rect x="-76" y="48" width="152" height="28" rx="8" fill="#14191F"/>
+        <text x="0" y="67" text-anchor="middle" fill="#F8FAFC" font-family="JetBrains Mono" font-size="13" font-weight="600">PC1 · 10.10.1.10</text>
+      </g>
+
+      <!-- Special Moment ✦: AgenticNet Geometric Node-Bridge Emblem -->
+      <g id="emblem-group" transform="translate(1600, 815) scale(1.18)" opacity="0">
+        <!-- Outer hexagonal mesh bridge ring -->
+        <polygon id="emb-hex" points="0,-108 94,-54 94,54 0,108 -94,54 -94,-54"
+                 fill="rgba(15, 118, 110, 0.14)" stroke="#14B8A6" stroke-width="4" stroke-linejoin="round"/>
+        <!-- Inner routed bridge arcs -->
+        <path id="emb-links" d="M 0 -72 L -62 36 L 62 36 Z M 0 -72 L 0 0 M -62 36 L 0 0 M 62 36 L 0 0"
+              stroke="#5EEAD4" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- 4 core nodes -->
+        <circle cx="0" cy="-72" r="14" fill="#14B8A6" stroke="#091115" stroke-width="4"/>
+        <circle cx="-62" cy="36" r="14" fill="#14B8A6" stroke="#091115" stroke-width="4"/>
+        <circle cx="62" cy="36" r="14" fill="#14B8A6" stroke="#091115" stroke-width="4"/>
+        <circle cx="0" cy="0" r="18" fill="#F8FAFC" stroke="#14B8A6" stroke-width="4" filter="url(#teal-glow)"/>
+      </g>
+    </svg>
+
+    <!-- Diegetic floating world cards -->
+    <div class="world-card" id="fault-ping-card">
+      <span class="fault-dot"></span>
+      <span id="fault-ping-txt">ping 10.10.1.10 · Request timed out</span>
+    </div>
+
+    <div class="diag-chip" id="chip-r1-err">Fa0/0 Admin Down</div>
+    <div class="diag-chip" id="chip-sw-err">Trunk Mismatch</div>
+    <div class="diag-chip" id="chip-models">17 PT Models · Auto-Cabling</div>
+
+    <div class="world-card" id="vlsm-board">
+      <div class="vlsm-head">
+        <span>VLSM Allocation Plan</span>
+        <span class="vlsm-tag">10.10.0.0/22</span>
+      </div>
+      <div class="vlsm-bar">
+        <div class="vlsm-block b1"><span class="vlsm-cidr">/25</span><span class="vlsm-lbl">Students<br>126 hosts</span></div>
+        <div class="vlsm-block b2"><span class="vlsm-cidr">/26</span><span class="vlsm-lbl">Faculty<br>62 hosts</span></div>
+        <div class="vlsm-block b3"><span class="vlsm-cidr">/27</span><span class="vlsm-lbl">Admin<br>30 hosts</span></div>
+        <div class="vlsm-block b4"><span class="vlsm-cidr">/30</span><span class="vlsm-lbl">WAN<br>P2P</span></div>
+      </div>
+    </div>
+
+    <div class="world-card" id="ios-terminal">
+      <div class="term-top">
+        <span>Packet Tracer Script Bridge · R1 (2911)</span>
+        <span class="term-badge">Copy-on-Write Active</span>
+      </div>
+      <div class="term-line" id="tl1"><span class="pmt">R1(config)#</span> <span class="cmd">router ospf 1</span></div>
+      <div class="term-line" id="tl2"><span class="pmt">R1(config-router)#</span> <span class="cmd">network 10.10.0.0 0.0.3.255 area 0</span></div>
+      <div class="term-line" id="tl3"><span class="pmt">R1(config-if)#</span> <span class="cmd">no shutdown</span></div>
+      <div class="term-line" id="tl4"><span class="ok">[saved] campus_agenticnet.pkt · 0 errors</span></div>
+    </div>
+
+    <div class="world-card" id="verify-card">
+      <div class="ver-row">
+        <span class="ver-mono">verify_lab · ICMP Reachability</span>
+        <span class="ver-pill">VERIFIED · 0% LOSS</span>
+      </div>
+      <div class="ver-row ver-mono">
+        <span>ping 10.10.1.10 from SRV-WEB</span>
+        <span>4/4 · 1 ms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- HUD Text Overlay Layer (unclipped by camera zoom, max 1 short line + lockup) -->
+  <div id="hud">
+    <div id="hud-pocket-dark"></div>
+
+    <!-- Beat 1: Question mark genuine, box accent on Broken -->
+    <div class="hud-line md dark-ink" id="h1">
+      <span class="hl box" id="hl-h1"><i></i><span class="hl-t">Broken</span></span>&nbsp;<span class="txt">lab</span><span class="txt2">?</span>
+    </div>
+
+    <!-- Beat 2: Sentence case, no period, bottom-left -->
+    <div class="hud-line lg dark-ink" id="h2">
+      <span class="txt">Topology mapped</span>
+    </div>
+
+    <!-- Beat 3: Top-right mask reveal -->
+    <div class="hud-line md dark-ink" id="h3">
+      <span class="txt">Subnets planned</span>
+    </div>
+
+    <!-- Beat 4: Light ink on dark terminal, teal box accent -->
+    <div class="hud-line sm light-ink" id="h4">
+      <span class="hl box teal-box" id="hl-h4"><i></i><span class="hl-t">Real IOS</span></span>&nbsp;<span class="txt">pushed</span>
+    </div>
+
+    <!-- Beat 5: Single deliberate bold uppercase beat -->
+    <div class="hud-line emph light-ink" id="h5">
+      <span class="txt">VERIFIED LIVE</span>
+    </div>
+
+    <!-- Beat 6: Brand lockup -->
+    <div id="lockup">
+      <div class="hud-line xl light-ink" id="h6">
+        <span class="txt">AgenticNet</span>
+      </div>
+      <div id="tagline">Networks. Understood. Engineered. Automated.</div>
+    </div>
+  </div>
+
+  <div id="grain"></div>
+  <div id="vignette"></div>
+  <div id="loop-veil"></div>
+</div>
+
+<!-- Hidden developer scrub panel (?debug=1 or H) -->
+<div id="ui">
+  <button id="btn-play">Pause</button>
+  <button id="btn-restart">Restart</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0">
+  <span id="clock">0.00s</span>
+</div>
+
+<script>
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const defs = $('#filters defs');
+let blurIdCounter = 0;
+
+function makeBlur() {
+  const id = 'mb' + (blurIdCounter++);
+  const NS = 'http://www.w3.org/2000/svg';
+  const f = document.createElementNS(NS, 'filter');
+  f.id = id;
+  f.setAttribute('x', '-70%');
+  f.setAttribute('y', '-70%');
+  f.setAttribute('width', '240%');
+  f.setAttribute('height', '240%');
+  const g = document.createElementNS(NS, 'feGaussianBlur');
+  g.setAttribute('stdDeviation', '0 0');
+  f.appendChild(g);
+  defs.appendChild(f);
+  return { url: `url(#${id})`, node: g };
+}
+
+function blurTween(tl, targets, at, from, to, dur, { ease = 'power3.out', ax = 1, ay = 0.08 } = {}) {
+  const b = makeBlur();
+  const proxy = { v: from };
+  tl.set(targets, { filter: b.url }, at);
+  tl.to(proxy, {
+    v: to,
+    duration: dur,
+    ease,
+    onUpdate() {
+      b.node.setAttribute('stdDeviation', `${(proxy.v * ax).toFixed(2)} ${(proxy.v * ay).toFixed(2)}`);
+    }
+  }, at);
+  tl.set(targets, { filter: 'none' }, at + dur);
+}
+
+const VERT = { ax: 0.1, ay: 1 };
+
+function splitChars(el) {
+  const words = (el.textContent || '').split(' ');
+  el.textContent = '';
+  const out = [];
+  words.forEach((w, i) => {
+    const wr = document.createElement('span');
+    wr.className = 'wd';
+    for (const c of w) {
+      const s = document.createElement('span');
+      s.className = 'ch';
+      s.textContent = c;
+      wr.appendChild(s);
+      out.push(s);
+    }
+    el.appendChild(wr);
+    if (i < words.length - 1) {
+      const sp = document.createElement('span');
+      sp.className = 'ch';
+      sp.innerHTML = '&nbsp;';
+      el.appendChild(sp);
+      out.push(sp);
+    }
+  });
+  return out;
+}
+
+/* Text entrances & exits with directional motion blur */
+const inUp = (ch, el, at, { dur = 0.72, st = 0.022 } = {}) => {
+  tl.fromTo(ch, { opacity: 0, yPercent: 60, scaleY: 1.42 }, {
+    opacity: 1, yPercent: 0, scaleY: 1, duration: dur, ease: 'power4.out', stagger: st, immediateRender: false
+  }, at);
+  blurTween(tl, el, at, 26, 0, dur, VERT);
+};
+const inDown = (ch, el, at, { dur = 0.72, st = 0.022 } = {}) => {
+  tl.fromTo(ch, { opacity: 0, yPercent: -60, scaleY: 1.42 }, {
+    opacity: 1, yPercent: 0, scaleY: 1, duration: dur, ease: 'power4.out', stagger: st, immediateRender: false
+  }, at);
+  blurTween(tl, el, at, 26, 0, dur, VERT);
+};
+const inLeft = (ch, el, at, { dur = 0.68, st = 0.02 } = {}) => {
+  tl.fromTo(ch, { opacity: 0, xPercent: -45 }, {
+    opacity: 1, xPercent: 0, duration: dur, ease: 'power4.out', stagger: st, immediateRender: false
+  }, at);
+  blurTween(tl, el, at, 44, 0, dur, { ease: 'power4.out' });
+};
+const inRight = (ch, el, at, { dur = 0.68, st = 0.02 } = {}) => {
+  tl.fromTo(ch, { opacity: 0, xPercent: 45 }, {
+    opacity: 1, xPercent: 0, duration: dur, ease: 'power4.out', stagger: { each: st, from: 'end' }, immediateRender: false
+  }, at);
+  blurTween(tl, el, at, 44, 0, dur, { ease: 'power4.out' });
+};
+const inMask = (ch, el, at, { dur = 0.78, from = 'right' } = {}) => {
+  const c = {
+    left: 'inset(0% 100% 0% 0%)',
+    right: 'inset(0% 0% 0% 100%)',
+    up: 'inset(100% 0% 0% 0%)',
+    down: 'inset(0% 0% 100% 0%)'
+  }[from];
+  tl.set(ch, { opacity: 1, xPercent: 0, yPercent: 0, scale: 1, scaleY: 1 }, at);
+  tl.fromTo(el, { clipPath: c }, { clipPath: 'inset(0% 0% 0% 0%)', duration: dur, ease: 'power3.inOut', immediateRender: false }, at);
+  tl.set(el, { clipPath: 'none' }, at + dur);
+};
+const inWords = (ch, el, at, { dur = 0.62, st = 0.14 } = {}) => {
+  const w = el.querySelectorAll('.wd');
+  tl.set(ch, { opacity: 1, xPercent: 0, yPercent: 0, scale: 1, scaleY: 1 }, at);
+  tl.fromTo(w, { opacity: 0, yPercent: 42, rotateX: -52 }, {
+    opacity: 1, yPercent: 0, rotateX: 0, duration: dur, ease: 'back.out(1.6)', stagger: st, immediateRender: false
+  }, at);
+};
+const outUp = (ch, el, at, { dur = 0.36, st = 0.008 } = {}) => {
+  tl.to(ch, { opacity: 0, yPercent: -68, duration: dur, ease: 'power2.in', stagger: st }, at);
+  blurTween(tl, el, at, 0, 38, dur + 0.08, { ease: 'power2.in', ...VERT });
+};
+const outLeft = (ch, el, at, { dur = 0.36, st = 0.008 } = {}) => {
+  tl.to(ch, { opacity: 0, xPercent: -58, duration: dur, ease: 'power2.in', stagger: st }, at);
+  blurTween(tl, el, at, 0, 48, dur + 0.08, { ease: 'power2.in' });
+};
+const outRight = (ch, el, at, { dur = 0.36, st = 0.008 } = {}) => {
+  tl.to(ch, { opacity: 0, xPercent: 58, duration: dur, ease: 'power2.in', stagger: { each: st, from: 'end' } }, at);
+  blurTween(tl, el, at, 0, 48, dur + 0.08, { ease: 'power2.in' });
+};
+const outDown = (ch, el, at, { dur = 0.36, st = 0.008 } = {}) => {
+  tl.to(ch, { opacity: 0, yPercent: 68, duration: dur, ease: 'power2.in', stagger: st }, at);
+  blurTween(tl, el, at, 0, 38, dur + 0.08, { ease: 'power2.in', ...VERT });
+};
+
+const markBox = (hl, at) => {
+  const i = $('i', hl);
+  if (i) tl.fromTo(i, { scaleX: 0 }, { scaleX: 1, duration: 0.48, ease: 'power3.out', immediateRender: false }, at);
+  tl.fromTo($('.hl-t', hl), { opacity: 0, yPercent: 55 }, {
+    opacity: 1, yPercent: 0, duration: 0.64, ease: 'power4.out', immediateRender: false
+  }, at);
+};
+const popDot = (el, at) => {
+  tl.fromTo(el, { opacity: 0, yPercent: 55 }, { opacity: 1, yPercent: 0, duration: 0.45, ease: 'power4.out', immediateRender: false }, at);
+};
+
+/* Deterministic world camera rig (techniques.md §3b) */
+const W = 1920, H = 1080;
+const WORLD_W = 3200, WORLD_H = 2000;
+const world = $('#world');
+const dotGridLight = $('#dot-grid');
+const dotGridDark = $('#dot-grid-dark');
+const grainEl = $('#grain');
+
+const CAM = { s: 1.28, fx: 1270, fy: 1005 };
+const shot = (at, dur, s, fx, fy, ease = 'power2.inOut') => {
+  tl.to(CAM, { s, fx, fy, duration: dur, ease }, at);
+};
+
+function applyCam(t) {
+  const s = CAM.s * (1 + 0.008 * Math.sin(t * 0.72));
+  let tx = W / 2 - CAM.fx * s;
+  let ty = H / 2 - CAM.fy * s;
+  tx = Math.min(0, Math.max(W - WORLD_W * s, tx));
+  ty = Math.min(0, Math.max(H - WORLD_H * s, ty));
+  world.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${s.toFixed(5)})`;
+
+  /* Breathing blueprint grid + deterministic 12fps film grain */
+  const gScale = 1 + 0.022 * Math.sin(t * 0.75);
+  dotGridLight.style.transform = `scale(${gScale.toFixed(4)})`;
+  dotGridDark.style.transform = `scale(${gScale.toFixed(4)})`;
+
+  const k = Math.floor(t * 12);
+  const gx = ((k * 37) % 60) - 30;
+  const gy = ((k * 61) % 60) - 30;
+  grainEl.style.transform = `translate(${gx}px, ${gy}px)`;
+}
+
+/* Deterministic SVG path tracer (no wall clock) */
+function traceOrbOnPath(tl, pathSel, orbSel, at, dur, ease = 'power2.inOut') {
+  const path = $(pathSel);
+  const orb = $(orbSel);
+  const total = path.getTotalLength();
+  const proxy = { p: 0 };
+  tl.set(orb, { opacity: 1 }, at);
+  tl.to(proxy, {
+    p: 1,
+    duration: dur,
+    ease,
+    onUpdate() {
+      const pt = path.getPointAtLength(proxy.p * total);
+      orb.setAttribute('cx', pt.x.toFixed(1));
+      orb.setAttribute('cy', pt.y.toFixed(1));
+    }
+  }, at);
+  tl.to(orb, { opacity: 0, duration: 0.2 }, at + dur - 0.1);
+}
+
+/* ================= DETERMINISTIC TIMELINE (30.0s Loop) ================= */
+const Q = new URLSearchParams(location.search);
+const DURATION = 30.0;
+const tl = gsap.timeline({ paused: true });
+
+/* Initial world state */
+tl.set(CAM, { s: 1.28, fx: 1270, fy: 1005 }, 0);
+tl.set('#fault-ping-card', { autoAlpha: 1, y: 0 }, 0);
+
+/* ---- BEAT 1 (0.0s - 4.5s): Broken Lab In Media Res ---- */
+const h1 = $('#h1'), h1Txt = $('.txt', h1), h1Ch = splitChars(h1Txt);
+tl.set(h1, { autoAlpha: 1 }, 0.15);
+markBox($('#hl-h1'), 0.2);
+inLeft(h1Ch, h1Txt, 0.45, { dur: 0.6, st: 0.025 });
+popDot($('.txt2', h1), 0.72);
+
+/* Deterministic pulsing fault packet + link dash travel */
+tl.fromTo('#fault-pulse', { attr: { cx: 1110, r: 8 }, opacity: 0.95 }, {
+  attr: { cx: 1280, r: 12 }, opacity: 0.15, duration: 0.9, repeat: 3, ease: 'power2.out', immediateRender: false
+}, 0);
+tl.fromTo('#link-r1-sw1-fault', { strokeDashoffset: 0 }, {
+  strokeDashoffset: -96, duration: 3.8, ease: 'none', immediateRender: false
+}, 0);
+tl.to('#fault-ping-card', { y: -4, duration: 0.65, yoyo: true, repeat: 4, ease: 'sine.inOut' }, 0.2);
+shot(0.0, 4.2, 1.16, 1300, 1005, 'sine.inOut');
+
+/* Out Beat 1 cleanly */
+outLeft(h1Ch, h1Txt, 3.9, { dur: 0.35 });
+tl.to(['#hl-h1', '.txt2', '#fault-ping-card'], { opacity: 0, duration: 0.35, ease: 'power2.in' }, 3.9);
+
+/* ---- BEAT 2 (4.5s - 9.5s): Topology Mapped ---- */
+shot(4.3, 1.2, 0.80, 1620, 1020, 'power2.inOut');
+
+const h2 = $('#h2'), h2Txt = $('.txt', h2), h2Ch = splitChars(h2Txt);
+tl.set(h2, { autoAlpha: 1 }, 4.65);
+inUp(h2Ch, h2Txt, 4.7, { dur: 0.75, st: 0.022 });
+
+/* Expand topology & scan ring from R1 */
+tl.fromTo('#scan-ring', { attr: { r: 52 }, opacity: 0.85 }, {
+  attr: { r: 780 }, opacity: 0, duration: 1.7, ease: 'power2.out', immediateRender: false
+}, 4.75);
+tl.to(['#node-dist', '#node-srv'], { opacity: 1, duration: 0.55, stagger: 0.16, ease: 'power3.out' }, 5.1);
+tl.to('#link-r1-dist', { strokeDashoffset: 0, duration: 0.85, ease: 'power2.inOut' }, 5.0);
+tl.to('#link-sw1-srv', { strokeDashoffset: 0, duration: 0.85, ease: 'power2.inOut' }, 5.3);
+tl.to('#link-sw1-pc1', { strokeDashoffset: 0, duration: 0.9, ease: 'power2.inOut' }, 5.5);
+
+/* Surface diagnostic chips sequentially */
+tl.fromTo(['#chip-models', '#chip-r1-err', '#chip-sw-err'], { opacity: 0, y: 18, scale: 0.92 }, {
+  opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.25, ease: 'back.out(1.6)', immediateRender: false
+}, 5.85);
+shot(5.8, 3.3, 0.85, 1650, 990, 'sine.inOut');
+
+outDown(h2Ch, h2Txt, 8.85, { dur: 0.38 });
+tl.to(['#chip-models', '#chip-r1-err', '#chip-sw-err'], { opacity: 0, y: -12, duration: 0.38 }, 8.95);
+
+/* ---- BEAT 3 (9.5s - 14.5s): Subnets Planned (VLSM Blueprint) ---- */
+shot(9.35, 1.15, 1.12, 2060, 680, 'power2.inOut');
+tl.to('#link-r1-vlsm', { opacity: 0.7, duration: 0.6 }, 9.6);
+
+const h3 = $('#h3'), h3Txt = $('.txt', h3), h3Ch = splitChars(h3Txt);
+tl.set(h3, { autoAlpha: 1 }, 9.8);
+inMask(h3Ch, h3Txt, 9.85, { dur: 0.72, from: 'right' });
+
+tl.fromTo('#vlsm-board', { opacity: 0, y: 28, scale: 0.95 }, {
+  opacity: 1, y: 0, scale: 1, duration: 0.68, ease: 'power3.out', immediateRender: false
+}, 10.1);
+tl.fromTo('.vlsm-block', { scaleX: 0, opacity: 0 }, {
+  scaleX: 1, opacity: 1, duration: 0.55, stagger: 0.18, ease: 'power3.out', immediateRender: false
+}, 10.55);
+shot(11.0, 3.0, 1.22, 2090, 675, 'sine.inOut');
+
+outRight(h3Ch, h3Txt, 13.85, { dur: 0.38 });
+tl.to(['#vlsm-board', '#link-r1-vlsm'], { opacity: 0, duration: 0.4 }, 14.0);
+
+/* ---- BEAT 4 (14.5s - 20.5s): Terminal Dive & Polarity Shift -> Dark Slate ---- */
+shot(14.3, 1.15, 1.24, 1205, 1595, 'power2.inOut');
+tl.to('#link-r1-cli', { strokeDashoffset: 0, duration: 0.65, ease: 'power2.out' }, 14.4);
+
+/* Expanding portal + node material shift into crisp dark terminal mode */
+tl.fromTo('#polarity-portal', { scale: 0, opacity: 0.98 }, {
+  scale: 1.25, opacity: 1, duration: 0.72, ease: 'power3.inOut', immediateRender: false
+}, 14.55);
+tl.to('.node-body', { fill: '#101E24', stroke: '#14B8A6', duration: 0.45 }, 14.65);
+tl.to('.node-glyph', { stroke: '#5EEAD4', duration: 0.45 }, 14.65);
+tl.set('#bg-dark-layer', { opacity: 1 }, 15.1);
+tl.set('#dot-grid-dark', { opacity: 1 }, 15.1);
+tl.to(['#dot-grid', '#bg-light-layer'], { opacity: 0, duration: 0.25 }, 14.95);
+tl.to('#polarity-portal', { opacity: 0, duration: 0.4 }, 15.15);
+tl.to('#hud-pocket-dark', { opacity: 0.9, duration: 0.4 }, 14.9);
+tl.to('#vignette', { opacity: 0.65, duration: 0.45 }, 14.9);
+tl.to('#grain', { mixBlendMode: 'soft-light', opacity: 0.18, duration: 0.3 }, 15.0);
+
+const h4 = $('#h4'), h4Txt = $('.txt', h4), h4Ch = splitChars(h4Txt);
+tl.set(h4, { autoAlpha: 1 }, 15.15);
+markBox($('#hl-h4'), 15.2);
+inDown(h4Ch, h4Txt, 15.42, { dur: 0.66, st: 0.024 });
+
+tl.fromTo('#ios-terminal', { opacity: 0, y: 26, scale: 0.96 }, {
+  opacity: 1, y: 0, scale: 1, duration: 0.62, ease: 'power3.out', immediateRender: false
+}, 15.35);
+
+/* Sequential IOS lines executing cleanly inside terminal */
+tl.fromTo(['#tl1', '#tl2', '#tl3', '#tl4'], { opacity: 0, x: -16 }, {
+  opacity: 1, x: 0, duration: 0.45, stagger: 0.72, ease: 'power3.out', immediateRender: false
+}, 15.9);
+shot(16.0, 4.0, 1.30, 1205, 1595, 'sine.inOut');
+
+/* Heal main fault cable into solid live teal when `no shutdown` runs */
+tl.to('#link-r1-sw1-fault', { opacity: 0, duration: 0.35 }, 18.2);
+tl.to('#link-r1-sw1-teal', { strokeDashoffset: 0, duration: 0.7, ease: 'power2.out' }, 18.2);
+tl.to(['#led-r1-f', '#led-sw-f'], { fill: '#14B8A6', duration: 0.3 }, 18.5);
+tl.set('#fault-pulse', { opacity: 0 }, 18.2);
+
+outUp(h4Ch, h4Txt, 19.95, { dur: 0.36 });
+tl.to(['#hl-h4', '#ios-terminal'], { opacity: 0, duration: 0.38 }, 20.0);
+
+/* ---- BEAT 5 (20.5s - 24.5s): Verified Live Packet Proof ---- */
+shot(20.25, 1.05, 1.04, 1960, 1140, 'power2.inOut');
+
+const h5 = $('#h5'), h5Txt = $('.txt', h5), h5Ch = splitChars(h5Txt);
+tl.set(h5, { autoAlpha: 1 }, 20.65);
+inRight(h5Ch, h5Txt, 20.7, { dur: 0.65, st: 0.022 });
+
+/* Packet orb traces path live into PC1 -> Verify card lights up */
+traceOrbOnPath(tl, '#link-r1-sw1-teal', '#packet-orb', 20.3, 0.75, 'power2.in');
+traceOrbOnPath(tl, '#link-sw1-pc1', '#verify-orb', 20.95, 0.85, 'power2.out');
+
+tl.fromTo('#verify-card', { opacity: 0, y: 24, scale: 0.94 }, {
+  opacity: 1, y: 0, scale: 1, duration: 0.55, ease: 'back.out(1.4)', immediateRender: false
+}, 21.55);
+shot(21.6, 2.5, 1.08, 1995, 1135, 'sine.inOut');
+
+outLeft(h5Ch, h5Txt, 23.95, { dur: 0.36 });
+tl.to('#verify-card', { opacity: 0, duration: 0.35 }, 24.0);
+
+/* ---- BEAT 6 ✦ (24.5s - 30.0s): Special Moment — Graph-to-Emblem Pullback ---- */
+shot(24.3, 1.35, 0.95, 1600, 960, 'power3.inOut');
+
+/* Existing network nodes pull cleanly into emblem vertices before morphing seamlessly */
+tl.to('#node-r1',   { attr: { transform: 'translate(1527, 858)' }, opacity: 0, duration: 0.75, ease: 'power3.inOut' }, 24.65);
+tl.to('#node-sw1',  { attr: { transform: 'translate(1600, 815)' }, opacity: 0, duration: 0.75, ease: 'power3.inOut' }, 24.65);
+tl.to('#node-dist', { attr: { transform: 'translate(1600, 730)' }, opacity: 0, duration: 0.75, ease: 'power3.inOut' }, 24.65);
+tl.to('#node-srv',  { attr: { transform: 'translate(1673, 858)' }, opacity: 0, duration: 0.75, ease: 'power3.inOut' }, 24.65);
+tl.to('#node-pc1',  { attr: { transform: 'translate(1673, 858)' }, opacity: 0, duration: 0.75, ease: 'power3.inOut' }, 24.65);
+tl.to(['#link-r1-sw1-teal', '#link-r1-dist', '#link-sw1-pc1', '#link-sw1-srv', '#link-r1-cli', '#led-r1-f', '#led-sw-f'],
+  { opacity: 0, duration: 0.6 }, 24.5);
+
+/* Emblem scales up cleanly overlapping node arrival at 24.75s */
+tl.fromTo('#emblem-group', { opacity: 0, scale: 0.58, transformOrigin: 'center center' }, {
+  opacity: 1, scale: 1.0, duration: 0.85, ease: 'back.out(1.4)', immediateRender: false
+}, 24.75);
+tl.fromTo('#emb-hex', { rotate: -24, transformOrigin: 'center center' }, {
+  rotate: 0, duration: 1.8, ease: 'power2.out', immediateRender: false
+}, 24.75);
+
+const h6 = $('#h6'), h6Txt = $('.txt', h6), h6Ch = splitChars(h6Txt);
+tl.set(h6, { autoAlpha: 1 }, 25.55);
+inWords(h6Ch, h6Txt, 25.6, { dur: 0.72, st: 0.14 });
+tl.fromTo('#tagline', { opacity: 0, y: 18 }, {
+  opacity: 1, y: 0, duration: 0.65, ease: 'power3.out', immediateRender: false
+}, 26.25);
+
+/* Slow final push hold — never frozen */
+shot(25.8, 3.6, 1.04, 1600, 935, 'sine.inOut');
+
+/* Smooth return veil for clean seamless loop back to 0.0s */
+tl.to('#loop-veil', { opacity: 1, duration: 0.45, ease: 'power2.inOut' }, 29.55);
+tl.to({ _pad: 0 }, { _pad: 1, duration: 0.01 }, DURATION);
+
+/* ================= OPTIONAL PROCEDURAL WEB AUDIO SFX (NON-BLOCKING) ================= */
+let audioCtx = null;
+let lastCueIdx = -1;
+const SFX_CUES = [
+  { t: 0.5,  freq: 220, type: 'triangle', dur: 0.08, gain: 0.04 },
+  { t: 4.8,  freq: 440, type: 'sine',     dur: 0.12, gain: 0.04 },
+  { t: 9.9,  freq: 523, type: 'sine',     dur: 0.09, gain: 0.04 },
+  { t: 15.2, freq: 330, type: 'sine',     dur: 0.14, gain: 0.05 },
+  { t: 18.3, freq: 659, type: 'sine',     dur: 0.16, gain: 0.05 },
+  { t: 21.6, freq: 880, type: 'sine',     dur: 0.22, gain: 0.05 },
+  { t: 25.6, freq: 587, type: 'triangle', dur: 0.35, gain: 0.05 },
+];
+
+function unlockAudio() {
+  if (!audioCtx && (window.AudioContext || window.webkitAudioContext)) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AC();
+  }
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+}
+addEventListener('pointerdown', unlockAudio, { once: true });
+addEventListener('keydown', unlockAudio, { once: true });
+
+function tickAudio(t) {
+  if (!audioCtx || audioCtx.state !== 'running' || tl.paused()) return;
+  if (t < 0.15) lastCueIdx = -1;
+  for (let i = 0; i < SFX_CUES.length; i++) {
+    if (i > lastCueIdx && t >= SFX_CUES[i].t && t < SFX_CUES[i].t + 0.18) {
+      lastCueIdx = i;
+      const cue = SFX_CUES[i];
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = cue.type;
+      osc.frequency.setValueAtTime(cue.freq, audioCtx.currentTime);
+      g.gain.setValueAtTime(cue.gain, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + cue.dur);
+      osc.connect(g);
+      g.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + cue.dur);
+    }
+  }
+}
+
+/* ================= VIEWPORT SCALING, CONTROLS & OPENER API ================= */
+const stage = $('#stage');
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  stage.style.transform = `translate(-50%, -50%) scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+
+const clock = $('#clock');
+const scrub = $('#scrub');
+const btnPlay = $('#btn-play');
+let scrubbing = false;
+
+(function frame() {
+  const t = tl.time();
+  applyCam(t);
+  tickAudio(t);
+  clock.textContent = t.toFixed(2) + 's';
+  if (!scrubbing) scrub.value = String((t / DURATION) * 1000);
+  requestAnimationFrame(frame);
+})();
+
+function togglePlay() {
+  if (tl.paused() || tl.progress() >= 1) {
+    if (tl.progress() >= 1) tl.progress(0);
+    tl.play();
+    btnPlay.textContent = 'Pause';
+  } else {
+    tl.pause();
+    btnPlay.textContent = 'Play';
+  }
+}
+btnPlay.onclick = togglePlay;
+$('#btn-restart').onclick = () => { lastCueIdx = -1; tl.pause(0); tl.play(); btnPlay.textContent = 'Pause'; };
+scrub.addEventListener('pointerdown', () => { scrubbing = true; tl.pause(); btnPlay.textContent = 'Play'; });
+addEventListener('pointerup', () => { scrubbing = false; });
+scrub.addEventListener('input', () => { tl.pause(); tl.time((scrub.value / 1000) * DURATION); });
+
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  if (/^[rR]$/.test(e.key)) { lastCueIdx = -1; tl.pause(0); tl.play(); }
+  if (/^[hH]$/.test(e.key)) { $('#ui').classList.toggle('on'); }
+});
+
+if (Q.has('debug')) $('#ui').classList.add('on');
+tl.eventCallback('onComplete', () => { lastCueIdx = -1; tl.play(0); });
+
+const seek = t => {
+  tl.pause();
+  tl.time(t, false);
+  if (gsap.ticker.tick) gsap.ticker.tick();
+  applyCam(t);
+};
+window.OPENER = { W, H, DURATION, tl, seek, ready: false };
+
+document.fonts.ready.then(() => {
+  window.OPENER.ready = true;
+  if (!Q.has('clean')) tl.play(0);
+});
+</script>
+</body>
+</html>

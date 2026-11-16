@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<!-- Built with pro-motion skill (3D Overlapping-Null Camera Rig + 5 Speed Graphs + WebCodecs MP4) -->
+<head>
+<meta charset="utf-8">
+<title>AgenticNet — Pro-Motion 3D Promo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@500;700;800&family=Space+Grotesk:wght@600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    background: #070B0E;
+    color: #E2E8F0;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    gap: 16px;
+    padding: 12px;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    box-sizing: border-box;
+  }
+  #out {
+    max-width: calc(100vw - 260px);
+    max-height: 92vh;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  }
+  #ui {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 14px;
+    min-width: 210px;
+  }
+  #ui button {
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: 8px;
+    border: 1px solid rgba(20, 184, 166, 0.45);
+    background: #102027;
+    color: #F8FAFC;
+    cursor: pointer;
+  }
+  #ui button:hover { background: #14303A; }
+  #scrub { accent-color: #14B8A6; }
+  #status { font-family: "JetBrains Mono", monospace; font-size: 12px; color: #94A3B8; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="out" width="1920" height="1080"></canvas>
+  <div id="ui">
+    <button id="play">Play / Pause</button>
+    <button id="render">Render MP4</button>
+    <input id="scrub" type="range" min="0" value="0">
+    <div id="status">loading fonts…</div>
+  </div>
+</div>
+
+<script>
+// ================= Settings =================
+const W = 1920, H = 1080, FPS = 30, DUR = 12, FRAMES = FPS * DUR, SUB = 5; // 5-subframe 180 deg motion blur
+const OUT_NAME = 'agenticnet-pro-promo.mp4';
+const C = {
+  cream: '#F3F5F2',
+  creamEdge: '#E1E7E0',
+  slate: '#0B1117',
+  slateCard: '#121D24',
+  darkBrand: '#091315',
+  teal: '#0F766E',
+  tealBright: '#14B8A6',
+  mintGlow: 'rgba(20, 184, 166, 0.72)',
+  mintText: '#5EEAD4',
+  fault: '#E05A2B',
+  amber: '#D97706',
+  ink: '#14191F',
+  muted: '#52606D',
+  white: '#F8FAFC',
+};
+const DISP = '"Space Grotesk"', MONO = '"JetBrains Mono"', SERIF = '"Instrument Serif"';
+
+const out = document.getElementById('out'), octx = out.getContext('2d');
+const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+// ================= Fares 5 Speed Graphs [Out, In] =================
+const G = {
+  sharpEnd: [1, 0.35],
+  sharpMid: [0.7, 0.75],
+  sharpStartHard: [0.0001, 1],
+  sharpStartSoft: [0.32, 1],
+  sharpEndHard: [1, 0.0001],
+};
+
+function aeEase(o, i, p) {
+  if (p <= 0) return 0;
+  if (p >= 1) return 1;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 40; k++) {
+    const t = (lo + hi) / 2;
+    const x = 3 * (1 - t) * (1 - t) * t * o + 3 * (1 - t) * t * t * (1 - i) + t * t * t;
+    if (x < p) lo = t; else hi = t;
+  }
+  const t = (lo + hi) / 2;
+  return 3 * (1 - t) * t * t + t * t * t;
+}
+
+const ease = (f, f0, f1, g) => aeEase(g[0], g[1], (f - f0) / (f1 - f0));
+const anim = (f, a, b, f0, f1, g) => a + (b - a) * ease(f, f0, f1, g);
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// ================= 3D Overlapping-Null Camera Rig (single-axis nulls, 83-92% overlap) =================
+// Camera sits at base and only nulls move on single axes; speed never drops to zero from f=0 to f=359.
+const CAMERA = { zoom: 1866.7, base: [960 - 680, 540, -1866.7] };
+const NULLS = [
+  // S1 opening: enters at full velocity moving +X into S1 (x=960, y=540)
+  { name: 'N1 S1 entry',  axis: 'x', d: 680,   f0: 0,   f1: 95,  g: G.sharpStartHard },
+  // N2 S1 -> S2: whip right along +X to S2 (x=3460, y=540), overlaps at 86% of N1 (f=82)
+  { name: 'N2 S1->S2',    axis: 'x', d: 2500,  f0: 82,  f1: 168, g: [0.747, 0.793] },
+  // N3 S2 -> S3: whip up along -Y to S3 (x=3460, y=-980), overlaps at 88% of N2 (f=158)
+  { name: 'N3 S2->S3',    axis: 'y', d: -1520, f0: 158, f1: 244, g: [0.727, 0.822] },
+  // N4 S3 -> S4: whip right along +X to S4 (x=5960, y=-980), overlaps at 88% of N3 (f=234)
+  { name: 'N4 S3->S4',    axis: 'x', d: 2500,  f0: 234, f1: 318, g: [0.747, 0.793] },
+  // N5 S4 end push: pulls z cleanly ending with sharpEndHard slam on f=359
+  { name: 'N5 S4 endZ',   axis: 'z', d: -260,  f0: 304, f1: 359, g: G.sharpEndHard },
+];
+
+function camAt(f) {
+  const c = CAMERA.base.slice();
+  for (const n of NULLS) {
+    c['xyz'.indexOf(n.axis)] += n.d * ease(f, n.f0, n.f1, n.g);
+  }
+  return c;
+}
+
+function peakFrame(n) {
+  let best = -1, at = n.f0;
+  for (let f = n.f0; f < n.f1; f += 0.25) {
+    const v = Math.abs(ease(f + 0.25, n.f0, n.f1, n.g) - ease(f, n.f0, n.f1, n.g));
+    if (v > best) { best = v; at = f; }
+  }
+  return Math.round(at);
+}
+
+function project(cam, x, y, z) {
+  const s = CAMERA.zoom / (z - cam[2]);
+  return { x: W / 2 + (x - cam[0]) * s, y: H / 2 + (y - cam[1]) * s, s };
+}
+
+function layer3D(cam, x, y, z, rotZ, draw, o = {}) {
+  if (z - cam[2] <= 1) return;
+  const p = project(cam, x, y, z);
+  const sc = p.s * (o.scale || 1);
+  ctx.save();
+  if (o.alpha != null) ctx.globalAlpha *= o.alpha;
+  if (o.blur) ctx.filter = `blur(${o.blur.toFixed(1)}px)`;
+  ctx.translate(p.x, p.y);
+  ctx.scale(sc, sc);
+  ctx.rotate((rotZ * Math.PI) / 180);
+  draw(sc);
+  ctx.restore();
+}
+
+const dof = z => Math.min(10, Math.abs(z) * 0.024);
+
+// ================= Drawing Helpers =================
+function txt(str, x, y, o = {}) {
+  const size = o.size || 64, weight = o.weight || 800, family = o.family || DISP;
+  ctx.save();
+  ctx.direction = 'ltr';
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${o.italic ? 'italic ' : ''}${weight} ${size}px ${family}`;
+  if (o.maxW) {
+    let s = size;
+    while (ctx.measureText(str).width > o.maxW && s > 10) {
+      s -= 2;
+      ctx.font = `${o.italic ? 'italic ' : ''}${weight} ${s}px ${family}`;
+    }
+  }
+  ctx.fillStyle = o.color || C.ink;
+  if (o.glow) {
+    ctx.shadowColor = o.glow;
+    ctx.shadowBlur = (o.glowBlur || 34) * (o.sc || 1);
+    ctx.fillText(str, x, y);
+    ctx.shadowBlur = (o.glowBlur || 34) * 0.35 * (o.sc || 1);
+  }
+  ctx.fillText(str, x, y);
+  const w = ctx.measureText(str).width;
+  ctx.restore();
+  return w;
+}
+
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function softShadow(s, a = 0.2) {
+  ctx.shadowColor = `rgba(0,0,0,${a})`;
+  ctx.shadowBlur = 52 * s;
+  ctx.shadowOffsetY = 24 * s;
+}
+function noShadow() {
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+}
+
+const pop = (f, f0, dist = 190, rot = 12, dur = 38) => ({
+  y: anim(f, dist, 0, f0, f0 + dur, G.sharpStartHard),
+  r: anim(f, rot, 0, f0, f0 + dur, G.sharpStartHard),
+  a: clamp((f - f0) / 3),
+});
+
+function checkCircle(cx, cy, r, p) {
+  if (p <= 0) return;
+  ctx.save();
+  ctx.fillStyle = C.tealBright;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * clamp(p * 1.5), 0, Math.PI * 2);
+  ctx.fill();
+  const q = clamp((p - 0.3) / 0.7);
+  if (q > 0) {
+    ctx.strokeStyle = C.darkBrand;
+    ctx.lineWidth = r * 0.24;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const a = [-0.42, 0.02], b = [-0.1, 0.32], c = [0.46, -0.32];
+    const L1 = 1, L2 = 1.9, d = q * (L1 + L2);
+    ctx.beginPath();
+    ctx.moveTo(cx + a[0] * r, cy + a[1] * r);
+    if (d <= L1) {
+      ctx.lineTo(cx + lerp(a[0], b[0], d / L1) * r, cy + lerp(a[1], b[1], d / L1) * r);
+    } else {
+      ctx.lineTo(cx + b[0] * r, cy + b[1] * r);
+      const k = (d - L1) / L2;
+      ctx.lineTo(cx + lerp(b[0], c[0], k) * r, cy + lerp(b[1], c[1], k) * r);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function cursorShape() {
+  ctx.beginPath();
+  const P = [[0, 0], [0, 44], [12, 33], [21, 51], [28, 47], [19, 30], [34, 30]];
+  P.forEach(([x, y], i) => (i ? ctx.lineTo(x * 1.5, y * 1.5) : ctx.moveTo(x * 1.5, y * 1.5)));
+  ctx.closePath();
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.lineWidth = 4.5;
+  ctx.strokeStyle = '#111';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+/* Deterministic 3-frame grain (safe for negative subframes in 180-deg shutter motion blur) */
+let grain = [];
+function makeGrain() {
+  grain = [];
+  for (let k = 0; k < 3; k++) {
+    const g = document.createElement('canvas');
+    g.width = 480; g.height = 270;
+    const gx = g.getContext('2d'), id = gx.createImageData(480, 270);
+    for (let i = 0; i < id.data.length; i += 4) {
+      const seed = Math.sin((i + 1) * 12.9898 + k * 78.233) * 43758.5453;
+      const v = (seed - Math.floor(seed)) * 255;
+      id.data[i] = id.data[i + 1] = id.data[i + 2] = v;
+      id.data[i + 3] = 255;
+    }
+    gx.putImageData(id, 0, 0);
+    grain.push(g);
+  }
+}
+
+// ================= Anchored Scene Backdrop Planes (no wipes/morphs; pure 3D camera travel) =================
+// Planes sit seamlessly edge-to-edge in 3D space (spacing: X=2500, Y=1520; at z=260 scale=0.878)
+function drawScenePlane(cam, sx, sy, type) {
+  layer3D(cam, sx, sy, 260, 0, () => {
+    const pw = 2850, ph = 1740;
+    if (type === 'light') {
+      const g = ctx.createLinearGradient(-pw / 2, -ph / 2, pw / 2, ph / 2);
+      g.addColorStop(0, '#F7F8F5');
+      g.addColorStop(0.6, C.cream);
+      g.addColorStop(1, C.creamEdge);
+      ctx.fillStyle = g;
+      ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      ctx.fillStyle = 'rgba(20, 25, 31, 0.14)';
+      for (let gx = -1320; gx <= 1320; gx += 90) {
+        for (let gy = -780; gy <= 780; gy += 90) {
+          ctx.beginPath(); ctx.arc(gx, gy, 2.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    } else if (type === 'dark') {
+      const g = ctx.createRadialGradient(0, 220, 80, 0, 100, 1300);
+      g.addColorStop(0, '#122830');
+      g.addColorStop(0.55, C.slate);
+      g.addColorStop(1, '#070B0E');
+      ctx.fillStyle = g;
+      ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      ctx.strokeStyle = 'rgba(20, 184, 166, 0.08)';
+      ctx.lineWidth = 2;
+      for (let gx = -1320; gx <= 1320; gx += 120) {
+        ctx.beginPath(); ctx.moveTo(gx, -840); ctx.lineTo(gx, 840); ctx.stroke();
+      }
+    } else {
+      const g = ctx.createRadialGradient(0, 140, 60, 0, 0, 1250);
+      g.addColorStop(0, '#103538');
+      g.addColorStop(0.55, C.darkBrand);
+      g.addColorStop(1, '#060A0C');
+      ctx.fillStyle = g;
+      ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+    }
+  });
+}
+
+// ================= Scene Peaks =================
+const S1 = 0, S2 = peakFrame(NULLS[1]), S3 = peakFrame(NULLS[2]), S4 = peakFrame(NULLS[3]);
+
+// ================= Scene 1: Broken Lab Hook (x=960, y=540) =================
+function scene1(f, cam) {
+  /* Extra left-side cream bleed so opening slide-in (cam.x = 280 -> 960) stays 100% seamless */
+  drawScenePlane(cam, 960, 540, 'light');
+  layer3D(cam, -720, 540, 260, 0, () => {
+    ctx.fillStyle = '#F3F5F2'; ctx.fillRect(-900, -870, 1800, 1740);
+  });
+  const X = 960, Y = 540;
+
+  /* Background fault ring (deep Z parallax) */
+  const rp = ease(f, 0, 40, G.sharpStartHard);
+  layer3D(cam, X, Y - 20, 220, 0, () => {
+    ctx.strokeStyle = 'rgba(224, 90, 43, 0.22)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, 420 * (0.85 + 0.15 * rp), -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * rp);
+    ctx.stroke();
+  }, { blur: dof(220) });
+
+  /* Floating 3D Fault Cards popping in Z-layers */
+  const FAULTS = [
+    { x: X - 490, y: Y + 190, z: -140, rot: -10, txt: 'Request timed out', sub: 'ping 10.10.1.10 · 4/4 lost', f0: 12 },
+    { x: X + 480, y: Y + 170, z: 120,  rot: 11,  txt: 'Fa0/0 Admin Down',  sub: 'R1 (2911) · Trunk mismatch', f0: 20 },
+  ];
+  FAULTS.forEach(c => {
+    const P = pop(f, c.f0, 180, c.rot, 36);
+    if (P.a <= 0) return;
+    layer3D(cam, c.x, c.y + P.y, c.z, P.r, s => {
+      softShadow(s, 0.16);
+      ctx.fillStyle = '#FFFFFF';
+      rr(-220, -78, 440, 156, 26); ctx.fill();
+      noShadow();
+      ctx.strokeStyle = C.fault; ctx.lineWidth = 3.5; rr(-220, -78, 440, 156, 26); ctx.stroke();
+      ctx.fillStyle = C.fault; ctx.beginPath(); ctx.arc(-166, -18, 12, 0, Math.PI * 2); ctx.fill();
+      txt(c.txt, -138, -18, { size: 32, weight: 800, color: C.ink, align: 'left' });
+      txt(c.sub, -138, 28, { size: 21, weight: 600, family: MONO, color: C.fault, align: 'left' });
+    }, { alpha: P.a, blur: dof(c.z) });
+  });
+
+  /* Broken topology link in center */
+  const lp = ease(f, 4, 34, G.sharpStartHard);
+  layer3D(cam, X, Y + 140, 0, 0, s => {
+    softShadow(s, 0.14);
+    ctx.fillStyle = '#FFFFFF'; rr(-210, -56, 130, 112, 22); ctx.fill();
+    rr(80, -56, 130, 112, 22); ctx.fill();
+    noShadow();
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 4;
+    rr(-210, -56, 130, 112, 22); ctx.stroke();
+    rr(80, -56, 130, 112, 22); ctx.stroke();
+    txt('R1', -145, 2, { size: 36, weight: 800, family: MONO, color: C.ink });
+    txt('SW1', 145, 2, { size: 34, weight: 800, family: MONO, color: C.ink });
+    ctx.setLineDash([16, 12]);
+    ctx.lineDashOffset = -f * 4;
+    ctx.strokeStyle = C.fault; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(-76, 0); ctx.lineTo(-76 + 152 * lp, 0); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  /* Hook Title + Trim-Paths highlight bar */
+  const t1 = pop(f, 4, 130, 0, 32), t2 = pop(f, 10, 130, 0, 32);
+  if (t1.a > 0) {
+    layer3D(cam, X, Y - 195 + t1.y, 0, 0, () => {
+      txt('Stop wiring', 0, 0, { size: 84, weight: 700, color: C.ink });
+    }, { alpha: t1.a });
+  }
+  if (t2.a > 0) {
+    const hl = ease(f, 16, 46, G.sharpStartHard);
+    layer3D(cam, X, Y - 75 + t2.y, 0, 0, () => {
+      const bw = 960;
+      ctx.fillStyle = C.teal;
+      rr(-bw / 2, -62, bw * hl, 124, 22);
+      ctx.fill();
+      txt('Packet Tracer by hand', 0, 4, {
+        size: 86, weight: 800, family: SERIF, italic: true,
+        color: hl > 0.45 ? C.white : C.ink,
+      });
+    }, { alpha: t2.a });
+  }
+}
+
+// ================= Scene 2: Live IOS Terminal & Counters (x=3460, y=540, Dark) =================
+function scene2(f, cam) {
+  drawScenePlane(cam, 3460, 540, 'dark');
+  const X = 3460, Y = 540;
+
+  /* 3D Foreground & Background Stat Chips counting up deterministically (spaced clearly around terminal) */
+  const STATS = [
+    { n: 82, suf: '',  lbl: 'MCP Tools',     x: X - 680, y: Y - 90,  z: -110, rot: -7, d: 4 },
+    { n: 17, suf: '',  lbl: 'PT Models',     x: X + 670, y: Y - 135, z: 110,  rot: 8,  d: 10 },
+    { n: 100, suf: '%', lbl: 'IOS Validated', x: X + 660, y: Y + 195, z: -100, rot: -5, d: 16 },
+  ];
+  STATS.forEach(st => {
+    const f0 = S2 + st.d;
+    const P = pop(f, f0, 190, st.rot, 36);
+    if (P.a <= 0) return;
+    layer3D(cam, st.x, st.y + P.y, st.z, P.r, s => {
+      softShadow(s, 0.35);
+      ctx.fillStyle = C.slateCard; rr(-175, -78, 350, 156, 32); ctx.fill();
+      noShadow();
+      ctx.strokeStyle = 'rgba(20, 184, 166, 0.48)'; ctx.lineWidth = 3; rr(-175, -78, 350, 156, 32); ctx.stroke();
+      const val = Math.round(st.n * ease(f, f0, f0 + 30, G.sharpStartSoft));
+      txt(val + st.suf, 0, -20, { size: 60, weight: 800, color: C.mintText, glow: C.mintGlow, glowBlur: 24, sc: s });
+      txt(st.lbl, 0, 40, { size: 26, weight: 700, color: C.white });
+    }, { alpha: P.a, blur: dof(st.z) });
+  });
+
+  /* Main Live IOS Terminal Card */
+  const Pt = pop(f, S2 - 4, 210, 6, 38);
+  if (Pt.a > 0) {
+    layer3D(cam, X - 10, Y + 72 + Pt.y, 0, Pt.r, s => {
+      softShadow(s, 0.45);
+      ctx.fillStyle = '#0D171D'; rr(-440, -240, 880, 480, 32); ctx.fill();
+      noShadow();
+      ctx.strokeStyle = C.tealBright; ctx.lineWidth = 3; rr(-440, -240, 880, 480, 32); ctx.stroke();
+
+      /* Header strip */
+      ctx.fillStyle = 'rgba(20, 184, 166, 0.14)';
+      rr(-408, -208, 816, 54, 14); ctx.fill();
+      txt('Packet Tracer Script Bridge · R1 (2911)', -384, -180, { size: 22, weight: 700, family: MONO, color: '#CBD5E1', align: 'left' });
+      txt('LIVE', 380, -180, { size: 20, weight: 800, family: MONO, color: '#34D399', align: 'right' });
+
+      const LINES = [
+        { p: 'R1(config)# ', c: 'router ospf 1', at: S2 + 4, col: C.white },
+        { p: 'R1(config-router)# ', c: 'network 10.10.0.0 0.0.3.255 area 0', at: S2 + 16, col: C.white },
+        { p: 'R1(config-if)# ', c: 'no shutdown', at: S2 + 28, col: C.white },
+        { p: '[saved] ', c: 'campus_agenticnet.pkt · 0 errors', at: S2 + 40, col: '#34D399' },
+      ];
+      LINES.forEach((ln, idx) => {
+        const typeP = ease(f, ln.at, ln.at + 14, G.sharpStartSoft);
+        if (typeP <= 0) return;
+        const full = ln.p + ln.c;
+        const shown = full.slice(0, Math.max(1, Math.round(full.length * typeP)));
+        const yy = -86 + idx * 76;
+        txt(shown, -394, yy, { size: 25, weight: 600, family: MONO, color: ln.col, align: 'left', maxW: 788 });
+      });
+    }, { alpha: Pt.a });
+  }
+
+  /* Section Headline (centered cleanly above terminal) */
+  const th = pop(f, S2, 120, 0, 34);
+  if (th.a > 0) {
+    layer3D(cam, X - 10, Y - 295 + th.y, 0, 0, s => {
+      txt('Real Cisco IOS.', -195, 0, { size: 68, weight: 800, color: C.white });
+      txt('Not guesses', 250, 0, { size: 70, weight: 400, family: SERIF, italic: true, color: C.mintText, glow: C.mintGlow, glowBlur: 26, sc: s });
+    }, { alpha: th.a });
+  }
+}
+
+// ================= Scene 3: VLSM + Live Verification Click (x=3460, y=-980, Light) =================
+function scene3(f, cam) {
+  drawScenePlane(cam, 3460, -980, 'light');
+  const X = 3460, Y = -980;
+
+  /* Title + Trim-Paths underline bar (non-overlapping exact X layout) */
+  const th = pop(f, S3 - 2, 130, 0, 34);
+  if (th.a > 0) {
+    const hl = ease(f, S3 + 6, S3 + 36, G.sharpStartHard);
+    layer3D(cam, X, Y - 325 + th.y, 0, 0, () => {
+      ctx.fillStyle = 'rgba(20, 184, 166, 0.24)';
+      rr(440 - 880 * hl, 28, 880 * hl, 22, 11); ctx.fill();
+      txt('VLSM planned &', -215, 0, { size: 70, weight: 700, color: C.ink });
+      txt('verified live', 250, 0, { size: 76, weight: 400, family: SERIF, italic: true, color: C.teal });
+    }, { alpha: th.a });
+  }
+
+  /* Main White Card: VLSM Partition Grid + Verify Button + Checkmark */
+  const Pc = pop(f, S3 + 2, 220, -7, 38);
+  if (Pc.a > 0) {
+    layer3D(cam, X, Y + 55 + Pc.y, 0, Pc.r, s => {
+      softShadow(s, 0.18);
+      ctx.fillStyle = '#FFFFFF'; rr(-520, -260, 1040, 520, 36); ctx.fill();
+      noShadow();
+      ctx.strokeStyle = '#C9D6D0'; rr(-520, -260, 1040, 520, 36); ctx.lineWidth = 3; ctx.stroke();
+
+      txt('VLSM Blueprint · 10.10.0.0/22', -455, -195, { size: 32, weight: 800, color: C.ink, align: 'left' });
+      txt('verify_lab', 455, -195, { size: 24, weight: 700, family: MONO, color: C.teal, align: 'right' });
+
+      /* 4 VLSM blocks growing left-to-right (2-line crisp labels that never clip) */
+      const BLOCKS = [
+        { x: -455, w: 350, cidr: '/25', sub: '126 hosts', col: 'rgba(15, 118, 110, 0.16)', b: C.teal, d: 6 },
+        { x: -90,  w: 225, cidr: '/26', sub: '62 hosts',  col: 'rgba(20, 184, 166, 0.14)', b: '#0D9488', d: 11 },
+        { x: 150,  w: 165, cidr: '/27', sub: '30 hosts',  col: 'rgba(15, 118, 110, 0.08)', b: C.teal, d: 16 },
+        { x: 330,  w: 125, cidr: '/30', sub: 'WAN P2P',   col: 'rgba(224, 90, 43, 0.12)', b: C.fault, d: 21 },
+      ];
+      BLOCKS.forEach(bk => {
+        const bp = ease(f, S3 + bk.d, S3 + bk.d + 22, G.sharpStartHard);
+        if (bp <= 0) return;
+        ctx.fillStyle = bk.col; ctx.strokeStyle = bk.b; ctx.lineWidth = 2.5;
+        rr(bk.x, -125, bk.w * bp, 132, 16); ctx.fill(); ctx.stroke();
+        if (bp > 0.6) {
+          txt(bk.cidr, bk.x + bk.w / 2, -74, { size: 28, weight: 800, family: MONO, color: C.ink });
+          txt(bk.sub, bk.x + bk.w / 2, -32, { size: 17, weight: 600, color: C.muted });
+        }
+      });
+
+      /* Verify Button + Click Press + Cleanly Spaced Checkmark */
+      const clickAt = S3 + 38;
+      const pressed = f >= clickAt && f < clickAt + 10
+        ? 1 - 0.07 * Math.sin(clamp((f - clickAt) / 10) * Math.PI) : 1;
+      ctx.save();
+      ctx.scale(pressed, pressed);
+      const okDone = f >= clickAt + 4;
+      ctx.fillStyle = okDone ? C.teal : C.ink;
+      rr(-455, 62, 510, 128, 24); ctx.fill();
+      txt(okDone ? '4/4 Ping Verified · 0% Loss' : 'Run verify_lab()', -200, 126, {
+        size: 30, weight: 800, color: C.white,
+      });
+      ctx.restore();
+
+      checkCircle(140, 126, 44, ease(f, clickAt + 2, clickAt + 24, G.sharpStartHard));
+      txt('Copy-on-Write', 212, 110, { size: 24, weight: 800, color: C.ink, align: 'left' });
+      txt('*_agenticnet.pkt', 212, 144, { size: 19, weight: 600, family: MONO, color: C.teal, align: 'left' });
+
+      /* Click ripple */
+      const rp = ease(f, clickAt, clickAt + 16, G.sharpStartHard);
+      if (rp > 0 && rp < 1) {
+        ctx.strokeStyle = `rgba(20, 184, 166, ${0.7 * (1 - rp)})`;
+        ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.arc(-90, 126, 22 + 95 * rp, 0, Math.PI * 2); ctx.stroke();
+      }
+    }, { alpha: Pc.a });
+  }
+
+  /* Fares Cursor gliding in & clicking Verify button */
+  const c0 = S3 + 22, c1 = S3 + 38;
+  if (f >= c0 && f < S3 + 64) {
+    const m = ease(f, c0, c1, G.sharpStartSoft);
+    const pr = f >= c1 && f < c1 + 7 ? 0.86 : 1;
+    const ca = 1 - clamp((f - (S3 + 52)) / 10);
+    layer3D(cam, lerp(X + 380, X - 90, m), lerp(Y + 420, Y + 185, m), -140, -6, () => {
+      ctx.scale(pr, pr);
+      cursorShape();
+    }, { alpha: ca, blur: dof(-140) * 0.4 });
+  }
+}
+
+// ================= Scene 4: Final Brand Lockup (x=5960, y=-980, Brand Dark) =================
+function scene4(f, cam) {
+  drawScenePlane(cam, 5960, -980, 'brand');
+  const X = 5960, Y = -980;
+
+  /* Outer rotating geometric bridge ring (deterministically driven by f) */
+  const ep = ease(f, S4 - 6, S4 + 26, G.sharpStartHard);
+  if (ep > 0) {
+    layer3D(cam, X, Y - 190, -20, (f - S4) * 0.25, s => {
+      const R = 118 * ep;
+      ctx.strokeStyle = C.tealBright;
+      ctx.lineWidth = 5;
+      ctx.shadowColor = C.mintGlow; ctx.shadowBlur = 24 * s;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const ang = (Math.PI / 3) * i - Math.PI / 2;
+        const px = Math.cos(ang) * R, py = Math.sin(ang) * R;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(15, 118, 110, 0.18)'; ctx.fill();
+      ctx.stroke();
+      noShadow();
+
+      const V = [[0, -76 * ep], [-66 * ep, 38 * ep], [66 * ep, 38 * ep], [0, 0]];
+      ctx.strokeStyle = C.mintText; ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(V[0][0], V[0][1]); ctx.lineTo(V[1][0], V[1][1]); ctx.lineTo(V[2][0], V[2][1]); ctx.closePath();
+      V.slice(0, 3).forEach(v => { ctx.moveTo(v[0], v[1]); ctx.lineTo(0, 0); });
+      ctx.stroke();
+
+      V.slice(0, 3).forEach(v => {
+        ctx.fillStyle = C.tealBright; ctx.beginPath(); ctx.arc(v[0], v[1], 13 * ep, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.fillStyle = C.white; ctx.beginPath(); ctx.arc(0, 0, 17 * ep, 0, Math.PI * 2); ctx.fill();
+    }, { alpha: ep });
+  }
+
+  /* Brand Wordmark + Tagline + Repo pill */
+  const Pw = pop(f, S4 + 6, 150, 0, 34);
+  if (Pw.a > 0) {
+    layer3D(cam, X, Y + 32 + Pw.y, 0, 0, () => {
+      txt('AgenticNet', 0, 0, { size: 146, weight: 800, color: C.white });
+      const u = ease(f, S4 + 14, S4 + 42, G.sharpStartHard);
+      ctx.fillStyle = C.tealBright;
+      rr(-260, 82, 520 * u, 6, 3); ctx.fill();
+    }, { alpha: Pw.a });
+  }
+
+  const Pt = pop(f, S4 + 16, 120, 0, 34);
+  if (Pt.a > 0) {
+    layer3D(cam, X, Y + 178 + Pt.y, 0, 0, () => {
+      txt('Networks. Understood. Engineered. Automated.', 0, 0, { size: 40, weight: 600, color: C.mintText });
+    }, { alpha: Pt.a });
+  }
+
+  const Pr = pop(f, S4 + 26, 90, 0, 30);
+  if (Pr.a > 0) {
+    layer3D(cam, X, Y + 275 + Pr.y, 40, 0, () => {
+      ctx.fillStyle = 'rgba(20, 184, 166, 0.14)';
+      ctx.strokeStyle = 'rgba(94, 234, 212, 0.45)';
+      ctx.lineWidth = 2;
+      rr(-235, -28, 470, 56, 28); ctx.fill(); ctx.stroke();
+      txt('github.com/gg1i/agenticnet', 0, 1, { size: 22, weight: 700, family: MONO, color: C.white });
+    }, { alpha: Pr.a });
+  }
+}
+
+// ================= Render Pipeline + 180-deg Shutter Motion Blur =================
+function renderScene(f) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+  noShadow();
+  ctx.fillStyle = '#070B0E';
+  ctx.fillRect(0, 0, W, H);
+
+  const cam = camAt(f);
+  scene1(f, cam);
+  scene2(f, cam);
+  scene3(f, cam);
+  scene4(f, cam);
+
+  if (grain.length) {
+    ctx.save();
+    ctx.globalAlpha = 0.04;
+    ctx.globalCompositeOperation = 'overlay';
+    const gIdx = ((Math.floor(f) % grain.length) + grain.length) % grain.length;
+    ctx.drawImage(grain[gIdx], 0, 0, W, H);
+    ctx.restore();
+  }
+}
+
+function renderMB(f) {
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.globalAlpha = 1;
+  for (let k = 0; k < SUB; k++) {
+    renderScene(f - 0.25 + (0.5 * (k + 0.5)) / SUB);
+    octx.globalAlpha = 1 / (k + 1);
+    octx.drawImage(cv, 0, 0);
+  }
+  octx.globalAlpha = 1;
+}
+
+// ================= Controls, Contact Sheet & WebCodecs MP4 Export =================
+const statusEl = document.getElementById('status');
+const scrubEl = document.getElementById('scrub');
+scrubEl.max = FRAMES - 1;
+let playing = false, startAt = 0;
+
+function loop(now) {
+  if (!playing) return;
+  const f = Math.floor(((now - startAt) / 1000) * FPS) % FRAMES;
+  renderScene(f);
+  octx.drawImage(cv, 0, 0);
+  scrubEl.value = f;
+  statusEl.textContent = `frame ${f}/${FRAMES - 1} (${(f / FPS).toFixed(2)}s)`;
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('play').onclick = () => {
+  playing = !playing;
+  if (playing) {
+    startAt = performance.now() - (scrubEl.value / FPS) * 1000;
+    requestAnimationFrame(loop);
+  }
+};
+
+scrubEl.oninput = () => {
+  playing = false;
+  renderMB(+scrubEl.value);
+  statusEl.textContent = `frame ${scrubEl.value} (${(+scrubEl.value / FPS).toFixed(2)}s)`;
+};
+
+window.renderMp4 = async function () {
+  playing = false;
+  const config = { codec: 'avc1.640032', width: W, height: H, bitrate: 16e6, framerate: FPS };
+  const sup = await VideoEncoder.isConfigSupported(config);
+  if (!sup.supported) {
+    statusEl.textContent = 'avc1.640032 unsupported';
+    return 'unsupported';
+  }
+  const muxer = new Mp4Muxer.Muxer({
+    target: new Mp4Muxer.ArrayBufferTarget(),
+    video: { codec: 'avc', width: W, height: H, frameRate: FPS },
+    fastStart: 'in-memory',
+  });
+  let encErr = null;
+  const enc = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: e => { encErr = e; },
+  });
+  enc.configure(config);
+  for (let i = 0; i < FRAMES; i++) {
+    renderMB(i);
+    const vf = new VideoFrame(out, {
+      timestamp: Math.round((i * 1e6) / FPS),
+      duration: Math.round(1e6 / FPS),
+    });
+    enc.encode(vf, { keyFrame: i % FPS === 0 });
+    vf.close();
+    while (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 4));
+    if (i % 15 === 0) {
+      statusEl.textContent = `encoding ${i}/${FRAMES}`;
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  await enc.flush();
+  muxer.finalize();
+  if (encErr) {
+    statusEl.textContent = 'error: ' + encErr;
+    return 'error: ' + encErr;
+  }
+  const buf = muxer.target.buffer;
+  const r = await fetch('/save?name=' + encodeURIComponent(OUT_NAME), { method: 'POST', body: buf });
+  const msg = await r.text();
+  statusEl.textContent = `saved ${(buf.byteLength / 1e6).toFixed(2)}MB ${msg}`;
+  return statusEl.textContent;
+};
+document.getElementById('render').onclick = () => window.renderMp4();
+
+window.sheet = frames => {
+  let sh = document.getElementById('sheet');
+  if (!sh) {
+    sh = document.createElement('canvas');
+    sh.id = 'sheet';
+    document.body.appendChild(sh);
+  }
+  const cols = 4, rows = Math.ceil(frames.length / cols);
+  sh.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:auto;aspect-ratio:auto;z-index:99;background:#000';
+  sh.width = cols * 640;
+  sh.height = rows * 360;
+  const g = sh.getContext('2d');
+  frames.forEach((f, i) => {
+    renderMB(f);
+    const cx = (i % cols) * 640, cy = Math.floor(i / cols) * 360;
+    g.drawImage(out, cx, cy, 640, 360);
+  });
+  return 'ok';
+};
+
+window.renderAt = f => {
+  renderMB(f);
+  return 'ok';
+};
+
+(async () => {
+  makeGrain();
+  await Promise.all([
+    document.fonts.load(`700 84px ${DISP}`),
+    document.fonts.load(`800 120px ${DISP}`),
+    document.fonts.load(`italic 400 86px ${SERIF}`),
+    document.fonts.load(`700 32px ${MONO}`),
+  ]);
+  const q = new URLSearchParams(location.search).get('f');
+  renderMB(q ? +q : 24);
+  statusEl.textContent = `ready (S1=0 S2=${S2} S3=${S3} S4=${S4})`;
+  window.ready = true;
+})();
+</script>
+</body>
+</html>
