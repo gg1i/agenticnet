@@ -29,65 +29,47 @@ NetForge MCP connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Go
 
 ---
 
-## Quick Start (3 Minutes)
-
-### 1. Install NetForge MCP
+## Quick Start (1-Command Setup)
 
 Requires **Python 3.11+**.
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/gg1i/netforge-mcp.git
+cd netforge-mcp
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -WithGui -Client antigravity
+```
+
+Supported `-Client` values: `antigravity`, `claude`, `cursor`, `vscode`, or `none` (default, prints the exact JSON snippet with absolute `.venv` Python path). Add `-ToolProfile advanced` to enable all **82** tools (including `gui_*` fallback).
+
+### macOS / Linux (Offline Planning, IPAM & IOS Core)
 
 ```bash
 git clone https://github.com/gg1i/netforge-mcp.git
 cd netforge-mcp
-pip install .
+bash scripts/install.sh --client claude
 ```
 
-Optional extras:
-- Windows GUI/vision fallback tools: `pip install ".[gui]"`
-- Contributor dev/test tools (`pytest`, `ruff`): `pip install -e .[dev]`
-
-### 2. Connect Cisco Packet Tracer (Windows, One-Time Setup)
-
-Copy the bundled bridge script into `%LOCALAPPDATA%\netforge\netforge_bridge.pts`:
+### Manual Setup (Optional)
 
 ```bash
-netforge-mcp install-module
+pip install .            # or pip install ".[gui]" on Windows for GUI fallback
+netforge-mcp setup       # installs netforge_bridge.pts + prints ready-to-paste MCP config
+netforge-mcp doctor      # checks Python, PT, and script bridge status
 ```
 
-Then register it once inside **Cisco Packet Tracer `8.2.2+`**:
-1. Open **Extensions -> Scripting -> Configure PT Script Modules...**
-2. Click **Add** and select `%LOCALAPPDATA%\netforge\netforge_bridge.pts`.
-3. Check **On Startup**, click **Save**, and accept the one-time script privilege prompt.
-4. Restart Packet Tracer cleanly.
+### One-Time Packet Tracer Bridge Registration (Windows, `8.2.2+`)
 
-Verify everything with:
-
-```bash
-netforge-mcp version
-netforge-mcp doctor
-```
+1. Open **Cisco Packet Tracer** -> **Extensions -> Scripting -> Configure PT Script Modules...**
+2. Click **Add** and select `%LOCALAPPDATA%\netforge\netforge_bridge.pts` (already copied by `setup`).
+3. Check **On Startup**, click **Save**, accept the one-time script privilege prompt, and restart Packet Tracer.
 
 > **Physical-Tab Fallback Note:** Standard topology, cabling, IOS CLI, host IP, `7960` power via script bridge, `.pka` grading, and verification require **no** mouse input. Only Physical-tab mouse-drag fallback actions (`gui_*` in `advanced` mode, plus `gui_attach_ip_phone_power` — *experimental: not yet validated by the 5-attempt live protocol*) require an unlocked interactive Windows desktop session.
 
-### 3. Add to Your MCP Client
+### Running Directly Over HTTP/Stdio (Optional)
 
-Add NetForge to **Claude Desktop**, **Cursor**, **VS Code**, **Windsurf**, or **Google Antigravity** (see [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json) and [`examples/mcp_config.json`](examples/mcp_config.json)):
-
-```json
-{
-  "mcpServers": {
-    "netforge": {
-      "command": "netforge-mcp",
-      "args": ["serve", "--transport", "stdio"],
-      "env": {
-        "NETFORGE_PERMISSION_PROFILE": "standard",
-        "NETFORGE_REQUIRE_CONFIRM": "true"
-      }
-    }
-  }
-}
-```
-
-Or run the server directly from a terminal:
+See [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json) and [`examples/mcp_config.json`](examples/mcp_config.json), or launch the server directly:
 
 ```bash
 # Default stdio transport
@@ -145,6 +127,7 @@ netforge/
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Benchmark Protocol & Reference Scoring](docs/BENCHMARK.md)
 - [Linux & macOS Compatibility Roadmap](docs/cross-platform-roadmap.md)
+- [Engineering Skill Pack](skills/README.md) (`skills/*/SKILL.md` specialist modules)
 
 ---
 

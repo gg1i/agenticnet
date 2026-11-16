@@ -287,13 +287,38 @@ def gracefully_close_packet_tracer(
     }
 
 
+def _version_sort_key(path: Path) -> tuple[tuple[int, ...], str]:
+    """Extract numeric version tuple from folder/app name so newer PT versions sort first."""
+    import re
+
+    nums = tuple(int(tok) for tok in re.findall(r"\d+", path.parent.parent.name or path.name))
+    return (nums, str(path).lower())
+
+
 def detect_packet_tracer_binary(explicit_path: str | None = None) -> str | None:
-    """Locate Cisco Packet Tracer executable without altering system state."""
+    """Locate Cisco Packet Tracer executable across versions without altering system state."""
     if explicit_path and Path(explicit_path).exists():
         return str(Path(explicit_path))
 
     candidates: list[Path] = []
     if platform.system() == "Windows":
+        roots: list[Path] = []
+        for env_key in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            raw = os.environ.get(env_key)
+            if raw:
+                p = Path(raw)
+                if p not in roots:
+                    roots.append(p)
+        if not roots:
+            roots.extend([Path(r"C:\Program Files"), Path(r"C:\Program Files (x86)")])
+
+        discovered: list[Path] = []
+        for root in roots:
+            if root.is_dir():
+                with suppress(OSError):
+                    discovered.extend(root.glob("Cisco Packet Tracer*/bin/PacketTracer.exe"))
+        discovered.sort(key=_version_sort_key, reverse=True)
+        candidates.extend(discovered)
         candidates.extend(
             [
                 Path(r"C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe"),
@@ -310,9 +335,22 @@ def detect_packet_tracer_binary(explicit_path: str | None = None) -> str | None:
             ]
         )
     elif platform.system() == "Darwin":
+        apps_dir = Path("/Applications")
+        if apps_dir.is_dir():
+            with suppress(OSError):
+                mac_apps = sorted(
+                    apps_dir.glob("Cisco Packet Tracer*.app"),
+                    key=_version_sort_key,
+                    reverse=True,
+                )
+                candidates.extend(mac_apps)
         candidates.append(Path("/Applications/Cisco Packet Tracer.app"))
 
+    seen: set[Path] = set()
     for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
         if cand.exists():
             return str(cand)
 

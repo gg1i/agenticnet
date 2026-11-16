@@ -156,11 +156,15 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
             )
         ]
 
+    seen_trunk_encap = False
     for idx, raw_cmd in enumerate(commands, start=1):
         cmd = raw_cmd.strip()
         if not cmd or cmd.startswith("!"):
             continue
         lower = cmd.lower()
+
+        if lower.startswith("interface "):
+            seen_trunk_encap = False
 
         if lower.startswith("ip routing") and not profile.supports(ConfigCapability.STATIC_ROUTING):
             diagnostics.append(
@@ -195,6 +199,36 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                 )
             )
 
+        if (
+            lower.startswith(("router rip", "router bgp"))
+            and not profile.supports(ConfigCapability.STATIC_ROUTING)
+        ):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_ROUTING_PROTOCOL",
+                    message=f"'{profile.model}' is Layer 2 only and cannot run dynamic routing.",
+                )
+            )
+
+        if lower.startswith("encapsulation dot1q") and not profile.supports(
+            ConfigCapability.ROUTER_ON_A_STICK
+        ):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_SUBINTERFACE_ENCAP",
+                    message=(
+                        f"'{profile.model}' does not support router subinterface "
+                        "'encapsulation dot1q'."
+                    ),
+                )
+            )
+
         if lower.startswith("ip nat ") and not profile.supports(ConfigCapability.NAT_PAT):
             diagnostics.append(
                 CLIDiagnostic(
@@ -206,20 +240,39 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                 )
             )
 
+        if "switchport trunk encapsulation" in lower:
+            seen_trunk_encap = True
+            if (
+                profile.supports(ConfigCapability.TRUNKING)
+                and not profile.supports(ConfigCapability.TRUNK_ENCAP_DOT1Q)
+            ):
+                diagnostics.append(
+                    CLIDiagnostic(
+                        line_number=idx,
+                        command=cmd,
+                        severity="error",
+                        code="UNNEEDED_TRUNK_ENCAP",
+                        message=(
+                            f"'{profile.model}' rejects 'switchport trunk encapsulation dot1q'; "
+                            "use 'switchport mode trunk' directly."
+                        ),
+                    )
+                )
+
         if (
-            "switchport trunk encapsulation" in lower
-            and profile.supports(ConfigCapability.TRUNKING)
-            and not profile.supports(ConfigCapability.TRUNK_ENCAP_DOT1Q)
+            lower == "switchport mode trunk"
+            and profile.supports(ConfigCapability.TRUNK_ENCAP_DOT1Q)
+            and not seen_trunk_encap
         ):
             diagnostics.append(
                 CLIDiagnostic(
                     line_number=idx,
                     command=cmd,
-                    severity="error",
-                    code="UNNEEDED_TRUNK_ENCAP",
+                    severity="warning",
+                    code="MISSING_TRUNK_ENCAP_DOT1Q",
                     message=(
-                        f"'{profile.model}' rejects 'switchport trunk encapsulation dot1q'; "
-                        "use 'switchport mode trunk' directly."
+                        f"'{profile.model}' requires 'switchport trunk encapsulation dot1q' "
+                        "before 'switchport mode trunk'."
                     ),
                 )
             )
@@ -237,6 +290,22 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                     ),
                 )
             )
+
+        if lower.startswith("ip address "):
+            parts = cmd.split()
+            if len(parts) >= 4 and parts[2].lower() not in {"dhcp", "negotiated"}:
+                try:
+                    parse_ipv4_and_mask(parts[2], parts[3])
+                except IOSConfigError as exc:
+                    diagnostics.append(
+                        CLIDiagnostic(
+                            line_number=idx,
+                            command=cmd,
+                            severity="error",
+                            code="INVALID_IP_OR_MASK",
+                            message=exc.message,
+                        )
+                    )
 
         if lower.startswith("show "):
             diagnostics.append(

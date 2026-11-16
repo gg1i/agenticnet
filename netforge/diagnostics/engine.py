@@ -17,6 +17,7 @@ from netforge.diagnostics.rules import (
     check_disabled_interfaces_with_ip,
     check_link_subnet_mismatch,
     check_missing_default_gateways,
+    check_trunk_mode_mismatch,
     check_vlan_trunk_native_mismatch,
 )
 from netforge.ipam.engine import IPAMEngine
@@ -70,9 +71,13 @@ class DiagnosticsEngine:
                 proposals.append(p)
                 self._cached_proposals[p.proposal_id] = p
 
-        # Rule 4: Native VLAN mismatch on trunks
+        # Rule 4: Native VLAN & mode mismatches on trunks
         if not active_cats or DiagnosticCategory.VLAN_TRUNKING in active_cats:
             for f, p in check_vlan_trunk_native_mismatch(topology):
+                findings.append(f)
+                proposals.append(p)
+                self._cached_proposals[p.proposal_id] = p
+            for f, p in check_trunk_mode_mismatch(topology):
                 findings.append(f)
                 proposals.append(p)
                 self._cached_proposals[p.proposal_id] = p

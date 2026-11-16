@@ -245,3 +245,42 @@ def test_cli_validator_parser_and_config_diff() -> None:
     assert diff.added_lines == 1
     assert diff.removed_lines == 1
     assert "+ no shutdown" in diff.unified_diff
+
+
+@pytest.mark.unit
+def test_validate_raw_commands_extended_checks() -> None:
+    profile_3560 = DEFAULT_CATALOG.get_profile("3560-24PS")
+    warn_diags = validate_raw_commands(
+        profile_3560,
+        ["interface Gi0/1", "switchport mode trunk"],
+    )
+    assert any(
+        d.code == "MISSING_TRUNK_ENCAP_DOT1Q" and d.severity == "warning" for d in warn_diags
+    )
+
+    ok_diags = validate_raw_commands(
+        profile_3560,
+        ["interface Gi0/1", "switchport trunk encapsulation dot1q", "switchport mode trunk"],
+    )
+    assert not any(d.code == "MISSING_TRUNK_ENCAP_DOT1Q" for d in ok_diags)
+
+    profile_2960 = DEFAULT_CATALOG.get_profile("2960-24TT")
+    l2_diags = validate_raw_commands(
+        profile_2960,
+        ["router rip", "encapsulation dot1q 10"],
+    )
+    l2_codes = {d.code for d in l2_diags}
+    assert "UNSUPPORTED_ROUTING_PROTOCOL" in l2_codes
+    assert "UNSUPPORTED_SUBINTERFACE_ENCAP" in l2_codes
+
+    profile_2911 = DEFAULT_CATALOG.get_profile("2911")
+    ip_diags = validate_raw_commands(
+        profile_2911,
+        [
+            "interface Gi0/0",
+            "ip address dhcp",
+            "interface Gi0/1",
+            "ip address 10.0.0.1 255.0.255.0",
+        ],
+    )
+    assert [d.code for d in ip_diags] == ["INVALID_IP_OR_MASK"]

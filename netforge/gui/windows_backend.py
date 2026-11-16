@@ -1911,13 +1911,43 @@ class WindowsGuiBackend(GuiBackend):
         ctx["dialogs"] = [fresh if d.hwnd == fresh.hwnd else d for d in ctx["dialogs"]]
         return fresh
 
+    @staticmethod
+    def _resolve_dialog_point(
+        rect: Rect,
+        *,
+        offset_x: Any = None,
+        offset_y: Any = None,
+        nx: Any = None,
+        ny: Any = None,
+        default_x: int = 0,
+        default_y: int = 0,
+    ) -> tuple[int, int]:
+        """Resolve screen `(sx, sy)` inside a dialog rect from normalized or pixel offsets."""
+        if nx is not None and ny is not None:
+            fnx, fny = float(nx), float(ny)
+            if not (0.0 <= fnx <= 1.0 and 0.0 <= fny <= 1.0):
+                raise ValidationError(
+                    f"Normalized dialog coordinates ({fnx}, {fny}) must be within [0.0, 1.0].",
+                    details={"nx": fnx, "ny": fny},
+                )
+            return (
+                rect.left + int(round(fnx * rect.width)),
+                rect.top + int(round(fny * rect.height)),
+            )
+        ox = int(default_x if offset_x is None else offset_x)
+        oy = int(default_y if offset_y is None else offset_y)
+        return rect.left + ox, rect.top + oy
+
     def _batch_step_click_dialog(self, step: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         title_contains = str(step.get("title_contains", "")).strip()
         dlg = self._get_fresh_batch_dialog(ctx, title_contains)
-        offset_x = int(step.get("offset_x", 0))
-        offset_y = int(step.get("offset_y", 0))
-        sx = dlg.rect.left + offset_x
-        sy = dlg.rect.top + offset_y
+        sx, sy = self._resolve_dialog_point(
+            dlg.rect,
+            offset_x=step.get("offset_x"),
+            offset_y=step.get("offset_y"),
+            nx=step.get("nx"),
+            ny=step.get("ny"),
+        )
         button = str(step.get("button", "left"))
         clicks = max(1, int(step.get("clicks", 1)))
         step_bg = self._resolve_background(step.get("background", ctx["background"]))
@@ -2260,10 +2290,20 @@ class WindowsGuiBackend(GuiBackend):
     def _batch_step_drag_dialog(self, step: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         title_contains = str(step.get("title_contains", "")).strip()
         dlg = self._get_fresh_batch_dialog(ctx, title_contains)
-        sx = dlg.rect.left + int(step.get("from_x", step.get("start_offset_x", 0)))
-        sy = dlg.rect.top + int(step.get("from_y", step.get("start_offset_y", 0)))
-        ex = dlg.rect.left + int(step.get("to_x", step.get("end_offset_x", 0)))
-        ey = dlg.rect.top + int(step.get("to_y", step.get("end_offset_y", 0)))
+        sx, sy = self._resolve_dialog_point(
+            dlg.rect,
+            offset_x=step.get("from_x", step.get("start_offset_x")),
+            offset_y=step.get("from_y", step.get("start_offset_y")),
+            nx=step.get("from_nx"),
+            ny=step.get("from_ny"),
+        )
+        ex, ey = self._resolve_dialog_point(
+            dlg.rect,
+            offset_x=step.get("to_x", step.get("end_offset_x")),
+            offset_y=step.get("to_y", step.get("end_offset_y")),
+            nx=step.get("to_nx"),
+            ny=step.get("to_ny"),
+        )
         return self._dispatch_drag(
             "drag_dialog",
             sx,

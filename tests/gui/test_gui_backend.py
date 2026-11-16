@@ -916,3 +916,79 @@ def test_execute_batch_paste_lines_does_not_exhaust_rate_limit(
     )
     assert out["completed_steps"] == 1
     assert len(posted_lines) == 60
+
+
+@pytest.mark.unit
+def test_execute_batch_dialog_normalized_coordinates(
+    isolated_settings: NetForgeSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netforge.gui.windows_backend as wb
+
+    backend = WindowsGuiBackend(isolated_settings)
+    main_win = WindowInfo(
+        hwnd=100,
+        pid=222,
+        process_name="PacketTracer.exe",
+        title="Cisco Packet Tracer",
+        window_rect=Rect(left=0, top=0, right=1920, bottom=1080),
+        client_rect=Rect(left=0, top=29, right=1920, bottom=1020),
+        dpi=120,
+        scale_factor=1.25,
+    )
+    dlg = GuiDialogInfo(
+        hwnd=777,
+        title="Switch3650",
+        class_name="Qt51516QWindowIcon",
+        dialog_type=DialogType.DEVICE_WINDOW,
+        rect=Rect(left=500, top=100, right=1300, bottom=900),
+    )
+    clicks: list[tuple[int, int]] = []
+    drags: list[tuple[int, int, int, int]] = []
+
+    monkeypatch.setattr(wb.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(wb, "_get_foreground_hwnd", lambda: 999)
+    monkeypatch.setattr(backend, "_require_main_window", lambda: (main_win, [dlg]))
+    monkeypatch.setattr(
+        backend,
+        "_dispatch_click",
+        lambda _w, _d, sx, sy, **_kw: (clicks.append((sx, sy)) or 777),
+    )
+    monkeypatch.setattr(
+        wb,
+        "_post_mouse_drag_to_hwnd",
+        lambda hwnd, sx, sy, ex, ey, **_kw: (drags.append((sx, sy, ex, ey)) or hwnd),
+    )
+
+    out = backend.execute_batch(
+        [
+            {
+                "op": "click_dialog",
+                "title_contains": "Switch3650",
+                "nx": 0.25,
+                "ny": 0.50,
+                "delay_ms": 0,
+            },
+            {
+                "op": "drag_dialog",
+                "title_contains": "Switch3650",
+                "from_nx": 0.90,
+                "from_ny": 0.80,
+                "to_nx": 0.40,
+                "to_ny": 0.30,
+                "delay_ms": 0,
+            },
+        ],
+        background=True,
+        restore_focus=False,
+    )
+    assert out["completed_steps"] == 2
+    assert clicks == [(700, 500)]
+    assert drags == [(1220, 740, 820, 340)]
+
+    with pytest.raises(ValidationError):
+        backend.execute_batch(
+            [{"op": "click_dialog", "title_contains": "Switch3650", "nx": 1.2, "ny": 0.5}],
+            background=True,
+            restore_focus=False,
+        )

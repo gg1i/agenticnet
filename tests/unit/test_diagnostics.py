@@ -118,3 +118,67 @@ def test_repair_execution_safety_gate_and_state_sync() -> None:
     # With confirmation, executes cleanly
     res_ok = engine.execute_repair(mismatch_prop.proposal_id, confirm=True, topology=topo)
     assert res_ok["all_succeeded"] is True
+
+
+@pytest.mark.unit
+def test_ipam_gateway_lookup_out_of_subnet_gateway_and_trunk_mode_mismatch() -> None:
+    topo = TopologyEngine()
+    r1 = topo.add_device("R1", "2911")
+    sw_core = topo.add_device("SW-CORE", "3560-24PS")
+    sw_acc = topo.add_device("SW-ACC", "2960-24TT")
+    pc = topo.add_device("PC-ENG", "PC-PT")
+
+    # Router-on-a-stick link: trunk on switch, non-trunk on router must NOT flag trunk mismatch
+    topo.connect("R1", "Gi0/0", "SW-ACC", "Gi0/1")
+    sw_acc.interfaces["GigabitEthernet0/1"].is_trunk = True
+
+    # Switch-to-switch link: SW-ACC is trunk, SW-CORE is NOT trunk -> MUST flag TRUNK_MODE_MISMATCH
+    topo.connect("SW-ACC", "Gi0/2", "SW-CORE", "Gi0/1")
+    sw_acc.interfaces["GigabitEthernet0/2"].is_trunk = True
+    sw_core.interfaces["GigabitEthernet0/1"].is_trunk = False
+
+    # Host missing GW in non-192.168.1.0/24 pool tests ipam.state.pools.values() lookup
+    pc.interfaces["FastEthernet0"].ipv4_address = "10.50.20.10"
+    pc.interfaces["FastEthernet0"].subnet_mask = "255.255.255.0"
+    pc.interfaces["FastEthernet0"].default_gateway = None
+
+    # Second host with out-of-subnet gateway
+    pc2 = topo.add_device("PC-BADGW", "PC-PT")
+    pc2.interfaces["FastEthernet0"].ipv4_address = "10.50.20.11"
+    pc2.interfaces["FastEthernet0"].subnet_mask = "255.255.255.0"
+    pc2.interfaces["FastEthernet0"].default_gateway = "10.50.99.1"
+
+    ipam = IPAMEngine()
+    ipam.register_pool("ENG-VLAN20", "10.50.20.0/24", default_gateway="10.50.20.254")
+
+    report = DiagnosticsEngine().run_diagnostics(topology=topo, ipam=ipam)
+    codes = {f.code for f in report.findings}
+    assert "TRUNK_MODE_MISMATCH" in codes
+    assert "HOST_MISSING_DEFAULT_GATEWAY" in codes
+    assert "HOST_GATEWAY_OUTSIDE_SUBNET" in codes
+
+    # Verify router interface wasn't flagged as trunk mismatch
+    trunk_mismatches = [f for f in report.findings if f.code == "TRUNK_MODE_MISMATCH"]
+    assert len(trunk_mismatches) == 1
+    assert trunk_mismatches[0].target_device == "SW-CORE"
+    trunk_repair = next(
+        p for p in report.proposed_repairs if p.finding_id == trunk_mismatches[0].finding_id
+    )
+    assert "switchport trunk encapsulation dot1q" in trunk_repair.actions[0].command_sequence
+
+    # Verify IPAM pool gateway (.254) was suggested rather than hardcoded 192.168.1.1
+    missing_gw = next(f for f in report.findings if f.code == "HOST_MISSING_DEFAULT_GATEWAY")
+    missing_repair = next(
+        p for p in report.proposed_repairs if p.finding_id == missing_gw.finding_id
+    )
+    assert missing_repair.actions[0].command_sequence == [
+        "ipconfig 10.50.20.10 255.255.255.0 10.50.20.254"
+    ]
+
+    bad_gw = next(f for f in report.findings if f.code == "HOST_GATEWAY_OUTSIDE_SUBNET")
+    bad_repair = next(p for p in report.proposed_repairs if p.finding_id == bad_gw.finding_id)
+    assert bad_repair.requires_approval is True
+    assert bad_repair.actions[0].command_sequence == [
+        "ipconfig 10.50.20.11 255.255.255.0 10.50.20.254"
+    ]
+    assert r1.name == "R1"

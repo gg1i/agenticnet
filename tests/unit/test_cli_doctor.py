@@ -169,3 +169,128 @@ def test_install_module_copies_pts_and_prints_registration_steps(
     assert payload["bytes_written"] == pts_path.stat().st_size
     assert len(payload["steps"]) == 5
 
+
+@pytest.mark.unit
+def test_setup_dry_run_and_client_config_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    data_dir = tmp_path / "custom_data"
+    canonical_dir = tmp_path / "canonical_data"
+    fake_pt = str(tmp_path / "PacketTracer.exe")
+
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(cli, "_detect_packet_tracer_binary", lambda _p: fake_pt)
+    monkeypatch.setattr(cli, "canonical_pt_bridge_data_dir", lambda: canonical_dir)
+
+    # Dry-run must not write files or alter existing configs
+    rc_dry = cli.main(
+        [
+            "setup",
+            "--client",
+            "antigravity",
+            "--tool-profile",
+            "advanced",
+            "--data-dir",
+            str(data_dir),
+            "--dry-run",
+            "--json",
+        ]
+    )
+    assert rc_dry == 0
+    dry_payload = json.loads(capsys.readouterr().out)
+    assert dry_payload["dry_run"] is True
+    assert dry_payload["mcp_client"]["configured"] is False
+    assert not (data_dir / "netforge_bridge.pts").exists()
+    ag_cfg = fake_home / ".gemini" / "antigravity" / "mcp_config.json"
+    assert not ag_cfg.exists()
+
+    # Pre-seed an existing MCP config with another server to verify safe non-destructive merge
+    ag_cfg.parent.mkdir(parents=True, exist_ok=True)
+    ag_cfg.write_text(
+        json.dumps({"mcpServers": {"other_tool": {"command": "other"}}}),
+        encoding="utf-8",
+    )
+
+    rc_live = cli.main(
+        [
+            "setup",
+            "--client",
+            "antigravity",
+            "--tool-profile",
+            "advanced",
+            "--data-dir",
+            str(data_dir),
+            "--json",
+        ]
+    )
+    assert rc_live == 0
+    live_payload = json.loads(capsys.readouterr().out)
+    assert live_payload["module"]["installed"] is True
+    assert (data_dir / "netforge_bridge.pts").is_file()
+    assert (canonical_dir / "netforge_bridge.pts").is_file()
+    assert live_payload["mcp_client"]["configured"] is True
+
+    merged = json.loads(ag_cfg.read_text(encoding="utf-8"))
+    assert "other_tool" in merged["mcpServers"]
+    nf = merged["mcpServers"]["netforge"]
+    assert nf["args"] == ["-m", "netforge", "serve", "--transport", "stdio"]
+    assert nf["env"]["NETFORGE_TOOL_PROFILE"] == "advanced"
+    assert nf["env"]["NETFORGE_PT_PATH"] == fake_pt
+    assert nf["env"]["NETFORGE_DATA_DIR"] == str(data_dir.resolve())
+    assert ag_cfg.with_name("mcp_config.json.bak").is_file()
+
+
+@pytest.mark.unit
+def test_setup_vscode_uses_servers_stdio_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(cli, "_detect_packet_tracer_binary", lambda _p: None)
+    monkeypatch.setattr(cli, "canonical_pt_bridge_data_dir", lambda: tmp_path / "canon")
+
+    settings = NetForgeSettings(data_dir=tmp_path / "nf_data", tool_profile="solve_lab")
+    res = cli.run_guided_setup(settings, client="vscode", cwd=ws)
+    assert res["mcp_client"]["configured"] is True
+    vs_cfg = ws / ".vscode" / "mcp.json"
+    assert vs_cfg.is_file()
+    parsed = json.loads(vs_cfg.read_text(encoding="utf-8"))
+    assert parsed["servers"]["netforge"]["type"] == "stdio"
+
+
+@pytest.mark.unit
+def test_detect_packet_tracer_binary_discovers_newer_and_x86_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netforge.adapters import discovery
+
+    pf = tmp_path / "ProgramFiles"
+    pf86 = tmp_path / "ProgramFilesX86"
+    old_exe = pf86 / "Cisco Packet Tracer 8.2.1" / "bin" / "PacketTracer.exe"
+    new_exe = pf / "Cisco Packet Tracer 9.0.0" / "bin" / "PacketTracer.exe"
+    old_exe.parent.mkdir(parents=True)
+    new_exe.parent.mkdir(parents=True)
+    old_exe.write_text("", encoding="utf-8")
+    new_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(discovery.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("ProgramFiles", str(pf))
+    monkeypatch.setenv("ProgramW6432", str(pf))
+    monkeypatch.setenv("ProgramFiles(x86)", str(pf86))
+
+    detected = discovery.detect_packet_tracer_binary()
+    assert detected == str(new_exe)
+
+    # Also resolves older/x86-only installs when newer version is absent
+    new_exe.unlink()
+    assert discovery.detect_packet_tracer_binary() == str(old_exe)
+
