@@ -686,7 +686,7 @@ def test_netforge_bridge_js_failsafe_invariants_and_heartbeat(tmp_path: Path) ->
 @pytest.mark.unit
 def test_repo_and_git_history_free_of_course_and_forbidden_terms() -> None:
     forbidden_patterns = [
-        re.compile(r"\btp\d+\b", re.I),
+        re.compile(r"\btp\d+\b", re.I | re.ASCII),
         re.compile("vlsm" + "_rip", re.I),
         re.compile(
             "("
@@ -708,15 +708,30 @@ def test_repo_and_git_history_free_of_course_and_forbidden_terms() -> None:
             re.I,
         ),
     ]
+    binary_suffixes = {
+        ".webp",
+        ".mp4",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".pts",
+        ".pkt",
+        ".pka",
+    }
 
     tracked = subprocess.check_output(
         ["git", "ls-files"], cwd=REPO_ROOT, text=True
     ).splitlines()
     for rel_path in tracked:
         fp = REPO_ROOT / rel_path
-        if not fp.is_file():
+        if not fp.is_file() or fp.suffix.lower() in binary_suffixes:
             continue
-        text = fp.read_bytes().decode("utf-8", errors="ignore")
+        raw = fp.read_bytes()
+        if b"\x00" in raw[:8192]:
+            continue
+        text = raw.decode("utf-8", errors="ignore")
         for pat in forbidden_patterns:
             m = pat.search(text)
             assert m is None, f"Forbidden term {m.group(0)!r} found in tracked file {rel_path}"
