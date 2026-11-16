@@ -67,13 +67,16 @@ dev = [
     "ruff>=0.6.0",
     "typer>=0.12.0",
     "rich>=13.0.0",
+    "psutil>=5.9.0",
+    "pillow>=10.0.0",
+    "opencv-python-headless>=4.8.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/netforge-mcp/netforge-mcp"
-Documentation = "https://github.com/netforge-mcp/netforge-mcp/tree/main/docs"
-Repository = "https://github.com/netforge-mcp/netforge-mcp"
-Issues = "https://github.com/netforge-mcp/netforge-mcp/issues"
+Homepage = "https://github.com/gg1i/netforge-mcp"
+Documentation = "https://github.com/gg1i/netforge-mcp/tree/main/docs"
+Repository = "https://github.com/gg1i/netforge-mcp"
+Issues = "https://github.com/gg1i/netforge-mcp/issues"
 
 [project.scripts]
 netforge-mcp = "netforge.cli:main"

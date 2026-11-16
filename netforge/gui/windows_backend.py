@@ -12,8 +12,16 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-import psutil
-from PIL import Image, ImageGrab
+try:
+    import psutil  # type: ignore[import-untyped]
+except ImportError:
+    psutil = None
+
+try:
+    from PIL import Image, ImageGrab  # type: ignore[import-untyped]
+except ImportError:
+    Image = None
+    ImageGrab = None
 
 from netforge.adapters.base import AdapterConnectionState, BackendStatus, GuiBackend
 from netforge.adapters.discovery import (
@@ -459,6 +467,8 @@ def _capture_window_printwindow(
     hwnd: int, window_rect: Rect, client_rect: Rect, *, full_window: bool = False
 ) -> Image.Image | None:
     """Capture a window offscreen via Win32 PrintWindow (works when occluded behind other apps)."""
+    if Image is None:
+        return None
     width = int(window_rect.width)
     height = int(window_rect.height)
     if width <= 0 or height <= 0:
@@ -723,6 +733,8 @@ class WindowsGuiBackend(GuiBackend):
                 snapshot = _snapshot_pt_processes()
         if snapshot is not None:
             return snapshot
+        if psutil is None:
+            return []
 
         matches: list[dict[str, Any]] = []
         for proc in psutil.process_iter(["pid", "name", "exe", "status"]):
@@ -1237,6 +1249,11 @@ class WindowsGuiBackend(GuiBackend):
                 )
 
         if img is None:
+            if ImageGrab is None:
+                raise AdapterUnavailableError(
+                    "Pillow (ImageGrab) is required for desktop screenshot capture.",
+                    remediation="Install optional GUI extras: pip install 'netforge-mcp[gui]'.",
+                )
             img = ImageGrab.grab(
                 bbox=(rect.left, rect.top, rect.right, rect.bottom),
                 all_screens=True,
@@ -2267,6 +2284,11 @@ class WindowsGuiBackend(GuiBackend):
                     win.hwnd, win.window_rect, win.client_rect, full_window=False
                 )
         if img is None:
+            if ImageGrab is None:
+                raise AdapterUnavailableError(
+                    "Pillow (ImageGrab) is required for template matching.",
+                    remediation="Install optional GUI extras: pip install 'netforge-mcp[gui]'.",
+                )
             rect = win.client_rect
             img = ImageGrab.grab(
                 bbox=(rect.left, rect.top, rect.right, rect.bottom),

@@ -475,3 +475,29 @@ def test_windows_toolhelp_does_not_collide_across_modules() -> None:
     assert isinstance(pids, list)
 
 
+@pytest.mark.unit
+def test_core_imports_without_optional_gui_deps() -> None:
+    import subprocess
+    import sys
+
+    code = "\n".join(
+        [
+            "import sys",
+            "for mod in ('psutil', 'cv2', 'numpy', 'PIL', 'PIL.Image', 'PIL.ImageGrab'):",
+            "    sys.modules[mod] = None",
+            "from netforge.mcp.server import create_mcp_server",
+            "from netforge.gui.vision import compute_image_stats",
+            "from netforge.gui.windows_backend import WindowsGuiBackend",
+            "from netforge.core.exceptions import AdapterUnavailableError",
+            "try:",
+            "    compute_image_stats(None)",
+            "except AdapterUnavailableError as exc:",
+            "    assert 'netforge-mcp[gui]' in str(exc.remediation)",
+            "else:",
+            "    raise AssertionError('Expected AdapterUnavailableError')",
+        ]
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+

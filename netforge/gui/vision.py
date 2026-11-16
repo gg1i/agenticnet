@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import cv2
-import numpy as np
-from PIL import Image
-
-from netforge.core.exceptions import ValidationError
+from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.gui.models import ImageStats, Rect, VisualAnchorMatch
+
+if TYPE_CHECKING:
+    from PIL import Image
+
+
+def _require_vision_deps() -> tuple[Any, Any, Any]:
+    try:
+        import cv2  # type: ignore[import-untyped]
+        import numpy as np  # type: ignore[import-untyped]
+        from PIL import Image as pil_image
+    except ImportError as exc:
+        raise AdapterUnavailableError(
+            "GUI vision utilities require Pillow, NumPy, and OpenCV.",
+            remediation="Install optional GUI extras: pip install 'netforge-mcp[gui]'.",
+        ) from exc
+    return cv2, np, pil_image
 
 
 def save_image_png(image: Image.Image, target_path: Path) -> Path:
@@ -21,13 +33,15 @@ def save_image_png(image: Image.Image, target_path: Path) -> Path:
     return target_path
 
 
-def _pil_to_bgr(image: Image.Image) -> np.ndarray:
+def _pil_to_bgr(image: Image.Image) -> Any:
+    cv2, np, _ = _require_vision_deps()
     rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def compute_image_stats(image: Image.Image) -> ImageStats:
     """Compute basic brightness, contrast, hash, and blank-screen checks."""
+    cv2, np, _ = _require_vision_deps()
     rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     mean_val = float(np.mean(gray))
@@ -50,6 +64,7 @@ def image_diff_ratio(
     pixel_delta_threshold: int = 18,
 ) -> float:
     """Return fraction of pixels `[0.0, 1.0]` that changed significantly between screenshots."""
+    cv2, np, _ = _require_vision_deps()
     after_resized = after.resize(before.size) if before.size != after.size else after
 
     gray_a = cv2.cvtColor(_pil_to_bgr(before), cv2.COLOR_BGR2GRAY)
@@ -69,6 +84,7 @@ def match_template(
     client_rect: Rect | None = None,
 ) -> VisualAnchorMatch | None:
     """Locate `template` inside `screenshot` using normalized OpenCV template matching."""
+    cv2, _, pil_image = _require_vision_deps()
     if isinstance(template, (str, Path)):
         tpl_path = Path(template)
         if not tpl_path.exists():
@@ -76,7 +92,7 @@ def match_template(
                 f"Template image file does not exist: {tpl_path}",
                 details={"template_path": str(tpl_path)},
             )
-        tpl_img = Image.open(tpl_path)
+        tpl_img = pil_image.open(tpl_path)
     else:
         tpl_img = template
 
@@ -123,6 +139,7 @@ def match_template(
 
 def detect_ui_regions_from_image(image: Image.Image) -> dict[str, Any]:
     """Analyze a Packet Tracer screenshot to estimate layout strips and dialog overlays."""
+    cv2, np, _ = _require_vision_deps()
     gray = cv2.cvtColor(_pil_to_bgr(image), cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     if h < 100 or w < 100:
