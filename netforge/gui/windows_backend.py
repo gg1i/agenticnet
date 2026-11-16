@@ -410,12 +410,18 @@ def _snapshot_pt_processes() -> list[dict[str, Any]] | None:
 
 
 def _get_foreground_hwnd() -> int:
-    return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return 0
+    return int(windll.user32.GetForegroundWindow() or 0)
 
 
 def _get_cursor_pos() -> tuple[int, int] | None:
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
     pt = wintypes.POINT()
-    if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+    if windll.user32.GetCursorPos(ctypes.byref(pt)):
         return int(pt.x), int(pt.y)
     return None
 
@@ -424,8 +430,11 @@ def _restore_user_foreground_and_cursor(
     prev_fg: int, prev_cursor: tuple[int, int] | None, *, push_hwnd: int = 0
 ) -> None:
     """Restore the user's previous foreground window and cursor position without disruption."""
-    u32 = ctypes.windll.user32
-    k32 = ctypes.windll.kernel32
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return
+    u32 = windll.user32
+    k32 = windll.kernel32
     if prev_cursor is not None:
         with suppress(Exception):
             u32.SetCursorPos(int(prev_cursor[0]), int(prev_cursor[1]))
@@ -585,7 +594,6 @@ def _find_file_dialog_edit_hwnd(top_hwnd: int) -> int | None:
 
 def _resolve_focus_child_hwnd(top_hwnd: int) -> int:
     """Resolve the focused child control HWND inside a top-level Packet Tracer window."""
-    u32 = ctypes.windll.user32
     try:
         import win32gui  # type: ignore[import-untyped]
 
@@ -595,6 +603,10 @@ def _resolve_focus_child_hwnd(top_hwnd: int) -> int:
                 return edit_hwnd
     except Exception:
         pass
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return int(top_hwnd)
+    u32 = windll.user32
     tid = int(u32.GetWindowThreadProcessId(int(top_hwnd), None) or 0)
     if tid:
         info = _GUITHREADINFO()

@@ -771,6 +771,7 @@ def test_capture_screenshot_dialog_title_uses_dialog_printwindow(
     )
     pw_calls: list[tuple[int, bool]] = []
 
+    monkeypatch.setattr(backend, "_require_windows", lambda: None)
     monkeypatch.setattr(backend, "_require_main_window", lambda: (main_win, [phone_dlg]))
     monkeypatch.setattr(wb, "_get_foreground_hwnd", lambda: 999)
 

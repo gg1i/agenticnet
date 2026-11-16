@@ -85,4 +85,4 @@ Runner commands:
   ```bash
   python scripts/run_benchmark.py --all-sample-labs --mock
   ```
-- Live benchmark runs (`--live`) require an active PT 8.2.2 connection and will be unlocked after live Phase 5 verification.
+- Live benchmark runs (`--live`) require an active Cisco Packet Tracer `8.2.2` Script Bridge connection (`netforge-mcp doctor`).

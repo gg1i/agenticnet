@@ -10,9 +10,13 @@ from pydantic import BaseModel, Field
 from netforge.core.enums import PermissionTier
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def canonical_pt_bridge_data_dir() -> Path:
     """Resolve the OS-standard directory where `netforge_bridge.pts` discovers session files."""
-    if os.name == "nt":
+    if _is_windows():
         local_app_data = os.environ.get("LOCALAPPDATA")
         base_dir = (
             Path(local_app_data).expanduser().resolve()

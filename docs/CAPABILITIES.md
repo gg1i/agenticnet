@@ -1,126 +1,39 @@
-# Packet Tracer 8.2.2 Live Capabilities & Probe Log (`CAPABILITIES.md`)
+# Packet Tracer Compatibility & Capabilities Guide
 
-**Target Binary:** Cisco Packet Tracer `8.2.2.0400` (Windows x64)  
-**Test Display Environment:** `1920x1080`, `120 DPI` (125% Windows scaling)  
-**Last Verified Live:** Phase 1a Probe Runs (`probe_start_test.py` -> PT `8.2.2.0400`)
-
-This document records empirical facts directly observed by executing live probes against Cisco Packet Tracer `8.2.2` on Windows, including **failures, race conditions, modal dialogs, and untested boundaries**. Unverified capabilities are explicitly marked `UNTESTED`.
+**Tested Simulator:** Cisco Packet Tracer `8.2.2` (Windows 10/11)  
+**Cross-Platform Core:** Windows, Linux, and macOS (offline topology, IPAM, IOS validation, SQLite storage, MCP server)
 
 ---
 
-## 1. Script Module Packaging, Privileges & Lifecycle
+## 1. Operational Modes & Backends
 
-| Capability / Behavior | Status | Live Evidence & Notes |
-|---|---|---|
-| Binary `.pts` export format | **VERIFIED LIVE** | Exported `.pts` files (`5073`–`6306` bytes) are encrypted/encoded binary (`\x1d\x93\x88d...`, non-ZIP). Built clean-room inside PT via `Scripting Interface` (`Import Script Files` -> `Import Interface Files` -> `Export Script Module`). |
-| Persistent Script Module registration | **VERIFIED LIVE** | Exporting a new `.pts` opens modal `"New script modules must be added as persistent script modules before starting. Do you want to add it now?"` (`Yes`) followed by confirmation `"Script module added as a persistent script module."` (`OK`). Selecting **On Startup** + all 10 security privileges (`Application`, `Activity`, `File`, `Ui`, `Ipc`, `GetNetwork`, `ChangeNetwork`, `Simulation`, `Preferences`, `Misc`) succeeded (`On`). |
-| Persisting across `fileOpen()` | **VERIFIED LIVE** | Persistent PT Script Module remained `(Running)` across `ipc.appWindow().fileOpen(".../mqttdemo.pka")`. |
-| Version warning modal (`8.2.2.0400`) | **FAILURE / GOTCHA RECORDED** | Starting / creating a WebView with default unnamed module metadata triggered modal `"Some scripts in this file were saved in an earlier version of Cisco Packet Tracer... com.yourcompany.newptscriptmodule0"` (`OK`). Blocks Qt UI event loop until dismissed. |
-| Start/Stop toggle crash hazard | **FAILURE / GOTCHA RECORDED** | `groupBox_8.btnStart` / `ScriptEngine.btnStart` is a **Start/Stop toggle**. Invoking it multiple times while `Start` is initializing immediately invokes `cleanUp()` (`wv.close()`) during Chromium/QWebEngine initialization and crashes Packet Tracer cleanly exiting with no crash dialog. Invoking `btnStart` once works cleanly. |
-| Windows UIA COM deadlocks on Scripting UI | **FAILURE / GOTCHA RECORDED** | On PT's Qt5 `Scripting Interface`, UIA `ScrollIntoView()`, `ValuePattern.SetValue`, `InvokePattern.Invoke()` on modal-spawning buttons, and `TogglePattern.Toggle()` on `.chkMisc` deadlock COM calls. Win32 `PostMessageW` (`WM_MOUSEWHEEL` + `ChildWindowFromPointEx`) + modal dialog automation works reliably. |
-| QtScript timer APIs | **VERIFIED LIVE** | `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `Date.now()`, and `JSON` work inside PT's Qt Script Engine. |
+NetForge MCP separates local network modeling from live simulator execution so every tool response clearly reports both its execution backend (`execution_backend`) and state truth level (`planned`, `executed`, `verified`):
 
----
-
-## 2. Bridge Transport Probe (`WebView` Localhost HTTP vs File Mailbox)
-
-| Transport Channel | Status | Live Evidence & Notes |
-|---|---|---|
-| **Headless `WebView` + `127.0.0.1` HTTP (`QWebEngine` + `$se()`)** | **VERIFIED LIVE** | `webViewManager.createWebView(...)` + `wv.addAllowedExternalFilter("http://127.0.0.1*")` **without calling `wv.show()`** loaded `this-sm:probe.html` headless (`[WEBVIEW_HEADLESS_OK]`). QWebEngine issued CORS `OPTIONS /probe` (`204`) and `POST /probe` (`200 OK`) to `http://127.0.0.1:<port>/probe` with header `X-NetForge-Token` (`Origin: pt-sm://com.yourcompany.newptscriptmodule0/probe.html`) and invoked `$se("onHttpProbeResult", ...)` inside the Script Engine in `<0.8s`. No visible browser window needed. |
-| `ipc.systemFileManager()` file mailbox | **VERIFIED LIVE** | `fileExists()`, `getFileContents()`, and `writePlainTextToFile()` cleanly read Python-written JSON (`mailbox_in.json`) and wrote structured JSON/logs (`mailbox_out.json`, `probe_trace.log`). Viable backup channel if QWebEngine is blocked on a host. |
-| Localhost bidirectional Python `HttpScriptBridge` long-poll command loop | **OFFLINE MOCKED ONLY** | Handshake/auth `OPTIONS`+`POST` and `$se()` callback verified live (`http_probe_result.json`); continuous `/v1/commands/next` long-poll + `/v1/commands/result` RPC loop tested via offline mocked HTTP client in `tests/unit/test_script_backend.py` (scheduled for live full-runtime test in Phase 2). |
-| Native binary PTMP / `ExApp` (ports `38000`+) | **UNTESTED** | Excluded per ADR-001 to avoid `.pta` registration and undocumented binary framing. |
-| `dprint()` visibility | **PARTIALLY VERIFIED** | `dprint()` writes to `Debug - <ModuleName>` dialog; opening `btnDebug` makes text readable, though `systemFileManager` trace logs or HTTP results are far more reliable for automation. |
+| Capability | Primary Path (`script_backend`) | Fallback / Offline Path | Notes for Users |
+|---|---|---|---|
+| **Add / Remove / Move Devices** | `LogicalWorkspace.addDevice` / `removeDevice` / `moveToLocation` | Offline `TopologyEngine` | Automatically inserts `HWIC-2T` serial cards on `2911`/`1941`/`2811` routers and auto-powers Cisco `7960` IP phones when added via the bridge. |
+| **Create / Remove Cables** | `LogicalWorkspace.createLink` / `deleteLink` | Offline auto MDI/MDI-X planner | Supports Ethernet straight/cross, Fiber, Serial DCE/DTE, Phone, Console, and Auto cabling. |
+| **IOS CLI Execution & Read-Back** | Direct `TerminalLine` execution + paging handling | `WindowsGuiConsoleTransport` / offline IOS validation | Waits cleanly for router/switch boot prompts, auto-elevates User Exec (`>`) to Privileged Exec (`#`), and paginates long outputs. |
+| **Host IP / Gateway Setup** | Direct `HostPort` IPC + PC `ipconfig` fallback | Offline IPAM planning | Supports IPv4 static addressing, subnet mask, default gateway, DNS, and DHCP renewal on `PC-PT` / `Laptop-PT` / `Server-PT`. |
+| **File Lifecycle (`.pkt` / `.pka`)** | `AppWindow.fileOpen` & `fileSaveAsNoPrompt` | Safe sibling copy-on-write (`*_netforge.pkt`) | Original `.pkt`/`.pka` files are preserved by default unless `overwrite=True` is explicitly requested. |
+| **Live Verification (`verify_lab`)** | Parallel live CLI queries (`show` + `ping`) | Bounded retry loop | Verifies interfaces, routes, VLANs/trunks, DHCP bindings, Cisco CME phones, and real ICMP ping success with raw CLI evidence. |
+| **`.pka` Activity Grading (`grade_lab`)** | Read-only `ActivityFile` completion & item tree | Automatic fallback to `verify_lab` | Never bypasses instructor locks; cleanly reports `"unavailable"` when an activity locks assessment reads and verifies via CLI instead. |
+| **Physical-Tab Fallback (`gui_*`)** | Windows desktop Win32 adapter (`GuiBackend`) | Explicit error when desktop is locked | Required only for raw desktop clicks or Physical-tab drag fallback (`gui_attach_ip_phone_power` mouse-drag fallback is *experimental: not yet validated by the 5-attempt live protocol*; Script Bridge `7960` power succeeds without mouse input). |
 
 ---
 
-## 3. Core Scripting Spike (`LogicalWorkspace`, `Network`, `TerminalLine`)
+## 2. Known Cisco Packet Tracer `8.2.2` Quirks Handled Automatically
 
-Live execution of the Phase 1a core spike (`probe_confirm_template.js`) produced:
-
-| Primitive | Status | Live Evidence & PT `8.2.2` Details |
-|---|---|---|
-| `addDevice(deviceType, model, x, y)` | **VERIFIED LIVE** | `lw.addDevice(0, "2911", 150, 150)` returned `"Router0"`; `lw.addDevice(1, "2960-24TT", 350, 150)` returned `"Switch0"`. (`DeviceType` enum documented in `class_logical_workspace.html`: `0=eRouter`, `1=eSwitch`, `8=ePc`, `9=eServer`, `12=eIpPhone`, `16=eMultiLayerSwitch`, etc.) |
-| `createLink(dev1, port1, dev2, port2, connType)` | **VERIFIED LIVE** | `lw.createLink("Router0", "GigabitEthernet0/0", "Switch0", "FastEthernet0/1", 8100)` returned `true`. (`CONNECT_TYPES` enum documented in `class_logical_workspace.html`: `8100=ETHERNET_STRAIGHT`, `8101=ETHERNET_CROSS`, `8103=FIBER`, `8104=PHONE`, `8106=SERIAL`, `8107=AUTO`, `8108=CONSOLE`, etc.) |
-| `TerminalLine` IOS CLI execution & raw output readback | **VERIFIED LIVE** | `ipc.network().getDevice("Router0").getCommandLine()` with `outputWritten` + `commandEnded` events captured full IOS output (`2884` chars), navigated `Would you like to enter the initial configuration dialog? [yes/no]: no` -> `RETURN` -> `enable` -> `show ip interface brief`, reached `Router#` (`finalMode: "enable"`), and returned the full interface table verbatim. |
-| IOS Boot Delay Failure (`2911`) | **FAILURE / GOTCHA RECORDED** | Initial probe with fixed `3000ms` wait sent `"no"` while `2911` was still decompressing IOS (`###########################`), capturing zero prompt/interface output. Event-driven polling on `outputWritten` / `getPrompt()` measured actual `2911` boot time at `bootElapsedMs: 10505` (~10.5s) before `[yes/no]:`. |
-| `terminal length 0` on PT `2911` IOS | **FAILURE / QUIRK RECORDED** | `term.enterCommand("terminal length 0")` triggered `% Invalid input detected at '^' marker.` and emitted `commandEnded(..., status=2)` on PT `2911` (`Cisco IOS Software, C2900 Software (C2900-UNIVERSALK9-M), Version 15.1(4)M5`), whereas valid commands (`no`, `enable`, `show ip interface brief`) emitted `status=0`. Bridge CLI wrappers should NOT assume `terminal length 0` succeeds on all PT IOS images. |
-| `running-config` (`show running-config`), PC/Server IP config, Ping | **UNTESTED LIVE** | Documented in PT `8.2.2` `IpcAPI` (`HostPort.setIpSubnetMask`, `TerminalLine`, etc.); scheduled for live runtime verification in Phase 2/3. |
+- **Router Cold Boot Delay (`~10s`):** Fresh `2911` and similar ISR routers decompress IOS images (`###...`) before showing `initial configuration dialog`. NetForge's bridge waits for the live CLI prompt rather than sending commands blindly.
+- **`terminal length 0` Non-Fatal on PT Routers:** Packet Tracer `2911` IOS rejects `terminal length 0` (`status=2`). NetForge handles `--More--` pagination automatically and marks that specific check non-fatal.
+- **No Unnecessary Screenshots:** Whenever CLI/IPC read-back answers a question (`show ip interface brief`, `show running-config`, `show ip route`), NetForge uses structured text rather than taking screenshots.
 
 ---
 
-## 4. `.pka` Grader Oracle Probe (`ActivityFile` & `TreeNode`)
+## 3. Troubleshooting Live Connections
 
-Target tested live: `C:/Program Files/Cisco Packet Tracer 8.2.2/saves/04 IoT/MQTT/mqttdemo.pka`
+Run `netforge-mcp doctor` at any time to check environment health (home directory usernames and bridge tokens are automatically redacted from output):
 
-| Check | Status | Live Evidence & Notes |
-|---|---|---|
-| Open `.pka` & detect activity state | **VERIFIED LIVE** | `ipc.appWindow().fileOpen(pkaPath)` + `ipc.appWindow().getActiveFile()` returned `isActivityFile() == true` and `savedFilename` matching the `.pka`. Persistent PT Script Module stayed running. |
-| Read activity percentage & score counts | **VERIFIED LIVE** | On unmodified `mqttdemo.pka`: `percentageComplete: 12.5`, `percentageCompleteScore: 12.5`, `itemsCount: 8`, `correctItemsCount: 1`, `scoreCount: 8`, `correctScoreCount: 1`, `completedFeedback`, `incompleteFeedback` all readable directly without UI clicks or Check Results modal interaction. |
-| Read individual comparator tree items (unmet vs met) | **VERIFIED LIVE** | `af.getAssessedComparatorTree()` (`TreeNode`) returned `treeRootName: "Network"`, `leafCount: 8`, `checkLeafCount: 1`. Recursive traversal via `getChildCount()` / `getChildNodeAt(i)` extracted all `8` leaf items with `path` (e.g. `Network > MQTT Broker > Custom Device Properties > MQTT_BROKER_AUTHORIZED_USERS`), `name`, expected `value`, `checkLeafCount` (`0` = unmet, `1` = met), `totalLeafPoints`/`checkLeafPoints`, and `incorrectFeedback`. |
-| `AssessmentModel` global availability | **VERIFIED LIVE** | `typeof AssessmentModel !== "undefined"` evaluated to `true`. |
-| Strict Assessment-mode / password-locked `.pka` | **UNTESTED** | PT `8.2.2` ships only `mqttdemo.pka` and `sokoban.pka`. Behavior when an instructor `.pka` sets Assessment Lock / Activity Wizard password restrictions on scripting IPC will be probed empirically in Phase 4. |
-
----
-
-## 5. Scripting vs GUI-Only Operational Boundary (Verified Basis for Phase 2 Router)
-
-- **ScriptBackend Target Scope (Proven Foundation):** Device creation (`addDevice`), link creation (`createLink`), IOS CLI execution + raw output + status code (`TerminalLine`), `.pka` completion & comparator tree reading (`ActivityFile` / `TreeNode`). Further `Device`/`HostPort`/`Simulation` methods remain to be live-tested in Phases 2–3.
-- **GuiBackend Required Scope:** Physical tab racks/cables/power bricks, modal file/save/preferences dialogs, module slot drag/drops requiring GUI interaction (unless IPC `addModule` verified later), Check Results screenshot auditing if `.pka` locks IPC, and initial bootstrap/recovery of Packet Tracer or the companion `.pts` Script Module.
-
-## Phase 2 step (a): production bridge, live end-to-end (PT 8.2.2.0400, Windows)
-
-Verified live (exported `netforge_bridge.pts`, module id `com.netforge.bridge`, real `HttpScriptBridgeServer`/`HttpScriptBridgeBackend`):
-
-- `ping` over long-poll HTTP: ok (0.01 s), backend `script_http`.
-- `add_device` 2911 -> `Router0`; 2960-24TT -> `Switch0`: ok.
-- `create_link` Router0 Gi0/0 <-> Switch0 Fa0/1: ok.
-- `execute_cli` on a booting 2911: `timed_out=false`; `terminal length 0` returned status 2 and was reported as `non_fatal`; `--More--` paging advanced 5 pages through `show running-config`; IOS `ping 10.77.77.1` -> `Success rate is 100 percent (5/5)`.
-- Stop -> Start: bridge reconnected and `ping` succeeded afterwards.
-
-Findings (including failures):
-
-- WebView `fetch`/XHR to `http://127.0.0.1` works. Origin sent by PT is the opaque `pt-sm:` (no `//`); the server previously rejected it with 403 ("Failed to fetch"). Fixed in `is_allowed_bridge_origin`. Preflight `OPTIONS` is sent for the token header and must return CORS headers. `<img>` loads to 127.0.0.1 failed (`IMG_ERR`); not used.
-- Queuing all CLI commands at once breaks after `--More--` (pager swallowed the first char of `ping`). Commands are now sent one at a time.
-- The "Some scripts in this file were saved in an earlier version ... 8.2.2.0400" dialog appeared only when manually editing/starting a `.pts` via the script module editor (`New PT Script Module`); starting an unsaved editor module directly instead prompts `"New script modules must be exported and added as persistent script modules before starting."` and opens `Export Script Module`.
-- **Persistence & Zero-Popup Reopen (verified live in `task-3750`):** After registering `%LOCALAPPDATA%\netforge\netforge_bridge.pts` once via `Extensions -> Scripting -> Configure PT Script Modules -> Add`, cleanly closing and reopening Packet Tracer 8.2.2 auto-started the module and connected to `HttpScriptBridgeBackend` with **no manual clicks** and **zero startup/version popups** (`EXTRA_WINDOWS_ON_REOPEN = []`, `ping` succeeded).
-- **One-time Manual Setup (no GUI auto-click dependency):** Build/place `netforge_bridge.pts` in `%LOCALAPPDATA%\netforge\`, open PT 8.2.2 once, go to `Extensions -> Scripting -> Configure PT Script Modules -> Add`, and select `netforge_bridge.pts`. On all subsequent PT launches, `HttpScriptBridgeBackend` connects cleanly without depending on `GuiBackend` auto-clicking OK.
-- **Device-to-Device Ping Across Link (verified live in `task-3780`):** Added `Router0` (`2911`) and `Router1` (`2911`), linked `Router0 GigabitEthernet0/0 <-> Router1 GigabitEthernet0/0` (`conn_type: 8101`), configured `10.77.88.1/24` and `10.77.88.2/24` (`no shutdown`) via `execute_cli`, and verified bidirectional ping (`10.77.88.1 -> 10.77.88.2` and `10.77.88.2 -> 10.77.88.1`, both `100% (5/5)`). Note: `addDevice` with `2960-24TT` returned an empty name right after fresh PT startup in two runs after succeeding earlier in `e2e_run2`; `2911` succeeded consistently.
-- Leftover probe module `com.yourcompany.newptscriptmodule0` is not registered in PT 8.2.2 (checked in Configure PT Script Modules). **Note:** Any updated `.pts` build should always use canonical module ID `com.netforge.bridge`, and users perform a one-time re-registration via `Extensions -> Scripting -> Configure PT Script Modules...` (Remove prior entry if present, Add updated `netforge_bridge.pts`, enable `On Startup`, grant script privileges, restart PT cleanly). `PT.conf` is never edited programmatically.
-
----
-
-## 6. Path-Independent `.pts`, Fail-Safe Bridge, & Non-Interactive Launch Guard
-
-| Capability / Behavior | Status | Live Evidence & Notes |
-|---|---|---|
-| Dynamic user-folder discovery inside `.pts` | **VERIFIED LIVE** | Updated `netforge_bridge.js` to resolve `bridge_session.json` via `ipc.appWindow().getTempFileLocation()` and `ipc.appWindow().getUserFolder()` with `SESSION_FILE = "__NETFORGE_SESSION_FILE__"` intact. Binary scan of exported `netforge_bridge.pts` (`9,203` bytes) confirmed `0` username/path hits, and restarting PT `8.2.2` auto-connected with `ping` returning `dynamic_session_discovery: true, has_hardcoded_session_file: false`. |
-| Non-interactive desktop (`WinSta0\exebox-*`) launch refusal & graceful close | **IMPLEMENTED (OFFLINE VERIFIED)** | Observed live contention (`2026-11-16`): a background `PacketTracer.exe` spawned inside agent desktop `WinSta0\exebox-*` held `--progress-bar-server` / port `38000` and stalled the user's `Session 2` `Default` desktop PT instance for `5m 27s`, while forced `taskkill /F` left `215` `PT-*.conf` temp files. Code now enforces `require_interactive_desktop_for_launch()` (`NON_INTERACTIVE_SESSION`) across `packet_tracer_launch`, `WindowsGuiBackend.launch_application`, `HttpScriptBridgeBackend.ensure_connected`, and `run_live_pt_benchmark`, and harnesses call `gracefully_close_packet_tracer()` (`WM_CLOSE` first). |
-| Fail-safe idle bridge & lazy `QWebView` (`netforge_bridge.js` / `bridge.html`) | **IMPLEMENTED (OFFLINE VERIFIED)** | Every top-level function in `netforge_bridge.js` is wrapped in `try/catch`; idle loop checks `bridge_session.json` every `5000ms` forever without creating `QWebView` / `QtWebEngineProcess.exe`; `QWebView` is created lazily only when `bridge_session.json` has `server_pid`, `created_at`, and `heartbeat_at` within `60s`; after `3` failed HTTP polls `bridge.html` notifies `netforgeOnPollFailure`, which destroys `QWebView` and blacklists that `session_id`. Note: bundled `netforge_bridge.pts` needs re-export on interactive desktop with module ID `com.netforge.bridge` and one-time re-registration. |
-| Unlocked interactive desktop required for foreground GUI fallback | **VERIFIED LIVE (FAILURE RECORDED)** | When the Windows desktop is locked, asleep, or running inside a non-interactive/isolated desktop object (verified in `WinSta0\exebox-*`: `GetForegroundWindow() == 0`, `SetCursorPos(100, 100) == 0`), `PIL.ImageGrab.grab` raises `OSError: screen grab failed`, and `SendInput` returns `0` (blocking foreground `gui_click`, `gui_keypress`, `drag_dialog`, and `ImageGrab` screen captures). Meanwhile, `PrintWindow` (`_capture_window_printwindow` when `focus_first=False`) and `background=True` `PostMessageW` still operate on visible top-level windows/menus/dialogs, and `ScriptBackend` (`127.0.0.1` HTTP bridge) requires no screen grab or pointer input after one-time `.pts` registration. |
-
----
-
-## 7. Phase 4 Probes: `grade_lab`, Bridge `fileOpen`, & `7960` Physical-Tab Drag
-
-| Capability / Probe | Status | Live Evidence & Notes |
-|---|---|---|
-| `grade_lab` on bundled `sokoban.pka` | **VERIFIED LIVE** | Both via CLI launch and via `open_file`: `state="available"`, `percentage_complete=0.0`, `0/2` items (`total_leaves=2`), `2` unmet leaves (`Network > goal > Custom Device Properties > hasBox: no`, `Network > goal2 > Custom Device Properties > hasBox: no`). |
-| CLI arg launch of `mqttdemo.pka` | **FAILURE RECORDED** | Launching `PacketTracer.exe mqttdemo.pka` via CLI stalled startup on `- Guest - 2024-02-08 06:40:48` / `Please wait. Opening file...`; the script bridge did not connect within `55s`. |
-| Bridge `open_file` (`ipc.appWindow().fileOpen(...)`) on `.pka` | **VERIFIED LIVE** | Added `open_file` opcode to `netforge_bridge.js` and re-exported clean `netforge_bridge.pts` (`9,514` bytes, `0` personal/path hits). Calling `open_file` on `sokoban.pka` and then `mqttdemo.pka` through an already-connected PT `8.2.2` bridge opened both activities cleanly, kept the bridge connected (`ping()` ok after each), and `grade_open_activity` returned `12.5%` (`1/8` items, `1` met leaf `MQTT_BROKER_ENABLED: True`, `7` unmet leaves) on `mqttdemo.pka`. |
-| `7960` Physical-tab geometry (`1920x1080`, `120 DPI` / `1.25x`) | **VERIFIED LIVE** | Canvas `(500, 180)` maps to client `(503, 305)` (`PrintWindow` icon centroid `(503, 311)`); `7960` device dialog (`893x897`) opens on `Physical` with `IP_PHONE_POWER_ADAPTER` visible at relative `(0.9194, 0.8640)` and DC jack at `(0.3606, 0.3378)`. |
-| `7960` Qt `QDrag` via `PostMessageW` in `exebox-*` | **VERIFIED LIVE (FAILURE RECORDED)** | Testing `PostMessageW` drag on `IP Phone0` (`task-4969`) and `SendMessageW(top, WM_ACTIVATE, 1, 0)` + slow `PostMessageW` drag (`task-5092`) inside isolated desktop `WinSta0\exebox-*` yielded `SOCKET_DIFF_RATIO: 0.0` (`FULL_DIFF: 0.00016`) and `show ephone` stayed `UNREGISTERED`. Qt `QDrag` requires real OS cursor/capture (`SendInput` + `GetForegroundWindow() != 0`). |
-| `gui_attach_ip_phone_power` 5-attempt live `SendInput` check | **BLOCKED IN AGENT SANDBOX (`0/5` run)** | Blocked in `run_command` by Windows desktop isolation (`WinSta0\exebox-*` returns `GetForegroundWindow() == 0` and `SendInput() == 0`, even with the user desktop unlocked). `gui_attach_ip_phone_power` fails closed on `GetForegroundWindow() == 0`; `scripts/verify_7960_power_reliability.py` is provided for direct execution on an unlocked interactive `WinSta0\Default` desktop. |
-
----
-
-## 8. Phase 5 Live Verification: `lab_open`, `lab_save`, `lab_status`, `list_devices`, & `lab_snapshot`
-
-| Capability / Probe | Status | Live Evidence & Notes |
-|---|---|---|
-| PT `AppWindow::fileSaveAsNoPrompt(path, false)` via bridge `save_file` / `lab_save` | **VERIFIED LIVE** | Verified against PT `8.2.2.0400` in [`docs/evidence/phase5_live_verification.json`](evidence/phase5_live_verification.json): `lab_save` returned `success=true`, `execution_backend="script_backend"`, `data.ok=true`, writing `39,548` bytes (`phase5_solved_roundtrip.pkt`) with `overwrite=true`. |
-| Full persistence round-trip (`lab_save` -> close PT -> fresh PT -> `lab_open` -> `lab_status`) | **VERIFIED LIVE** | Pre-config `lab_status` failed `6/6` requirements (`r1_host`, `r2_host`, `r1_ip`, `r2_ip`, `r1_up`, `r2_up`); after CLI config + `write memory`, pre-save `lab_status` passed `6/6`. After killing `PacketTracer.exe`, launching a fresh PT instance (`relaunch_bridge_ping_ok=true`), calling `lab_open`, and auto-elevating reopened User Exec prompts (`>` -> `enable`), `post_reopen_status` passed `6/6` (`overall_passed=true`, `state_level="verified"`, `what_is_left_is_empty=true`). |
-| `list_devices` & `lab_snapshot` on an external `.pkt` (`dhcp_reservation.pkt`) | **VERIFIED LIVE** | Opened bundled stock `<PT_DIR>\saves\01 Networking\DHCP\dhcp_reservation.pkt` via `lab_open` (`state_level="executed"`). Returned `10` devices (`Wireless Router0` `type="wireless_router"`, `PC0`–`PC5` `type="pc"`, `Switch0`–`Switch1` `type="switch"`, `Power Distribution Device0` `type="other"`), `4` links via `Cable::getOtherPort`, and `23` interface entries with IPs/masks (`192.168.0.1/24` on `Vlan1`, `169.254.*` on wired PCs) and remote peers. |
-| Zero-touch auto-bootstrap (`ensure_connected`, `.pts` sync, `Default Workspace`, `lab_open` device discovery) | **VERIFIED LIVE** | `BackendRouter.ensure_live_script()` syncs `%LOCALAPPDATA%\netforge\netforge_bridge.pts`, launches `PacketTracer.exe` when closed, and blocks cleanly until the bridge connects (`Connected: True`). `ProjectManager.require_active()` auto-opens/creates `Default Workspace`, and `lab_open` auto-populates `discovered_devices`. |
-| Script-first `7960` IP Phone power (`add_device` auto-power & `attach_ip_phone_power` opcode) | **VERIFIED LIVE** | Adding `7960` (`device_type=12`) via script bridge returns `auto_powered=true`, `powered=true`, `module_added=true`, `method_used="device.addModule(0/0,11,IP_PHONE_POWER_ADAPTER)"`, `module_count=1`; direct `attach_ip_phone_power` / `gui_attach_ip_phone_power` script path is idempotent (`powered=true`, `module_added=false`). Experimental `SendInput` GUI automation remains fallback-only when the bridge is disconnected. |
-| Phase 5 live 3-lab benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | **VERIFIED LIVE** | Recorded in [`docs/evidence/phase5_live_benchmark.json`](evidence/phase5_live_benchmark.json) (`mock=false`, `mode="live_pt"`, `total=3`, `passed=3`): `01_static_routing` `8/8` (`67.1s`), `02_vlan_dhcp` `5/5` (`79.2s`), and `03_small_voice` `5/5` (`50.1s`) including live `7960` ephone registration (`REGISTERED`, ext `1001`). |
+- **`"script_bridge.state": "connected"`**: Packet Tracer and the MCP server are paired and ready.
+- **`"script_bridge.state": "bridge_listening_pt_idle"`**: Open Packet Tracer, check `Extensions -> Scripting -> Configure PT Script Modules...`, ensure `netforge_bridge.pts` is enabled **On Startup**, and restart Packet Tracer.
+- **`"packet_tracer_detected": false`**: Install Cisco Packet Tracer `8.2.2+` or set `NETFORGE_PT_PATH` to your `PacketTracer.exe` path.

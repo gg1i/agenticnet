@@ -1,15 +1,12 @@
 {
   "mcpServers": {
     "netforge": {
-      "command": "python",
+      "command": "netforge-mcp",
       "args": [
-        "-m",
-        "netforge",
         "serve",
         "--transport",
         "stdio"
       ],
-      "cwd": "<PATH_TO_NETFORGE_MCP>",
       "env": {
         "NETFORGE_PERMISSION_PROFILE": "standard",
         "NETFORGE_REQUIRE_CONFIRM": "true",

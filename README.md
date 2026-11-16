@@ -1,113 +1,76 @@
 # NetForge MCP
 
-**Open-Source AI-Native Network Automation Platform for Cisco Packet Tracer**
+**AI-Native Network Automation & Live Cisco Packet Tracer MCP Server**
 
-NetForge MCP is a modular Model Context Protocol (MCP) server and engineering engine enabling AI agents (Google Antigravity, Claude Desktop, and other MCP-compatible clients) to plan, design, validate, construct, configure, verify, diagnose, and document Cisco Packet Tracer network topologies.
+NetForge MCP connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Google Antigravity, and any MCP client) directly to **Cisco Packet Tracer `8.2.2+`** and a cross-platform network engineering engine so your AI can plan subnets, build topologies, push verified Cisco IOS configs, test live pings, grade `.pka` activities, and diagnose broken labs without overwriting your original `.pkt`/`.pka` files.
 
-> **Independent Community Project Disclaimer:** NetForge MCP is an independent open-source software project. It is **not affiliated with, sponsored by, or endorsed by Cisco Systems, Inc.** Cisco Packet Tracer is a trademark of Cisco Systems, Inc. This repository contains no Cisco proprietary binaries or copyrighted assets.
-
----
-
-## Why NetForge MCP? (One-Command Live Lab Experience)
-
-Hand your MCP agent (`Antigravity` or `Claude Desktop`) a networking idea, `.md`/`.txt`/PDF lab brief, or `.pkt`/`.pka` file with `lab_start` (`start_lab`), and watch Packet Tracer build and verify the lab live on your desktop:
-
-- **Plan -> Build -> Watch Mode**: For ideas or lab specs, NetForge drafts a concise topology, IP plan, and task list for your OK before touching Packet Tracer, then executes step-by-step with narration.
-- **Native PT Script Bridge (Not Brittle Macros)**: Dispatches `add_device`, `create_link`, `configure_host`, `batch_ops`, IOS/PC CLI execution, `list_devices`, and `fileOpen`/`fileSaveAsNoPrompt` over an authenticated `127.0.0.1` HTTP/WebView bridge inside Packet Tracer's own IPC (GUI automation stays fallback-only).
-- **Zero-Risk Copy-on-Write + Diff**: Never overwrites your original `.pkt`/`.pka` by default; saves to a sibling `*_netforge.pkt` working copy, takes start/end snapshots, and returns a readable `lab_diff`.
-- **Real CLI Verification (`planned` vs `executed` vs `verified`)**: `verify_lab` checks live `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and real `ping` output — never claiming pass without observed evidence.
-- **Curated Default Profile + Safe Parallel Speed**: Exposes **25** focused tools by default (`solve_lab`) or all **82** engineering/IPAM/IOS/diagnostics tools (`NETFORGE_TOOL_PROFILE=advanced`), with HTTP/1.1 keep-alive, single-round-trip `batch_ops`, SQLite WAL, and device-parallel CLI/verification.
-
-> **Platform Scope:** Offline unit/protocol tests and planning tools run cleanly on Windows, Linux, and macOS CI. Live Packet Tracer automation is tested on **Windows 10/11 + Cisco Packet Tracer 8.2.2** on an unlocked interactive desktop session.
+> **Independent Community Project:** NetForge MCP is an open-source MIT project and is **not affiliated with, sponsored by, or endorsed by Cisco Systems, Inc.** Cisco Packet Tracer is a trademark of Cisco Systems, Inc. This repository contains no Cisco binaries or copyrighted lab files.
 
 ---
 
-## Core Design Principles
+## What You Can Ask Your AI To Do
 
-1. **Plan -> Design -> Validate -> Build -> Configure -> Test -> Diagnose -> Repair -> Save -> Document**
-2. **Explicit State Separation (`planned` vs. `executed` vs. `verified`)**: Every operation explicitly reports whether state exists only in NetForge's design model (`planned`), was dispatched to a simulator adapter (`executed`), or was independently observed on a running device (`verified`).
-3. **Never Claim Success Without Evidence**: Tools return structured `OperationResult` envelopes containing `operation_id`, `status`, `state_level`, `evidence`, `warnings`, and typed `errors`.
-4. **Device Capability Awareness**: Commands are validated against verified device profiles (`2911`, `1941`, `2960-24TT`, `3560-24PS`, `PC-PT`, `Server-PT`, `WRT300N`, etc.) before generation or execution.
-5. **Security & Auditability**: Five-tier permission enforcement (`read_only`, `planning`, `configuration`, `gui_control`, `destructive`), destructive-action confirmation gates, SQLite audit trails, and automatic secret redaction.
-
----
-
-## Current Roadmap Status
-
-| Phase | Scope | Status |
-|---|---|---|
-| **Phase 1 — Core Foundation** | Package structure, official MCP SDK server, SQLite project store, NetworkX topology engine, IPv4/IPv6 + VLSM IPAM, structured IOS generators/validators, security layer, offline unit & protocol tests | **Implemented (`v0.1.0`)** |
-| **Phase 2 — Packet Tracer Adapter** | Windows PyWin32/ctypes GUI detection, DPI-aware calibration, visual anchor matching, SendInput mouse/keyboard input, fail-safe emergency stop, device console state machine | **Implemented (`v0.1.0`)** |
-| **Phase 3 — Live Network Automation** | Simulation/Realtime mode switching, PDU test packets, simulation event parsing, CLI ping execution, `show ip route` / `show arp` / `show ip int brief` table parsers | **Implemented (`v0.1.0`)** |
-| **Phase 4 — Intelligent Diagnostics** | Automated rule evaluators (missing gateway, disabled interface with IP, link subnet mismatch, native VLAN mismatch), ranked proposals, approval gates, verified self-repair | **Implemented (`v0.1.0`)** |
-| **Phase 5 — Public Release** | Multi-engine integration, capability manifest (`docs/manifest.json`), 82 MCP tools (25 in default `solve_lab` profile), 7 resources, 6 prompts, CI workflows, and complete documentation | **Implemented (`v0.1.0`)** |
+- **"Open `my_lab.pka`, show me what is already configured vs. what is missing, fix the remaining tasks, verify connectivity, and save a working copy."**
+- **"Design and build a 3-VLAN campus topology in live Packet Tracer using OSPF and DHCP (`10.10.0.0/22`), configure all switches/routers/PCs, and verify end-to-end pings."**
+- **"PC1 cannot reach the web server in `broken.pkt` — inspect interfaces, VLAN trunks, routing tables, and ARP, diagnose the root cause, repair it, and show me a diff of what changed."**
+- **"Plan a VLSM subnet allocation for 4 departments (offline, no Packet Tracer needed), validate the IOS configs, and export a Mermaid topology diagram."**
 
 ---
 
-## Architecture Overview
+## Why NetForge MCP?
 
-```text
-netforge/
-├── core/         # Enums, state separation, exceptions, OperationResult, settings, stderr logging
-├── security/     # Permission tiers, destructive confirmation guardrails, secret redaction
-├── devices/      # Verified Packet Tracer device catalog & interface normalization (17 models)
-├── topology/     # NetworkX MultiGraph topology engine, cable rules, layout, Mermaid/ASCII export
-├── ipam/         # IPv4/IPv6 CIDR math, VLSM allocator, conflict detection, addressing tables
-├── ios/          # Structured IOS generators, capability pre-validators, CLI parser, unified diff
-├── storage/      # Versioned SQLite repository, backups, JSON/YAML import & export
-├── adapters/     # Discovery and abstract contracts for GUI, Console, and Simulation backends
-├── gui/          # (Phase 2) Windows pywin32/ctypes GUI backend, calibration, safety abort
-├── console/      # (Phase 2) Device console state-machine, prompt detection, paging cleanup
-├── simulation/   # (Phase 3) Simulation mode, PDU tracking, CLI/offline connectivity checks
-├── diagnostics/  # (Phase 4) Root-cause rules, ranked repair proposals, verified execution
-└── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts, manifest
-```
+- **One-Command Live Lab Workflow (`lab_start` / `start_lab`):** Give your AI a `.pkt`/`.pka` file, PDF/Markdown lab brief, or plain-English description. NetForge drafts a concise plan for your confirmation first, builds and configures the lab live in Packet Tracer, narrates progress, and verifies every step.
+- **Native Packet Tracer Script Bridge:** Uses an authenticated `127.0.0.1` HTTP bridge inside Packet Tracer (`com.netforge.bridge`) for reliable `add_device`, `create_link`, `configure_host`, `batch_ops`, `HWIC-2T` module attachment, `7960` IP phone powering, IOS CLI execution, and `.pkt`/`.pka` open/save (desktop mouse/keyboard GUI automation stays fallback-only).
+- **Non-Destructive Copy-on-Write + Diffs:** Original `.pkt`/`.pka` files stay untouched by default (`*_netforge.pkt`), with before/after snapshots (`lab_snapshot`) and readable change summaries (`lab_diff`).
+- **Evidence-First Verification (`planned` vs. `executed` vs. `verified`):** Never claims success without proof — `verify_lab` and `lab_status` inspect real `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and live `ping` outputs.
+- **Clean Default Profile + Power-User Mode:** Exposes **25** focused tools in the default `solve_lab` profile (reducing prompt clutter for agents) or all **82** engineering, IPAM, IOS, simulation, and GUI tools via `NETFORGE_TOOL_PROFILE=advanced`.
+
+> **Platform Support:** Planning, VLSM IPAM, IOS generation/validation, SQLite persistence, and all unit/protocol tests run natively on **Windows, Linux, and macOS**. Live Cisco Packet Tracer automation runs on **Windows 10/11 + Cisco Packet Tracer 8.2.2+** on an unlocked interactive desktop session.
 
 ---
 
-## Quickstart (Windows & Cross-Platform)
+## Quick Start (3 Minutes)
 
-### Requirements
-- Python **3.11+**
-- Optional (for live Packet Tracer `8.2.2` automation):
-  - Cisco Packet Tracer installed locally (e.g., `C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe`) with the NetForge Script Module (module ID `com.netforge.bridge`) registered once via `netforge-mcp install-module`.
-  - **Strict Non-Interactive Session Rule & Graceful Close:** Never start `PacketTracer.exe` from a non-interactive agent shell or isolated desktop (`WinSta0\exebox-*`, Session 0, or headless display); `packet_tracer_launch`, `WindowsGuiBackend.launch_application`, `HttpScriptBridgeBackend.ensure_connected`, and `run_live_pt_benchmark` automatically refuse with `NON_INTERACTIVE_SESSION`. Live test harnesses must close spawned instances via graceful close first (`WM_CLOSE` / `SIGTERM` before any forced cleanup) so `PT.conf` saves cleanly without leaving `PT-*.conf` temp files or orphan processes behind.
-  - **One-Time Re-Registration (`com.netforge.bridge`):** After exporting/installing the updated `.pts` (`com.netforge.bridge`), open `Extensions -> Scripting -> Configure PT Script Modules...` in Packet Tracer, remove any previous bridge entry (or `com.yourcompany.newptscriptmodule0`), add `%LOCALAPPDATA%\netforge\netforge_bridge.pts`, enable `On Startup`, accept script privileges, and restart Packet Tracer normally from the Start Menu. Note: NetForge never edits `PT.conf` programmatically.
-  - **Fail-Safe Bridge Startup:** `netforge_bridge.js` wraps every top-level function in `try/catch`, performs cheap ~5s idle file checks without spawning a `QWebView`, creates `QWebView` lazily only when a fresh `bridge_session.json` exists (`server_pid`, `created_at`, heartbeat within 60s), and destroys/blacklists the session after 3 consecutive failed polls.
-  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power` — **experimental: not yet validated by the 5-attempt live protocol**) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge-mcp doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
+### 1. Install NetForge MCP
 
-### Installation
+Requires **Python 3.11+**.
 
 ```bash
-# From source (editable development install)
-pip install -e .[dev]
-
-# Or core runtime only
-pip install -e .
+git clone https://github.com/gg1i/netforge-mcp.git
+cd netforge-mcp
+pip install .
 ```
 
-### Verify Environment & Capability Manifest
+Optional extras:
+- Windows GUI/vision fallback tools: `pip install ".[gui]"`
+- Contributor dev/test tools (`pytest`, `ruff`): `pip install -e .[dev]`
+
+### 2. Connect Cisco Packet Tracer (Windows, One-Time Setup)
+
+Copy the bundled bridge script into `%LOCALAPPDATA%\netforge\netforge_bridge.pts`:
+
+```bash
+netforge-mcp install-module
+```
+
+Then register it once inside **Cisco Packet Tracer `8.2.2+`**:
+1. Open **Extensions -> Scripting -> Configure PT Script Modules...**
+2. Click **Add** and select `%LOCALAPPDATA%\netforge\netforge_bridge.pts`.
+3. Check **On Startup**, click **Save**, and accept the one-time script privilege prompt.
+4. Restart Packet Tracer cleanly.
+
+Verify everything with:
 
 ```bash
 netforge-mcp version
 netforge-mcp doctor
-netforge-mcp manifest
 ```
 
-### Run the MCP Server
+> **Physical-Tab Fallback Note:** Standard topology, cabling, IOS CLI, host IP, `7960` power via script bridge, `.pka` grading, and verification require **no** mouse input. Only Physical-tab mouse-drag fallback actions (`gui_*` in `advanced` mode, plus `gui_attach_ip_phone_power` — *experimental: not yet validated by the 5-attempt live protocol*) require an unlocked interactive Windows desktop session.
 
-```bash
-# Default stdio transport (for Antigravity / Claude Desktop)
-netforge-mcp serve --transport stdio
+### 3. Add to Your MCP Client
 
-# Streamable HTTP transport (experimental / local daemon mode)
-netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
-```
-
-### Example Client Configurations
-
-- **Google Antigravity**: See [`examples/antigravity_mcp_config.json`](examples/antigravity_mcp_config.json)
-- **Claude Desktop**: See [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json)
+Add NetForge to **Claude Desktop**, **Cursor**, **VS Code**, **Windsurf**, or **Google Antigravity** (see [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json) and [`examples/mcp_config.json`](examples/mcp_config.json)):
 
 ```json
 {
@@ -124,54 +87,98 @@ netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
 }
 ```
 
+Or run the server directly from a terminal:
+
+```bash
+# Default stdio transport
+netforge-mcp serve --transport stdio
+
+# Local Streamable HTTP transport
+netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+---
+
+## Features & Architecture
+
+NetForge exposes **82 MCP tools (25 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **17 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
+
+```text
+netforge/
+├── core/         # State separation (planned/executed/verified), OperationResult, settings
+├── security/     # 5-tier permission enforcement, confirmation gates, secret redaction
+├── devices/      # Verified Packet Tracer device catalog & interface normalization (17 models)
+├── topology/     # NetworkX MultiGraph topology engine, cable rules, layout, Mermaid/ASCII export
+├── ipam/         # IPv4/IPv6 CIDR math, VLSM allocator, conflict detection, addressing tables
+├── ios/          # Structured IOS generators, capability pre-validators, CLI parser, unified diff
+├── storage/      # Versioned SQLite WAL repository, snapshots, backups, JSON/YAML import & export
+├── adapters/     # PT binary discovery, BackendRouter, 127.0.0.1 HTTP Script Bridge, .pts assets
+├── gui/          # Optional Windows Win32/ctypes GUI fallback backend & safety failsafe
+├── console/      # Device console state-machine, prompt handling, paging cleanup, paced CLI queue
+├── simulation/   # Simulation/realtime controls, PDU specs, show/ping/ephone CLI parsers
+├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
+└── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts, manifest
+```
+
 ---
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `NETFORGE_DATA_DIR` | `./.netforge` | Directory storing SQLite database and backups |
-| `NETFORGE_DB_NAME` | `netforge.sqlite` | SQLite database filename |
+| `NETFORGE_TOOL_PROFILE` | `solve_lab` | `solve_lab` (`25` focused lab tools) or `advanced` (all `82` tools) |
 | `NETFORGE_PERMISSION_PROFILE` | `standard` | One of `read-only`, `planning`, `configuration`, `standard` |
-| `NETFORGE_REQUIRE_CONFIRM` | `true` | Require `confirm=True` for destructive operations |
+| `NETFORGE_REQUIRE_CONFIRM` | `true` | Require explicit `confirm=True` for destructive actions |
+| `NETFORGE_DATA_DIR` | `%LOCALAPPDATA%\netforge` (Win) / `~/.netforge` | Directory storing SQLite DB, backups, and bridge runtime files |
+| `NETFORGE_DB_NAME` | `netforge.sqlite` | SQLite database filename |
 | `NETFORGE_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `NETFORGE_TRANSPORT` | `stdio` | Transport (`stdio`, `streamable-http`, `sse`) |
-| `NETFORGE_PT_PATH` | *(auto-detect)* | Explicit path to Cisco Packet Tracer executable |
+| `NETFORGE_PT_PATH` | *(auto-detect)* | Explicit path to `PacketTracer.exe` |
 
 ---
 
 ## Documentation
 
-- [Architecture Guide](docs/ARCHITECTURE.md)
-- [Capabilities & Live Probe Log](docs/CAPABILITIES.md)
+- [Windows & Packet Tracer Setup Guide](docs/windows-setup.md)
+- [MCP Tools, Resources & Prompts Reference](docs/mcp-tools.md)
+- [Packet Tracer Compatibility & Troubleshooting](docs/CAPABILITIES.md)
+- [Architecture Overview](docs/ARCHITECTURE.md)
 - [Benchmark Protocol & Reference Scoring](docs/BENCHMARK.md)
-- [Stranger Test Release-Gate Checklist](docs/STRANGER_TEST.md)
-- [MCP Tool, Resource & Prompt Reference](docs/mcp-tools.md)
-- [Windows Setup Guide](docs/windows-setup.md)
 - [Linux & macOS Compatibility Roadmap](docs/cross-platform-roadmap.md)
 
 ---
 
 ## Live Verification & Benchmark Results
 
-Only **live** Cisco Packet Tracer (`8.2.2.0400`) results are reported here. Offline mocked runs (`"mock": true` / `mode: "offline_mock"`) are synthetic harness checks and are never reported as benchmark scores (see [Benchmark Protocol](docs/BENCHMARK.md) and [Test Report](docs/TEST_REPORT.md)).
+Only real **live** Cisco Packet Tracer (`8.2.2`) runs (`mode: "live_pt"`) are reported below; offline mocked dry-runs (`"mock": true` / `mode: "offline_mock"`) are synthetic harness checks only and are never reported as benchmark scores (see [Benchmark Protocol](docs/BENCHMARK.md)).
 
-| Evaluation Track | Mode | Result (Live Only) | Reference |
+| Lab Suite | Mode | Score | Notes |
 |---|---|---|---|
-| Phase 1–4 Live PT Capabilities & Script Bridge Probes | `live_pt` | **Recorded** (bridge RPC, IOS CLI `verify_lab`, `.pka` comparator tree grading; `gui_attach_ip_phone_power` **verified live** via script-first `attach_ip_phone_power` / `7960` auto-power, with experimental `SendInput` fallback) | [CAPABILITIES.md](docs/CAPABILITIES.md) |
-| Phase 5 `lab_open` / `lab_save` / `lab_status` Persistence & External `.pkt` Discovery (`list_devices` / `lab_snapshot`) | `live_pt` | **Verified Live** (`6/6` requirements pass pre-save & post-reopen after closing/restarting PT; `dhcp_reservation.pkt`: `10` devices, `4` links, `23` active interfaces) | [TEST_REPORT.md](docs/TEST_REPORT.md) |
-| Phase 5 AI-Agent End-to-End Lab Benchmark (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) | `live_pt` | **Verified Live (`3/3` labs, `18/18` checks — `100.0%`)**: `01_static_routing` (`8/8`, `67.1s`), `02_vlan_dhcp` (`5/5`, `79.2s`), `03_small_voice` (`5/5`, `50.1s`) with zero-touch PT auto-launch & `7960` power | [phase5_live_benchmark.json](docs/evidence/phase5_live_benchmark.json) |
+| `01_static_routing` | `live_pt` | **8/8 (100%)** | Multi-router static routing, `HWIC-2T` serial link, end-to-end ping |
+| `02_vlan_dhcp` | `live_pt` | **5/5 (100%)** | 802.1Q trunking, router-on-a-stick, DHCP pools, PC lease & ping |
+| `03_small_voice` | `live_pt` | **5/5 (100%)** | Cisco CME (`telephony-service`), DHCP Option 150, `7960` phone `REGISTERED` |
 
 ---
 
-## Testing
+## Testing & Development
 
-All Phase 1 unit tests and MCP protocol tests run completely offline with zero Packet Tracer installation required:
+All unit and MCP protocol tests run completely offline with no Packet Tracer installation required:
 
 ```bash
+pip install -e .[dev]
 pytest
 ruff check netforge tests
 ```
+
+See [Contributing](CONTRIBUTING.md) and [Security Policy](SECURITY.md) for guidelines.
+
+---
+
+## Acknowledgements
+
+NetForge's clean-room companion `.pts` Script Module architecture acknowledges prior open-source Packet Tracer MCP projects:
+- [`Mats2208/MCP-Packet-Tracer`](https://github.com/Mats2208/MCP-Packet-Tracer) (MIT) — Pioneered the companion `.pts` Script Module + `127.0.0.1` HTTP bridge pattern.
+- [`kiskander/pt-mcp-server`](https://github.com/kiskander/pt-mcp-server) (BSD-2-Clause) — Prior-art reference for broad Packet Tracer IPC coverage.
 
 ---
 

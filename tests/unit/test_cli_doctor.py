@@ -126,7 +126,7 @@ def test_default_data_dir_uses_localappdata_outside_repo(
     from netforge.core import settings as settings_mod
 
     monkeypatch.delenv("NETFORGE_DATA_DIR", raising=False)
-    monkeypatch.setattr(settings_mod.os, "name", "nt")
+    monkeypatch.setattr(settings_mod, "_is_windows", lambda: True)
     fake_local = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(fake_local))
 
