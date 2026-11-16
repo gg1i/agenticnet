@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +12,10 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from netforge.adapters.base import ScriptBackend
+from netforge.adapters.discovery import (
+    gracefully_close_packet_tracer,
+    require_interactive_desktop_for_launch,
+)
 from netforge.adapters.router import BackendRouter
 from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
 from netforge.core.settings import NetForgeSettings
@@ -570,22 +572,9 @@ def run_offline_mock_benchmark(
     )
 
 
-def _kill_packet_tracer_instances() -> None:
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "PacketTracer.exe"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    else:
-        subprocess.run(
-            ["pkill", "-f", "PacketTracer"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    time.sleep(1.0)
+def _gracefully_close_packet_tracer() -> None:
+    gracefully_close_packet_tracer(timeout_seconds=5.0)
+    time.sleep(0.5)
 
 
 def run_live_pt_benchmark(
@@ -599,6 +588,7 @@ def run_live_pt_benchmark(
     reference_dir: Path | None = None,
 ) -> BenchmarkResult:
     """Execute a zero-touch live Packet Tracer benchmark scored against the reference set."""
+    require_interactive_desktop_for_launch("run_live_pt_benchmark")
     t0 = time.monotonic()
     lab_file = Path(lab_path)
     lab_id = lab_file.stem
@@ -628,7 +618,7 @@ def run_live_pt_benchmark(
     router = BackendRouter(script_backend=bridge)
     history: list[BenchmarkIterationRecord] = []
 
-    _kill_packet_tracer_instances()
+    _gracefully_close_packet_tracer()
     bridge.start()
     try:
         if not bridge.ensure_connected(timeout_seconds=45.0):
@@ -736,4 +726,4 @@ def run_live_pt_benchmark(
         )
     finally:
         bridge.stop()
-        _kill_packet_tracer_instances()
+        _gracefully_close_packet_tracer()

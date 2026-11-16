@@ -16,7 +16,7 @@ Public Packet Tracer MCP servers (`Mats2208/MCP-Packet-Tracer`, `kiskander/pt-mc
 3. **Native Grader Oracle (`ActivityFile` + CLI Fallback):** Using Packet Tracer's own Check Results / assessment item tree on `.pka` activities as the completion oracle, falling back automatically to raw-evidence CLI verification (`verify_lab`) when a lab is an ungraded `.pkt` or locks assessment reads.
 
 <!-- BEGIN MANIFEST COUNTS -->
-> **Current Live Registry Counts (`docs/manifest.json`):** `79` registered tools (`advanced` profile) / `22` default (`solve_lab` profile), `7` resources, `5` prompts, `17` device models.
+> **Current Live Registry Counts (`docs/manifest.json`):** `82` registered tools (`advanced` profile) / `25` default (`solve_lab` profile), `7` resources, `6` prompts, `17` device models.
 <!-- END MANIFEST COUNTS -->
 
 ---
@@ -72,6 +72,8 @@ In the current codebase (`70` live registered MCP tools across `10` categories, 
 3. **Honest `StateLevel` Separation:** `StateLevel.PLANNED` stays `planned` for offline edits; `StateLevel.EXECUTED` requires confirmed simulator dispatch; `StateLevel.VERIFIED` is permitted **only** when raw simulator read-back (or PT assessment read-back) confirms the post-condition.
 4. **CLI First, Screenshot Never When Text Exists:** Never invoke `gui_screenshot` / OCR to inspect IOS state, interfaces, routes, DHCP bindings, or CME phones once structured CLI read-back is available.
 5. **Empirical Capability Registry (`docs/CAPABILITIES.md`):** No behavior of Packet Tracer 8.2.2's Qt Script Engine or `IpcAPI` may be assumed from documentation alone; every capability (HTTP privilege prompts, module add/remove, CLI readback, `.pka` assessment tree access) is probed live in Phases 1 & 4 and recorded in `docs/CAPABILITIES.md`.
+6. **Non-Interactive Session Launch Guard & Graceful-Close Rule:** Launching `PacketTracer.exe` from an agent shell or isolated desktop (`WinSta0\exebox-*`, Session 0, or missing GUI display) contends over PT's global `--progress-bar-server` and ports `38000`/`39000` while remaining invisible on `WinSta0\Default`. Therefore `packet_tracer_launch` and all internal launchers call `require_interactive_desktop_for_launch()` and refuse with `NON_INTERACTIVE_SESSION`. Test harnesses must use `gracefully_close_packet_tracer()` (`WM_CLOSE` / `SIGTERM` before any fallback cleanup) and never leave background PT processes running.
+7. **Fail-Safe Script Module Lifecycle (`com.netforge.bridge`):** `netforge_bridge.js` wraps every top-level function in `try/catch`, idle-polls `bridge_session.json` at `5000ms` forever without creating a `QWebView`, instantiates `QWebView` lazily only when a fresh session descriptor (`server_pid`, `created_at`, `heartbeat_at` within `60s`) is present, destroys `QWebView` and blacklists the `session_id` after `3` failed polls, and never edits `PT.conf` programmatically.
 
 ---
 

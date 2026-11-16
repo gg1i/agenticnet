@@ -18,6 +18,10 @@ import sys
 import time
 from pathlib import Path
 
+from netforge.adapters.discovery import (
+    gracefully_close_packet_tracer,
+    require_interactive_desktop_for_launch,
+)
 from netforge.adapters.router import BackendRouter
 from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
 from netforge.core.settings import NetForgeSettings
@@ -39,6 +43,7 @@ def main() -> int:
         print(f"ERROR: .pka file not found: {pka}", file=sys.stderr)
         return 2
 
+    require_interactive_desktop_for_launch("verify_pka_wizard_proof")
     lab = json.loads(LAB01_PATH.read_text(encoding="utf-8"))
     settings = NetForgeSettings.from_env()
     gui = WindowsGuiBackend(settings=settings)
@@ -47,8 +52,9 @@ def main() -> int:
         default_timeout_seconds=25.0,
     )
     bridge.start()
+    launch_res: dict[str, object] = {}
     try:
-        gui.launch_application(project_file=str(pka), wait_seconds=args.wait_seconds)
+        launch_res = gui.launch_application(project_file=str(pka), wait_seconds=args.wait_seconds)
         deadline = time.monotonic() + 35.0
         while time.monotonic() < deadline and not (
             bridge.is_connected() and bridge.ping().get("ok")
@@ -91,6 +97,8 @@ def main() -> int:
         return 0
     finally:
         bridge.stop()
+        if launch_res.get("launched") and isinstance(launch_res.get("pid"), int):
+            gracefully_close_packet_tracer([int(launch_res["pid"])], timeout_seconds=5.0)
 
 
 if __name__ == "__main__":

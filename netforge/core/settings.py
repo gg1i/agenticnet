@@ -10,11 +10,8 @@ from pydantic import BaseModel, Field
 from netforge.core.enums import PermissionTier
 
 
-def default_data_dir() -> Path:
-    """Resolve platform-appropriate runtime data directory outside synced repos."""
-    env_dir = os.environ.get("NETFORGE_DATA_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser().resolve()
+def canonical_pt_bridge_data_dir() -> Path:
+    """Resolve the OS-standard directory where `netforge_bridge.pts` discovers session files."""
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA")
         base_dir = (
@@ -30,6 +27,14 @@ def default_data_dir() -> Path:
         else (Path.home() / ".local" / "share").resolve()
     )
     return (base_dir / "netforge").resolve()
+
+
+def default_data_dir() -> Path:
+    """Resolve platform-appropriate runtime data directory outside synced repos."""
+    env_dir = os.environ.get("NETFORGE_DATA_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    return canonical_pt_bridge_data_dir()
 
 
 class NetForgeSettings(BaseModel):

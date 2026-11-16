@@ -393,14 +393,14 @@ def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
     srv_default, rt_default = create_mcp_server(default_settings)
     default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
     assert default_names == SOLVE_LAB_TOOLS
-    assert len(default_names) == 22
+    assert len(default_names) == 25
     assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
     assert "configure_ospf" not in default_names
 
     adv_settings = NetForgeSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
     srv_adv, rt_adv = create_mcp_server(adv_settings)
     adv_names = {t.name for t in asyncio.run(srv_adv.list_tools())}
-    assert len(adv_names) == 79
+    assert len(adv_names) == 82
     assert default_names < adv_names
     assert rt_adv.build_manifest()["tool_profile"] == "advanced"
 
@@ -792,4 +792,350 @@ def test_zero_touch_auto_launch_and_auto_create_project(
     opened = _call_tool_sync(srv, "lab_open", {"path": "sample.pkt"})
     assert opened["success"] is True
     assert opened["data"]["discovered_devices"]["device_count"] == 1
+
+
+@pytest.mark.unit
+def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netforge.adapters.base import GuiBackend
+    from netforge.mcp.profiles import RAW_GUI_INPUT_TOOLS
+
+    class _FakeGui(GuiBackend):
+        def __init__(self, *, running: bool = False, login_wall: bool = False) -> None:
+            self.running = running
+            self.login_wall = login_wall
+            self.launch_calls: list[dict[str, Any]] = []
+            self.click_calls: int = 0
+
+        def detect_application(self) -> dict[str, Any]:
+            dialogs = (
+                [{"title": "Skills for All Login", "dialog_type": "login_wall"}]
+                if self.login_wall
+                else []
+            )
+            return {
+                "detected_binary": True,
+                "executable_path": "PacketTracer.exe",
+                "running": self.running,
+                "dialogs": dialogs,
+            }
+
+        def launch_application(
+            self,
+            executable_path: str | None = None,
+            *,
+            project_file: str | None = None,
+            wait_seconds: float = 15.0,
+            background: bool | None = None,
+        ) -> dict[str, Any]:
+            self.launch_calls.append(
+                {"wait_seconds": wait_seconds, "background": background, "project": project_file}
+            )
+            self.running = True
+            return {
+                "already_running": False,
+                "launched": True,
+                "detection": self.detect_application(),
+            }
+
+        def capture_screenshot(self, output_path: str | None = None, **_: Any) -> dict[str, Any]:
+            return {}
+
+        def calibrate(self, *, profile_id: str = "default") -> dict[str, Any]:
+            return {}
+
+        def click(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            self.click_calls += 1
+            return {}
+
+        def inspect_state(self) -> dict[str, Any]:
+            return {}
+
+        def keypress(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        def recover(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    # 1. Default profile keeps raw GUI input tools out and includes start_lab prompt
+    srv_def, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_def"))
+    prompt_res = asyncio.run(srv_def.get_prompt("start_lab", arguments={"lab_input": "demo"}))
+    assert "lab_start" in prompt_res.messages[0].content.text
+    assert SOLVE_LAB_TOOLS.isdisjoint(RAW_GUI_INPUT_TOOLS)
+    assert {"lab_start", "lab_diff"} <= SOLVE_LAB_TOOLS
+
+    # 2. Idea / .md plan-then-build mode: waits for approval without touching PT; <= 3 questions
+    gui_idle = _FakeGui(running=False)
+    srv_plan, _ = create_mcp_server(
+        NetForgeSettings(data_dir=tmp_path / ".nf_plan"),
+        gui_backend=gui_idle,
+    )
+    vague = _call_tool_sync(srv_plan, "lab_start", {"input_target": "build a small network"})
+    assert vague["success"] is True
+    assert vague["data"]["state"] == "awaiting_plan_approval"
+    assert vague["data"]["touched_packet_tracer"] is False
+    assert gui_idle.launch_calls == []
+    assert 1 <= len(vague["data"]["clarifying_questions"]) <= 3
+    assert len(vague["data"]["plan"]["devices"]) >= 2
+
+    md_file = tmp_path / "campus_spec.md"
+    md_file.write_text(
+        "# OSPF Dual Router Lab\n"
+        "Build 2 routers R1 and R2 over 10.10.0.0/16 with OSPF and VLAN 10.\n",
+        encoding="utf-8",
+    )
+    md_plan = _call_tool_sync(srv_plan, "lab_start", {"input_target": str(md_file)})
+    assert md_plan["success"] is True
+    assert md_plan["data"]["state"] == "awaiting_plan_approval"
+    assert md_plan["data"]["input"]["kind"] == "document"
+    assert md_plan["data"]["clarifying_questions"] == []
+    assert any(d["name"] == "R2" for d in md_plan["data"]["plan"]["devices"])
+
+    # 3. Non-interactive session refuses hidden PT launch cleanly
+    monkeypatch.setenv("NETFORGE_NON_INTERACTIVE", "1")
+    non_int = _call_tool_sync(
+        srv_plan, "lab_start", {"input_target": str(md_file), "auto_approve": True}
+    )
+    assert non_int["success"] is False
+    assert non_int["errors"][0]["error_code"] == "NON_INTERACTIVE_SESSION"
+    assert gui_idle.launch_calls == []
+
+    # 4. Login wall pauses cleanly and never clicks
+    monkeypatch.delenv("NETFORGE_NON_INTERACTIVE", raising=False)
+    gui_login = _FakeGui(running=True, login_wall=True)
+    srv_login, _ = create_mcp_server(
+        NetForgeSettings(data_dir=tmp_path / ".nf_login"),
+        gui_backend=gui_login,
+    )
+    login_out = _call_tool_sync(
+        srv_login, "lab_start", {"input_target": str(md_file), "auto_approve": True}
+    )
+    assert login_out["success"] is False
+    assert login_out["errors"][0]["error_code"] == "LOGIN_WALL"
+    assert gui_login.click_calls == 0
+
+    # 5. Bridge timeout returns clear error when interactive PT launches without bridge
+    import netforge.diagnostics.lab_runner as lr
+
+    monkeypatch.setattr(lr, "require_interactive_desktop_for_launch", lambda *_a: None)
+    gui_launch = _FakeGui(running=False)
+    srv_timeout, _ = create_mcp_server(
+        NetForgeSettings(data_dir=tmp_path / ".nf_to"),
+        gui_backend=gui_launch,
+    )
+    to_out = _call_tool_sync(
+        srv_timeout,
+        "lab_start",
+        {"input_target": str(md_file), "auto_approve": True, "wait_seconds": 0.05},
+    )
+    assert to_out["success"] is False
+    assert to_out["errors"][0]["error_code"] == "BRIDGE_TIMEOUT"
+    assert len(gui_launch.launch_calls) == 1
+    assert gui_launch.launch_calls[0]["background"] is False
+
+    # 6. Live .pkt copy-on-write, single-instance reuse, watch mode, lab_diff, backup
+    orig_pkt = tmp_path / "campus.pkt"
+    orig_pkt.write_bytes(b"ORIGINAL_PKT_DATA")
+
+    class _DynamicDiffBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.added_r2 = False
+            self.linked_r2 = False
+
+        def add_device(
+            self, model: str, *, device_type: int | str = 0, x: float = 100.0, y: float = 100.0
+        ) -> dict[str, Any]:
+            self.added_r2 = True
+            return {"ok": True, "device_name": "R2"}
+
+        def create_link(
+            self,
+            device1: str,
+            port1: str,
+            device2: str,
+            port2: str,
+            *,
+            conn_type: int | str = 8107,
+        ) -> dict[str, Any]:
+            self.linked_r2 = True
+            return {"ok": True}
+
+        def execute_cli(
+            self,
+            device_name: str,
+            commands: list[str],
+            *,
+            ensure_privileged: bool = True,
+            timeout_seconds: float = 25.0,
+        ) -> dict[str, Any]:
+            cmd = commands[-1] if commands else ""
+            if cmd.strip() in {"", "enable"}:
+                return {"ok": True, "raw_output": f"{device_name}#", "prompt": f"{device_name}#"}
+            if "configure terminal" in cmd:
+                return {
+                    "ok": True,
+                    "raw_output": f"{device_name}(config)#",
+                    "prompt": f"{device_name}(config)#",
+                }
+            return {
+                "ok": True,
+                "raw_output": f"{device_name}(config)#",
+                "prompt": f"{device_name}(config)#",
+            }
+
+        def list_devices(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+            base = super().list_devices(timeout_seconds=timeout_seconds)
+            if self.added_r2:
+                base["devices"].append(
+                    {
+                        "name": "R2",
+                        "model": "2911",
+                        "type_code": 0,
+                        "type": "router",
+                        "hostname": "R2_BRANCH",
+                        "port_count": 3,
+                        "ports": [
+                            {
+                                "name": "GigabitEthernet0/0",
+                                "ip_address": "10.0.12.2",
+                                "subnet_mask": "255.255.255.252",
+                                "port_up": True,
+                                "protocol_up": True,
+                                "mac_address": "0060.2F06.9901",
+                                "has_link": self.linked_r2,
+                                "remote_port_name": "FastEthernet0/2" if self.linked_r2 else "",
+                                "remote_device_name": "Switch0" if self.linked_r2 else "",
+                            }
+                        ],
+                    }
+                )
+            if self.linked_r2:
+                base["links"].append(
+                    {
+                        "device1": "Switch0",
+                        "port1": "FastEthernet0/2",
+                        "device2": "R2",
+                        "port2": "GigabitEthernet0/0",
+                    }
+                )
+            base["device_count"] = len(base["devices"])
+            base["link_count"] = len(base["links"])
+            return base
+
+    live_b = _DynamicDiffBackend()
+    gui_reused = _FakeGui(running=True)
+    sleep_calls: list[float] = []
+    srv_live, rt_live = create_mcp_server(
+        NetForgeSettings(data_dir=tmp_path / ".nf_live"),
+        gui_backend=gui_reused,
+        script_backend=live_b,
+    )
+    rt_live.router._sleep = lambda sec: sleep_calls.append(sec)
+
+    started = _call_tool_sync(
+        srv_live,
+        "lab_start",
+        {"input_target": str(orig_pkt), "watch_pace_seconds": 0.25},
+    )
+    assert started["success"] is True
+    assert started["data"]["state"] == "ready"
+    assert started["data"]["pt_status"] == "reused_running_instance"
+    assert gui_reused.launch_calls == []
+    assert started["data"]["original_path"] == str(orig_pkt)
+    assert started["data"]["working_copy_path"] == str(tmp_path / "campus_netforge.pkt")
+    assert started["data"]["initial_snapshot"]["device_count"] == 2
+    assert live_b.opened == [str(orig_pkt)]
+    assert live_b.saved[0]["path"] == str(tmp_path / "campus_netforge.pkt")
+    assert orig_pkt.read_bytes() == b"ORIGINAL_PKT_DATA"
+
+    # Register pre-existing Switch0 in local TopologyEngine before linking a new R2
+    _, topo_live, _, _ = rt_live.manager.require_active()
+    topo_live.add_device("Switch0", "2960-24TT")
+
+    # Modify step-by-step under watch mode
+    add_out = _call_tool_sync(srv_live, "device_add", {"name": "R2", "model": "2911"})
+    assert "narration" in add_out["data"]["live_backend"]
+    link_out = _call_tool_sync(
+        srv_live,
+        "connection_create",
+        {
+            "source_device": "Switch0",
+            "source_interface": "FastEthernet0/2",
+            "target_device": "R2",
+            "target_interface": "GigabitEthernet0/0",
+        },
+    )
+    assert link_out["success"] is True
+    cli_out = _call_tool_sync(
+        srv_live,
+        "console_execute",
+        {"device_name": "R2", "commands": ["configure terminal", "hostname R2_BRANCH"]},
+    )
+    assert cli_out["success"] is True
+    assert "narration" in cli_out["data"]
+    assert len(sleep_calls) >= 3
+
+    # lab_diff shows device added, link added, interface & CLI config changes
+    diff_out = _call_tool_sync(srv_live, "lab_diff", {})
+    assert diff_out["success"] is True
+    assert diff_out["data"]["has_changes"] is True
+    assert diff_out["data"]["devices_added"][0]["name"] == "R2"
+    assert len(diff_out["data"]["links_added"]) == 1
+    assert "R2" in diff_out["data"]["config_changes"]
+    assert "Devices added: R2" in diff_out["data"]["readable_summary"]
+
+    # lab_save defaults to copy-on-write working file and protects original
+    saved_cow = _call_tool_sync(srv_live, "lab_save", {})
+    assert saved_cow["success"] is True
+    assert live_b.saved[-1]["path"] == str(tmp_path / "campus_netforge.pkt")
+    assert "lab_diff" in saved_cow["data"]
+
+    refused_orig = _call_tool_sync(srv_live, "lab_save", {"path": str(orig_pkt)})
+    assert refused_orig["success"] is False
+
+    approved_orig = _call_tool_sync(
+        srv_live,
+        "lab_save",
+        {
+            "path": str(orig_pkt),
+            "overwrite_original": True,
+            "confirm_overwrite_original": True,
+        },
+    )
+    assert approved_orig["success"] is True
+    backup_p = Path(approved_orig["data"]["backup_path"])
+    assert backup_p.is_file()
+    assert backup_p.read_bytes() == b"ORIGINAL_PKT_DATA"
+
+    # 7. Mirror session file works for custom NETFORGE_DATA_DIR and cleans up on stop()
+    from netforge.adapters.script_bridge import HttpScriptBridgeServer
+
+    mirror_file = tmp_path / "mirror" / "bridge_session.json"
+    srv_mirrored = HttpScriptBridgeServer(
+        session_file=tmp_path / "custom" / "bridge_session.json",
+        mirror_session_files=[mirror_file],
+    )
+    srv_mirrored.start()
+    try:
+        assert mirror_file.is_file()
+        assert json.loads(mirror_file.read_text(encoding="utf-8"))["url"] == srv_mirrored.base_url
+    finally:
+        srv_mirrored.stop()
+    assert not mirror_file.exists()
+
+    # 8. working_copy_path on approved document input flows through lab_start
+    doc_ready = _call_tool_sync(
+        srv_live,
+        "lab_start",
+        {
+            "input_target": str(md_file),
+            "auto_approve": True,
+            "working_copy_path": str(tmp_path / "md_out.pkt"),
+        },
+    )
+    assert doc_ready["success"] is True
+    assert doc_ready["data"]["working_copy_path"] == str(tmp_path / "md_out.pkt")
 

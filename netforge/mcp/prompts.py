@@ -11,6 +11,7 @@ def register_prompts(server: MCPServer, runtime: NetForgeRuntime) -> None:
     """Register guided NetForge prompts for AI agents."""
 
     prompt_names = [
+        "start_lab",
         "solve_lab",
         "plan_network_architecture",
         "design_campus_vlan_network",
@@ -18,6 +19,47 @@ def register_prompts(server: MCPServer, runtime: NetForgeRuntime) -> None:
         "troubleshoot_network_workflow",
     ]
     runtime.registry.prompt_names.extend(prompt_names)
+
+    @server.prompt(
+        name="start_lab",
+        description=(
+            "One-command interactive live workflow: plan-then-build (with clarifying questions "
+            "if vague), visible single-instance PT reuse/launch, copy-on-write, watch narration, "
+            "verification, lab_diff, and safe save."
+        ),
+    )
+    def start_lab(
+        lab_input: str = "Describe your lab idea or pass a .pkt / .pka / .md / .txt file path.",
+        auto_approve: bool = False,
+        watch_mode: bool = True,
+    ) -> str:
+        return (
+            "You are operating NetForge MCP in one-command live interactive mode.\n"
+            f"User input: {lab_input}\n"
+            f"Options: auto_approve={auto_approve}, watch_mode={watch_mode}\n\n"
+            "Execute this exact workflow:\n"
+            "1. START & CLASSIFY INPUT: Call `lab_start` with `input_target` (`.pkt`/`.pka` file,\n"
+            "   `.md`/`.txt`/`.pdf` document, or free-text idea).\n"
+            "   - For ideas or `.md`/`.txt`/`.pdf` specs without `auto_approve=True`, `lab_start`\n"
+            "     returns a short plan (`devices`, `addressing`, `tasks`) plus at most 3\n"
+            "     clarifying questions if vague. Present the plan, wait for user OK\n"
+            "     (do NOT touch PT yet), then re-run `lab_start` with `auto_approve=True`.\n"
+            "   - If Packet Tracer shows a Login/Guest wall or asks for manual desktop launch,\n"
+            "     report it immediately and wait; never spam clicks or start a 2nd instance.\n"
+            "   - For `.pkt`/`.pka`, `lab_start` opens the file in copy-on-write mode (saving a\n"
+            "     working copy next to the original without overwriting the source) and captures\n"
+            "     the baseline `lab_snapshot`.\n"
+            "2. STEP-BY-STEP WATCH BUILD / MODIFY: Keep watch narration crisp (1 line per step)\n"
+            "   as you call `device_capabilities`, `device_add`, `connection_create`,\n"
+            "   `console_execute`, and `gui_attach_ip_phone_power` (if 7960 power is needed).\n"
+            "3. VERIFY: Build declarative requirements via `verify_requirements_schema` and run\n"
+            "   `verify_lab`, `grade_lab`, or `lab_status` until checks pass or real blockers\n"
+            "   appear.\n"
+            "4. SNAPSHOT, DIFF & SAVE: Call `lab_snapshot` at the end, run `lab_diff` to present\n"
+            "   a readable summary of device, link, interface, and CLI config changes, and call\n"
+            "   `lab_save` to save the working copy (only overwrite original when explicitly\n"
+            "   confirmed by the user)."
+        )
 
     @server.prompt(
         name="solve_lab",

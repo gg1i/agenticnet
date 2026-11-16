@@ -10,13 +10,13 @@ Run this end-to-end verification on a **second Windows user profile, separate PC
 1. **Install NetForge cleanly:**
    ```bash
    pip install -e .
-   netforge version
+   netforge-mcp version
    ```
-   Confirm `netforge install-module --help` and `netforge doctor` run cleanly with zero missing assets or hardcoded dev paths.
+   Confirm `netforge-mcp install-module --help` and `netforge-mcp doctor` run cleanly with zero missing assets or hardcoded dev paths.
 
 2. **Install the bundled Script Module (`.pts`):**
    ```bash
-   netforge install-module
+   netforge-mcp install-module
    ```
    Confirm `%LOCALAPPDATA%\netforge\netforge_bridge.pts` is written (`> 0` bytes) and registration steps print clearly.
 
@@ -28,11 +28,11 @@ Run this end-to-end verification on a **second Windows user profile, separate PC
 
 4. **Start the MCP server & confirm bridge connection:**
    ```bash
-   netforge serve --transport stdio
+   netforge-mcp serve --transport stdio
    ```
-   While both `netforge serve` and Packet Tracer are running, check in another terminal:
+   While both `netforge-mcp serve` and Packet Tracer are running, check in another terminal:
    ```bash
-   netforge doctor
+   netforge-mcp doctor
    ```
    Confirm `script_bridge.reachable` is `true`, `script_bridge.connected` is `true`, and `script_bridge.state` is `"connected"` (and no secret token appears in `doctor` output).
 

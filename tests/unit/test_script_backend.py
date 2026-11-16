@@ -435,3 +435,118 @@ def test_http_bridge_security_origin_and_token_matrix(tmp_path: Path) -> None:
             assert resp.status == 204
     finally:
         server.stop()
+
+
+@pytest.mark.unit
+def test_stop_preserves_newer_session_descriptor_with_different_session_id(
+    tmp_path: Path,
+) -> None:
+    session_file = tmp_path / "bridge_session.json"
+    s1 = HttpScriptBridgeServer(session_file=session_file)
+    s1.start()
+    desc1 = json.loads(session_file.read_text(encoding="utf-8"))
+
+    s2 = HttpScriptBridgeServer(session_file=session_file)
+    s2.start()
+    try:
+        desc2 = json.loads(session_file.read_text(encoding="utf-8"))
+        assert desc2["session_id"] != desc1["session_id"]
+
+        # Stopping s1 must NOT delete s2's active session descriptor file.
+        s1.stop()
+        assert session_file.exists()
+        still_s2 = json.loads(session_file.read_text(encoding="utf-8"))
+        assert still_s2["session_id"] == desc2["session_id"]
+    finally:
+        s2.stop()
+
+    assert not session_file.exists()
+
+
+@pytest.mark.unit
+def test_http_bridge_keepalive_configure_host_and_batch_ops(tmp_path: Path) -> None:
+    import http.client
+    from urllib.parse import urlparse
+
+    session_file = tmp_path / "bridge_session.json"
+    server = HttpScriptBridgeServer(session_file=session_file)
+    backend = HttpScriptBridgeBackend(server)
+    backend.start()
+    try:
+        desc = json.loads(session_file.read_text(encoding="utf-8"))
+        parsed = urlparse(desc["url"])
+        assert parsed.hostname is not None and parsed.port is not None
+
+        # Verify HTTP/1.1 persistent keep-alive handles empty 204 then 200 on one socket.
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3.0)
+        try:
+            conn.request(
+                "GET",
+                "/v1/commands/next?wait_ms=10",
+                headers={"Origin": "pt-sm:", "X-NetForge-Token": desc["token"]},
+            )
+            r1 = conn.getresponse()
+            body1 = r1.read()
+            assert r1.status == 204
+            assert body1 == b""
+
+            conn.request(
+                "GET",
+                "/v1/health",
+                headers={"Origin": "pt-sm:", "X-NetForge-Token": desc["token"]},
+            )
+            r2 = conn.getresponse()
+            body2 = json.loads(r2.read().decode("utf-8"))
+            assert r2.status == 200
+            assert body2["ok"] is True
+        finally:
+            conn.close()
+
+        caps = backend.backend_status().capabilities
+        assert "configure_host" in caps
+        assert "batch_ops" in caps
+
+        seen_ops: list[tuple[str, dict[str, Any]]] = []
+
+        def _handle_host(p: dict[str, Any]) -> dict[str, Any]:
+            seen_ops.append(("configure_host", p))
+            return {"ok": True, "device_name": p["device_name"], "dhcp": p["dhcp"]}
+
+        def _handle_batch(p: dict[str, Any]) -> dict[str, Any]:
+            seen_ops.append(("batch_ops", p))
+            return {
+                "ok": True,
+                "results": [{"ok": True, "device_name": "R1"}],
+                "aliases": {"R1": "R1"},
+                "completed": 1,
+                "total": 1,
+            }
+
+        client = _FakePtBridgeClient(
+            desc["url"],
+            desc["token"],
+            {
+                "configure_host": _handle_host,
+                "batch_ops": _handle_batch,
+            },
+        )
+        client.start()
+        try:
+            host_res = backend.configure_host(
+                "Laptop0",
+                port="FastEthernet0",
+                dhcp=False,
+                ip="12.0.0.2",
+                subnet_mask="255.0.0.0",
+                default_gateway="12.0.0.1",
+            )
+            assert host_res["ok"] is True
+            batch_res = backend.batch_ops(
+                [{"op": "add_device", "alias": "R1", "params": {"model": "2911"}}]
+            )
+            assert batch_res["ok"] is True
+            assert [name for name, _ in seen_ops] == ["configure_host", "batch_ops"]
+        finally:
+            client.stop()
+    finally:
+        backend.stop()

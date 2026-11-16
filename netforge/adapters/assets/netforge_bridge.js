@@ -1,7 +1,13 @@
 // NetForge Clean-Room Companion Script Module for Cisco Packet Tracer 8.2.2 (MIT License)
-// Typed-opcode RPC dispatcher over headless WebView -> 127.0.0.1 HTTP + token auth.
+// Module ID: com.netforge.bridge
+// Typed-opcode RPC dispatcher over lazy headless WebView -> 127.0.0.1 HTTP + token auth.
+var MODULE_ID = "com.netforge.bridge";
 var SESSION_FILE = "__NETFORGE_SESSION_FILE__";
 var BRIDGE_WEBVIEW_TITLE = "NetForge Bridge";
+var IDLE_POLL_INTERVAL_MS = 5000;
+var SESSION_FRESH_TTL_MS = 60000;
+var MAX_FAILED_POLLS = 3;
+
 var wv = null;
 var wvReady = false;
 var activeConfigKey = "";
@@ -9,30 +15,39 @@ var activeCfg = null;
 var sessionTimer = null;
 var isStarted = false;
 var isStopping = false;
+var blacklistedSessions = {};
+var failedPollCount = 0;
+var missedDescriptorCount = 0;
 
 function normalizeSlashPath(p) {
-    if (!p) { return ""; }
-    var s = String(p).replace(/\\/g, "/");
-    while (s.length > 1 && s.charAt(s.length - 1) === "/") {
-        s = s.slice(0, -1);
+    try {
+        if (!p) { return ""; }
+        var s = String(p).replace(/\\/g, "/");
+        while (s.length > 1 && s.charAt(s.length - 1) === "/") {
+            s = s.slice(0, -1);
+        }
+        return s;
+    } catch (e) {
+        return "";
     }
-    return s;
 }
 
 function appendUniquePath(list, seen, candidate) {
-    var norm = normalizeSlashPath(candidate);
-    if (!norm || seen[norm]) { return; }
-    seen[norm] = true;
-    list.push(norm);
+    try {
+        var norm = normalizeSlashPath(candidate);
+        if (!norm || seen[norm]) { return; }
+        seen[norm] = true;
+        list.push(norm);
+    } catch (e) {}
 }
 
 function resolveSessionCandidates() {
-    var candidates = [];
-    var seen = {};
-    if (SESSION_FILE && SESSION_FILE.indexOf("__") !== 0) {
-        appendUniquePath(candidates, seen, SESSION_FILE);
-    }
     try {
+        var candidates = [];
+        var seen = {};
+        if (SESSION_FILE && SESSION_FILE.indexOf("__") !== 0) {
+            appendUniquePath(candidates, seen, SESSION_FILE);
+        }
         var aw = ipc.appWindow();
         if (aw && typeof aw.getTempFileLocation === "function") {
             var tempDir = normalizeSlashPath(aw.getTempFileLocation());
@@ -80,14 +95,53 @@ function resolveSessionCandidates() {
                 }
             }
         }
-    } catch (e) {}
-    return candidates;
+        return candidates;
+    } catch (e) {
+        return [];
+    }
+}
+
+function getSessionIdFromPayload(parsed) {
+    try {
+        if (!parsed || typeof parsed !== "object") { return ""; }
+        if (parsed.session_id) { return String(parsed.session_id); }
+        return String(parsed.url || "") + "|" + String(parsed.server_pid || "") + "|" + String(parsed.created_at || "");
+    } catch (e) {
+        return "";
+    }
+}
+
+function isSessionDescriptorFresh(parsed, nowMs) {
+    try {
+        if (!parsed || typeof parsed !== "object") { return false; }
+        if (typeof parsed.url !== "string" || !parsed.url) { return false; }
+        if (typeof parsed.token !== "string" || !parsed.token) { return false; }
+        var serverPid = Number(parsed.server_pid);
+        var createdAt = Number(parsed.created_at);
+        var heartbeatAt = Number(parsed.heartbeat_at || parsed.created_at);
+        if (!serverPid || isNaN(serverPid) || serverPid <= 0) { return false; }
+        if (!createdAt || isNaN(createdAt) || createdAt <= 0) { return false; }
+        if (!heartbeatAt || isNaN(heartbeatAt) || heartbeatAt <= 0) { return false; }
+        var refNow = (typeof nowMs === "number" && !isNaN(nowMs)) ? nowMs : Date.now();
+        var ttlMs = SESSION_FRESH_TTL_MS;
+        if (typeof parsed.ttl_ms === "number" && !isNaN(parsed.ttl_ms) && parsed.ttl_ms > 0) {
+            ttlMs = Math.min(Number(parsed.ttl_ms), SESSION_FRESH_TTL_MS);
+        }
+        var ageMs = refNow - heartbeatAt;
+        if (ageMs > ttlMs || ageMs < -15000) { return false; }
+        var sid = getSessionIdFromPayload(parsed);
+        if (!sid || blacklistedSessions[sid]) { return false; }
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
 function readSessionConfig() {
     try {
         var fm = ipc.systemFileManager();
         var candidates = resolveSessionCandidates();
+        var nowMs = Date.now();
         for (var i = 0; i < candidates.length; i++) {
             var path = candidates[i];
             if (!fm.fileExists(path)) {
@@ -98,90 +152,177 @@ function readSessionConfig() {
                 continue;
             }
             var parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.url === "string" && typeof parsed.token === "string") {
-                return { url: parsed.url, token: parsed.token };
+            if (isSessionDescriptorFresh(parsed, nowMs)) {
+                return {
+                    session_id: getSessionIdFromPayload(parsed),
+                    url: parsed.url,
+                    token: parsed.token,
+                    server_pid: Number(parsed.server_pid),
+                    created_at: Number(parsed.created_at),
+                    heartbeat_at: Number(parsed.heartbeat_at || parsed.created_at)
+                };
             }
         }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function destroyWebView() {
+    try {
+        if (wv) {
+            var oldWv = wv;
+            wv = null;
+            wvReady = false;
+            try {
+                if (typeof oldWv.close === "function") {
+                    oldWv.close();
+                }
+            } catch (eClose) {}
+        }
+        wvReady = false;
     } catch (e) {}
-    return null;
+}
+
+function blacklistSession(sessionId, reason) {
+    try {
+        var sid = String(sessionId || (activeCfg && activeCfg.session_id) || "");
+        if (sid) {
+            blacklistedSessions[sid] = true;
+        }
+        activeConfigKey = "";
+        activeCfg = null;
+        failedPollCount = 0;
+        missedDescriptorCount = 0;
+        destroyWebView();
+    } catch (e) {}
+}
+
+function netforgeOnPollSuccess(sessionId) {
+    try {
+        failedPollCount = 0;
+        missedDescriptorCount = 0;
+    } catch (e) {}
+}
+
+function netforgeOnPollFailure(sessionId, failCount, errText) {
+    try {
+        var sid = String(sessionId || (activeCfg && activeCfg.session_id) || "");
+        if (!activeCfg || (sid && activeCfg.session_id && sid !== activeCfg.session_id)) {
+            return;
+        }
+        var reportedCount = Number(failCount);
+        if (!isNaN(reportedCount) && reportedCount > 0) {
+            failedPollCount = Math.max(failedPollCount + 1, reportedCount);
+        } else {
+            failedPollCount += 1;
+        }
+        if (failedPollCount >= MAX_FAILED_POLLS) {
+            blacklistSession(sid, errText);
+        }
+    } catch (e) {}
 }
 
 function sendBridgeResult(requestId, ok, data, error) {
-    if (!wv) { return; }
-    var payload = {
-        request_id: requestId,
-        ok: Boolean(ok),
-        data: data || {},
-        error: error ? String(error) : null
-    };
     try {
+        if (!wv) { return; }
+        var payload = {
+            request_id: requestId,
+            ok: Boolean(ok),
+            data: data || {},
+            error: error ? String(error) : null
+        };
         wv.evaluateJavaScriptAsync("window.netforgePostResult(" + JSON.stringify(payload) + ");");
     } catch (e) {}
 }
 
 function applyConfigToWebView() {
-    if (!isStarted || isStopping || !wv || !wvReady || !activeCfg) { return; }
     try {
+        if (!isStarted || isStopping || !wv || !wvReady || !activeCfg) { return; }
         wv.evaluateJavaScriptAsync("window.netforgeStart(" + JSON.stringify(activeCfg) + ");");
     } catch (e) {}
 }
 
 function netforgeOnWebViewReady() {
-    if (!isStarted || isStopping) { return; }
-    wvReady = true;
-    applyConfigToWebView();
+    try {
+        if (!isStarted || isStopping) { return; }
+        wvReady = true;
+        applyConfigToWebView();
+    } catch (e) {}
 }
 
 function ensureWebView() {
-    if (!isStarted || isStopping || wv) { return; }
-    wvReady = false;
-    wv = webViewManager.createWebView(BRIDGE_WEBVIEW_TITLE, "this-sm:bridge.html", 240, 100);
-    wv.addAllowedExternalFilter("http://127.0.0.1*");
+    try {
+        if (!isStarted || isStopping || wv) { return; }
+        if (!activeCfg || !activeCfg.url || !activeCfg.token) { return; }
+        wvReady = false;
+        wv = webViewManager.createWebView(BRIDGE_WEBVIEW_TITLE, "this-sm:bridge.html", 240, 100);
+        wv.addAllowedExternalFilter("http://127.0.0.1*");
+    } catch (e) {}
 }
 
 function pollSessionDescriptor() {
-    if (!isStarted || isStopping) { return; }
-    var next = readSessionConfig();
-    if (!next) {
-        return;
-    }
-    var key = next.url + "|" + next.token;
-    if (key !== activeConfigKey) {
-        activeConfigKey = key;
-        activeCfg = next;
-        ensureWebView();
-        applyConfigToWebView();
-    }
+    try {
+        if (!isStarted || isStopping) { return; }
+        var next = readSessionConfig();
+        if (!next) {
+            if (wv || activeCfg) {
+                missedDescriptorCount += 1;
+                if (missedDescriptorCount >= MAX_FAILED_POLLS) {
+                    blacklistSession(activeCfg ? activeCfg.session_id : "", "session_descriptor_missing_or_stale");
+                }
+            }
+            return;
+        }
+        missedDescriptorCount = 0;
+        var key = String(next.session_id || "") + "|" + next.url + "|" + next.token;
+        if (key !== activeConfigKey) {
+            activeConfigKey = key;
+            activeCfg = next;
+            failedPollCount = 0;
+            ensureWebView();
+            applyConfigToWebView();
+        }
+    } catch (e) {}
 }
 
 function walkTreeLeaves(node, prefix, leaves) {
-    if (!node) { return; }
-    var name = "";
-    try { name = String(node.getNodeName()); } catch (e) {}
-    var path = prefix ? (prefix + " > " + name) : name;
-    var cc = 0;
-    try { cc = node.getChildCount(); } catch (e) {}
-    if (cc === 0) {
-        leaves.push({
-            path: path,
-            name: name,
-            value: String(node.getNodeValue() || ""),
-            leafCount: node.getLeafCount(),
-            checkLeafCount: node.getCheckLeafCount(),
-            totalLeafPoints: node.getTotalLeafPoints(),
-            checkLeafPoints: node.getCheckLeafPoints(),
-            incorrectFeedback: String(node.getIncorrectFeedback() || "")
-        });
-    } else {
-        for (var i = 0; i < cc; i++) {
-            walkTreeLeaves(node.getChildNodeAt(i), path, leaves);
+    try {
+        if (!node) { return; }
+        var name = "";
+        try { name = String(node.getNodeName()); } catch (e0) {}
+        var path = prefix ? (prefix + " > " + name) : name;
+        var cc = 0;
+        try { cc = node.getChildCount(); } catch (e1) {}
+        if (cc === 0) {
+            leaves.push({
+                path: path,
+                name: name,
+                value: String(node.getNodeValue() || ""),
+                leafCount: node.getLeafCount(),
+                checkLeafCount: node.getCheckLeafCount(),
+                totalLeafPoints: node.getTotalLeafPoints(),
+                checkLeafPoints: node.getCheckLeafPoints(),
+                incorrectFeedback: String(node.getIncorrectFeedback() || "")
+            });
+        } else {
+            for (var i = 0; i < cc; i++) {
+                walkTreeLeaves(node.getChildNodeAt(i), path, leaves);
+            }
         }
-    }
+    } catch (e) {}
 }
 
 function handleCliExec(requestId, params) {
+    try {
     var devName = String(params.device_name || "");
-    var commands = params.commands || [];
+    var rawCmdList = params.commands || [];
+    var execCommands = [];
+    var cIdx = 0;
+    for (cIdx = 0; cIdx < rawCmdList.length; cIdx += 1) {
+        execCommands.push(String(rawCmdList[cIdx]));
+    }
     var requestedTimeoutMs = Number(params.timeout_ms || 25000);
     var timeoutMs = isNaN(requestedTimeoutMs) || requestedTimeoutMs <= 0 ? 25000 : requestedTimeoutMs;
     var waitForPrompt = params.wait_for_prompt !== false;
@@ -207,6 +348,8 @@ function handleCliExec(requestId, params) {
     var yesNoHandled = false;
     var pressReturnSentAt = 0;
     var lastCmdSentAt = 0;
+    var finished = false;
+    var iv = null;
 
     var onOut = function (_src, args) { chunks.push(String(args.newOutput || "")); };
     var onEnd = function (_src, args) {
@@ -239,9 +382,26 @@ function handleCliExec(requestId, params) {
         try { term.unregisterEvent("moreDisplayed", null, onMore); } catch (e3) {}
     };
 
+    var finishCli = function (ok, data, errMsg) {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        if (iv !== null) {
+            clearInterval(iv);
+            iv = null;
+        }
+        cleanupListeners();
+        sendBridgeResult(requestId, ok, data, errMsg);
+    };
+
     var startedAt = Date.now();
-    var iv = setInterval(function () {
+    var stepCli = function () {
         try {
+            if (finished) {
+                if (iv !== null) { clearInterval(iv); iv = null; }
+                return;
+            }
             var elapsed = Date.now() - startedAt;
             var rawNow = chunks.join("");
             var promptNow = String(term.getPrompt() || "");
@@ -280,10 +440,37 @@ function handleCliExec(requestId, params) {
             }
 
             if (stage === "send" && !sent) {
+                var isPromptProbeOnly = (
+                    execCommands.length === 0
+                    || (execCommands.length === 1 && execCommands[0].replace(/^\s+|\s+$/g, "") === "")
+                );
+                if (isPromptProbeOnly && hasCliPrompt) {
+                    finishCli(true, {
+                        device_name: devName,
+                        prompt: promptNow,
+                        mode: String(term.getMode() || ""),
+                        raw_output: rawNow || promptNow,
+                        command_statuses: statuses,
+                        non_fatal_commands: nonFatalCommands,
+                        more_pages_advanced: moreCount,
+                        timed_out: false
+                    }, null);
+                    return;
+                }
+                if (execCommands.length > 0) {
+                    var firstTrim = execCommands[0].replace(/^\s+|\s+$/g, "").toLowerCase();
+                    if ((firstTrim === "configure terminal" || firstTrim === "conf t")
+                        && trimmedPrompt.slice(-1) === ">") {
+                        execCommands.unshift("enable");
+                    } else if ((firstTrim === "enable" || firstTrim === "en")
+                        && /\(config[^)]*\)#$/.test(trimmedPrompt)) {
+                        execCommands[0] = "end";
+                    }
+                }
                 sent = true;
                 nextIdx = 1;
                 lastCmdSentAt = Date.now();
-                term.enterCommand(String(commands[0]));
+                term.enterCommand(execCommands.length > 0 ? String(execCommands[0]) : "");
                 stage = "wait_done";
             } else if (stage === "wait_done") {
                 var tail = rawNow.slice(-32);
@@ -296,8 +483,8 @@ function handleCliExec(requestId, params) {
                 // Recover if PT drops a `commandEnded` event while an async syslog line
                 // interleaves and the CLI prompt is already back (skip slow ping/traceroute).
                 if (statuses.length < nextIdx && hasCliPrompt && !atMore
-                    && lastCmdSentAt > 0 && (Date.now() - lastCmdSentAt > 1500)) {
-                    var pendingCmd = String(commands[statuses.length] || "");
+                    && lastCmdSentAt > 0 && (Date.now() - lastCmdSentAt > 250)) {
+                    var pendingCmd = String(execCommands[statuses.length] || "");
                     var pendingLow = pendingCmd.replace(/^\s+|\s+$/g, "").toLowerCase();
                     var isSlowNetCmd = (
                         pendingLow.indexOf("ping") === 0
@@ -310,16 +497,14 @@ function handleCliExec(requestId, params) {
                 }
                 // Send commands one at a time: queued keystrokes typed while a
                 // --More-- pager is active get swallowed (observed: "ping" -> "ing").
-                if (nextIdx < commands.length && statuses.length >= nextIdx && !atMore) {
+                if (nextIdx < execCommands.length && statuses.length >= nextIdx && !atMore) {
                     lastCmdSentAt = Date.now();
-                    term.enterCommand(String(commands[nextIdx]));
+                    term.enterCommand(String(execCommands[nextIdx]));
                     nextIdx += 1;
                 }
-                var doneByCount = statuses.length >= commands.length && !atMore;
+                var doneByCount = statuses.length >= execCommands.length && !atMore;
                 if (!waitForPrompt || doneByCount || elapsed >= effectiveTimeoutMs) {
-                    clearInterval(iv);
-                    cleanupListeners();
-                    sendBridgeResult(requestId, true, {
+                    finishCli(true, {
                         device_name: devName,
                         prompt: String(term.getPrompt() || ""),
                         mode: String(term.getMode() || ""),
@@ -331,19 +516,21 @@ function handleCliExec(requestId, params) {
                     }, null);
                 }
             } else if (elapsed >= effectiveTimeoutMs) {
-                clearInterval(iv);
-                cleanupListeners();
-                sendBridgeResult(requestId, false, { raw_output: rawNow }, "CLI execution timed out.");
+                finishCli(false, { raw_output: rawNow }, "CLI execution timed out.");
             }
         } catch (err) {
-            clearInterval(iv);
-            cleanupListeners();
-            sendBridgeResult(requestId, false, {}, String(err));
+            finishCli(false, {}, String(err));
         }
-    }, 100);
+    };
+    iv = setInterval(stepCli, 20);
+    stepCli();
+    } catch (eOuterCli) {
+        try { sendBridgeResult(requestId, false, {}, String(eOuterCli)); } catch (eSend) {}
+    }
 }
 
 function attachIpPhonePowerOnDevice(dev) {
+    try {
     if (!dev) {
         return { ok: false, powered: false, error: "Null device handle" };
     }
@@ -438,9 +625,13 @@ function attachIpPhonePowerOnDevice(dev) {
         module_count: afterModCount,
         supported_modules: suppList
     };
+    } catch (eOuterPhone) {
+        return { ok: false, powered: false, error: String(eOuterPhone) };
+    }
 }
 
 function attachRouterSerialModulesOnDevice(dev) {
+    try {
     if (!dev) {
         return { ok: false, hwics_added: 0, serial_ports: [] };
     }
@@ -544,13 +735,179 @@ function attachRouterSerialModulesOnDevice(dev) {
         methods_used: methods,
         serial_ports: afterSerial
     };
+    } catch (eOuterSer) {
+        return { ok: false, hwics_added: 0, serial_ports: [], error: String(eOuterSer) };
+    }
+}
+
+function addDeviceSync(params) {
+    try {
+        var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
+        var dTypeNum = Number(params.device_type || 0);
+        var dModelStr = String(params.model || "");
+        var px = Number(params.x || 100);
+        var py = Number(params.y || 100);
+
+        var candidates = [dModelStr];
+        var fallbacksByType = {
+            1: ["2960-24TT", "2950-24", "Switch-PT", ""],
+            8: ["PC-PT", "PC", ""],
+            9: ["Server-PT", "Server", ""],
+            10: ["Printer-PT", "Printer", ""],
+            17: ["Laptop-PT", "Laptop", ""],
+            12: ["7960", "IP Phone", ""]
+        };
+        var extraCands = fallbacksByType[dTypeNum] || [];
+        for (var ei = 0; ei < extraCands.length; ei++) {
+            if (candidates.indexOf(extraCands[ei]) === -1) {
+                candidates.push(extraCands[ei]);
+            }
+        }
+
+        var name = "";
+        var matchedModel = dModelStr;
+        for (var ci = 0; ci < candidates.length; ci++) {
+            try {
+                var attemptName = lw.addDevice(dTypeNum, candidates[ci], px, py);
+                if (attemptName) {
+                    name = String(attemptName);
+                    matchedModel = candidates[ci] || dModelStr;
+                    break;
+                }
+            } catch (eAddCand) {}
+        }
+        if (!name) {
+            return {
+                ok: false,
+                data: {},
+                error: "addDevice returned empty name for model '" + dModelStr + "' (type=" + dTypeNum + ")"
+            };
+        }
+
+        var addOut = {
+            device_name: name,
+            model: dModelStr,
+            resolved_model: matchedModel,
+            device_type: dTypeNum
+        };
+        var createdDev = null;
+        try { createdDev = ipc.network().getDevice(name); } catch (eCd) {}
+        if (params.auto_power !== false && (dTypeNum === 12 || dModelStr === "7960")) {
+            try {
+                var pwrInfo = attachIpPhonePowerOnDevice(createdDev);
+                addOut.auto_powered = Boolean(pwrInfo.powered);
+                addOut.power_details = pwrInfo;
+            } catch (ePwrAdd) {
+                addOut.auto_powered = false;
+            }
+        }
+        if (params.auto_serial_modules !== false && dTypeNum === 0) {
+            try {
+                addOut.serial_modules = attachRouterSerialModulesOnDevice(createdDev);
+            } catch (eSerAdd) {}
+        }
+        if (createdDev && params.display_name) {
+            try {
+                createdDev.setName(String(params.display_name));
+                addOut.device_name = String(createdDev.getName() || name);
+            } catch (eSetName) {}
+        }
+        return { ok: true, data: addOut, error: null };
+    } catch (err) {
+        return { ok: false, data: {}, error: "addDeviceSync exception: " + String(err) };
+    }
+}
+
+function configureHostSync(params, aliasMap) {
+    try {
+        var rawName = String(params.device_name || "");
+        var hDevName = (aliasMap && aliasMap[rawName]) ? aliasMap[rawName] : rawName;
+        var hDev = ipc.network().getDevice(hDevName);
+        if (!hDev) {
+            return { ok: false, data: {}, error: "Device not found: " + hDevName };
+        }
+        var hPortName = String(params.port || "FastEthernet0");
+        var hPort = null;
+        try { hPort = hDev.getPort(hPortName); } catch (eGpH) {}
+        if (!hPort) {
+            try {
+                if (hDev.getPortCount() > 0) {
+                    hPort = hDev.getPortAt(0);
+                }
+            } catch (eGpH0) {}
+        }
+        if (!hPort) {
+            return { ok: false, data: {}, error: "Host port not found: " + hPortName };
+        }
+        var useDhcp = Boolean(params.dhcp);
+        try {
+            if (typeof hPort.setDhcpClientFlag === "function") {
+                hPort.setDhcpClientFlag(useDhcp);
+            }
+        } catch (eDhcp) {}
+        var hIp = params.ip ? String(params.ip) : "";
+        var hMask = params.subnet_mask ? String(params.subnet_mask) : "";
+        if (!useDhcp && hIp && hMask && typeof hPort.setIpSubnetMask === "function") {
+            hPort.setIpSubnetMask(hIp, hMask);
+        }
+        var hGw = params.default_gateway ? String(params.default_gateway) : "";
+        if (hGw) {
+            try {
+                if (typeof hPort.setDefaultGateway === "function") {
+                    hPort.setDefaultGateway(hGw);
+                }
+            } catch (eGw1) {}
+            try {
+                if (typeof hDev.setDefaultGateway === "function") {
+                    hDev.setDefaultGateway(hGw);
+                }
+            } catch (eGw2) {}
+        }
+        if (params.display_name) {
+            try { hDev.setName(String(params.display_name)); } catch (eDn) {}
+        }
+        return {
+            ok: true,
+            data: {
+                device_name: String(hDev.getName() || hDevName),
+                port: hPortName,
+                dhcp: useDhcp,
+                ip: hIp,
+                subnet_mask: hMask,
+                default_gateway: hGw
+            },
+            error: null
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "configureHostSync exception: " + String(err) };
+    }
+}
+
+function createLinkSync(params, aliasMap) {
+    try {
+        var rawD1 = String(params.device1 || "");
+        var rawD2 = String(params.device2 || "");
+        var d1 = (aliasMap && aliasMap[rawD1]) ? aliasMap[rawD1] : rawD1;
+        var d2 = (aliasMap && aliasMap[rawD2]) ? aliasMap[rawD2] : rawD2;
+        var p1 = String(params.port1 || "");
+        var p2 = String(params.port2 || "");
+        var ctype = Number(params.conn_type || 8107);
+        var lwl = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
+        var linked = Boolean(lwl.createLink(d1, p1, d2, p2, ctype));
+        return {
+            ok: linked,
+            data: { linked: linked, device1: d1, port1: p1, device2: d2, port2: p2, conn_type: ctype },
+            error: linked ? null : "createLink returned false"
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "createLinkSync exception: " + String(err) };
+    }
 }
 
 function netforgeOnCommand(requestId, opcode, paramsJson) {
-    var params = {};
-    try { params = paramsJson ? JSON.parse(paramsJson) : {}; } catch (e) {}
-
     try {
+        var params = {};
+        try { params = paramsJson ? JSON.parse(paramsJson) : {}; } catch (e) {}
         switch (opcode) {
             case "ping":
                 sendBridgeResult(
@@ -559,6 +916,7 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     {
                         pong: true,
                         bridge: "netforge_pts",
+                        module_id: MODULE_ID,
                         ts: Date.now(),
                         dynamic_session_discovery: true,
                         has_hardcoded_session_file: Boolean(
@@ -569,125 +927,60 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                 );
                 return;
             case "add_device": {
-                var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
-                var dTypeNum = Number(params.device_type || 0);
-                var dModelStr = String(params.model || "");
-                var name = lw.addDevice(
-                    dTypeNum,
-                    dModelStr,
-                    Number(params.x || 100),
-                    Number(params.y || 100)
-                );
-                if (!name) {
-                    sendBridgeResult(requestId, false, {}, "addDevice returned empty name");
-                    return;
-                }
-                var addOut = {
-                    device_name: String(name),
-                    model: dModelStr,
-                    device_type: dTypeNum
-                };
-                var createdDev = null;
-                try { createdDev = ipc.network().getDevice(String(name)); } catch (eCd) {}
-                if (params.auto_power !== false && (dTypeNum === 12 || dModelStr === "7960")) {
-                    try {
-                        var pwrInfo = attachIpPhonePowerOnDevice(createdDev);
-                        addOut.auto_powered = Boolean(pwrInfo.powered);
-                        addOut.power_details = pwrInfo;
-                    } catch (ePwrAdd) {
-                        addOut.auto_powered = false;
-                    }
-                }
-                if (params.auto_serial_modules !== false && dTypeNum === 0) {
-                    try {
-                        var serInfo = attachRouterSerialModulesOnDevice(createdDev);
-                        addOut.serial_modules = serInfo;
-                    } catch (eSerAdd) {}
-                }
-                if (createdDev && params.display_name) {
-                    try {
-                        createdDev.setName(String(params.display_name));
-                        addOut.device_name = String(createdDev.getName() || name);
-                    } catch (eSetName) {}
-                }
-                sendBridgeResult(requestId, true, addOut, null);
+                var addRes = addDeviceSync(params);
+                sendBridgeResult(requestId, addRes.ok, addRes.data, addRes.error);
                 return;
             }
             case "configure_host": {
-                var hDevName = String(params.device_name || "");
-                var hDev = ipc.network().getDevice(hDevName);
-                if (!hDev) {
-                    sendBridgeResult(requestId, false, {}, "Device not found: " + hDevName);
-                    return;
-                }
-                var hPortName = String(params.port || "FastEthernet0");
-                var hPort = null;
-                try { hPort = hDev.getPort(hPortName); } catch (eGpH) {}
-                if (!hPort) {
-                    try {
-                        if (hDev.getPortCount() > 0) {
-                            hPort = hDev.getPortAt(0);
-                        }
-                    } catch (eGpH0) {}
-                }
-                if (!hPort) {
-                    sendBridgeResult(requestId, false, {}, "Host port not found: " + hPortName);
-                    return;
-                }
-                var useDhcp = Boolean(params.dhcp);
-                try {
-                    if (typeof hPort.setDhcpClientFlag === "function") {
-                        hPort.setDhcpClientFlag(useDhcp);
-                    }
-                } catch (eDhcp) {}
-                var hIp = params.ip ? String(params.ip) : "";
-                var hMask = params.subnet_mask ? String(params.subnet_mask) : "";
-                if (!useDhcp && hIp && hMask && typeof hPort.setIpSubnetMask === "function") {
-                    hPort.setIpSubnetMask(hIp, hMask);
-                }
-                var hGw = params.default_gateway ? String(params.default_gateway) : "";
-                if (hGw) {
-                    try {
-                        if (typeof hPort.setDefaultGateway === "function") {
-                            hPort.setDefaultGateway(hGw);
-                        }
-                    } catch (eGw1) {}
-                    try {
-                        if (typeof hDev.setDefaultGateway === "function") {
-                            hDev.setDefaultGateway(hGw);
-                        }
-                    } catch (eGw2) {}
-                }
-                if (params.display_name) {
-                    try { hDev.setName(String(params.display_name)); } catch (eDn) {}
-                }
-                sendBridgeResult(requestId, true, {
-                    device_name: String(hDev.getName() || hDevName),
-                    port: hPortName,
-                    dhcp: useDhcp,
-                    ip: hIp,
-                    subnet_mask: hMask,
-                    default_gateway: hGw
-                }, null);
+                var hostRes = configureHostSync(params, null);
+                sendBridgeResult(requestId, hostRes.ok, hostRes.data, hostRes.error);
                 return;
             }
             case "create_link": {
-                var lwl = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
-                var linked = Boolean(lwl.createLink(
-                    String(params.device1 || ""),
-                    String(params.port1 || ""),
-                    String(params.device2 || ""),
-                    String(params.port2 || ""),
-                    Number(params.conn_type || 8107)
-                ));
-                sendBridgeResult(requestId, linked, {
-                    linked: linked,
-                    device1: String(params.device1 || ""),
-                    port1: String(params.port1 || ""),
-                    device2: String(params.device2 || ""),
-                    port2: String(params.port2 || ""),
-                    conn_type: Number(params.conn_type || 8107)
-                }, linked ? null : "createLink returned false");
+                var linkRes = createLinkSync(params, null);
+                sendBridgeResult(requestId, linkRes.ok, linkRes.data, linkRes.error);
+                return;
+            }
+            case "batch_ops": {
+                var ops = params.ops || [];
+                var aliasMap = {};
+                var results = [];
+                for (var oi = 0; oi < ops.length; oi++) {
+                    var item = ops[oi] || {};
+                    var opName = String(item.op || "");
+                    var opParams = item.params || {};
+                    var itemRes = { ok: false, data: {}, error: "Unsupported batch op: " + opName };
+                    if (opName === "add_device") {
+                        itemRes = addDeviceSync(opParams);
+                        if (itemRes.ok && item.alias && itemRes.data.device_name) {
+                            aliasMap[String(item.alias)] = String(itemRes.data.device_name);
+                        }
+                    } else if (opName === "create_link") {
+                        itemRes = createLinkSync(opParams, aliasMap);
+                    } else if (opName === "configure_host") {
+                        itemRes = configureHostSync(opParams, aliasMap);
+                    } else if (opName === "attach_ip_phone_power") {
+                        var pRaw = String(opParams.device_name || "");
+                        var pTarget = aliasMap[pRaw] || pRaw;
+                        var pDevObj = ipc.network().getDevice(pTarget);
+                        if (!pDevObj) {
+                            itemRes = { ok: false, data: {}, error: "Device not found: " + pTarget };
+                        } else {
+                            var pwrOut = attachIpPhonePowerOnDevice(pDevObj);
+                            pwrOut.device_name = pTarget;
+                            itemRes = { ok: true, data: pwrOut, error: null };
+                        }
+                    }
+                    results.push({
+                        index: oi,
+                        op: opName,
+                        alias: item.alias || null,
+                        ok: Boolean(itemRes.ok),
+                        data: itemRes.data || {},
+                        error: itemRes.error || null
+                    });
+                }
+                sendBridgeResult(requestId, true, { results: results, aliases: aliasMap }, null);
                 return;
             }
             case "cli_exec":
@@ -866,14 +1159,24 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     var isIosCliDevice = (dType === 0 || dType === 1 || dType === 16 || dType === 26);
                     if (isIosCliDevice) {
                         try {
-                            var cmdLine = dev.getCommandLine();
-                            if (cmdLine && typeof cmdLine.getPrompt === "function") {
-                                var pr = String(cmdLine.getPrompt() || "");
-                                if (pr && pr.indexOf("\\") === -1 && pr.indexOf("/") === -1) {
-                                    hostname = pr.replace(/\([^)]*\)/g, "").replace(/[>#:]/g, "").replace(/^\s+|\s+$/g, "");
+                            if (typeof dev.getHostName === "function") {
+                                var directHn = String(dev.getHostName() || "").replace(/^\s+|\s+$/g, "");
+                                if (directHn) {
+                                    hostname = directHn;
                                 }
                             }
-                        } catch (eHn) {}
+                        } catch (eDhn) {}
+                        if (!hostname) {
+                            try {
+                                var cmdLine = dev.getCommandLine();
+                                if (cmdLine && typeof cmdLine.getPrompt === "function") {
+                                    var pr = String(cmdLine.getPrompt() || "");
+                                    if (pr && pr.indexOf("\\") === -1 && pr.indexOf("/") === -1) {
+                                        hostname = pr.replace(/\([^)]*\)/g, "").replace(/[>#:]/g, "").replace(/^\s+|\s+$/g, "");
+                                    }
+                                }
+                            } catch (eHn) {}
+                        }
                     }
 
                     var portCount = 0;
@@ -1033,42 +1336,41 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
 }
 
 function main() {
-    if (isStarted) {
+    try {
+        if (isStarted) {
+            pollSessionDescriptor();
+            return;
+        }
+        isStarted = true;
+        isStopping = false;
         pollSessionDescriptor();
-        return;
-    }
-    isStarted = true;
-    isStopping = false;
-    pollSessionDescriptor();
-    if (sessionTimer === null) {
-        sessionTimer = setInterval(pollSessionDescriptor, 1500);
-    }
+        if (sessionTimer === null) {
+            sessionTimer = setInterval(pollSessionDescriptor, IDLE_POLL_INTERVAL_MS);
+        }
+    } catch (e) {}
 }
 
 function cleanUp() {
-    if (isStopping) {
-        return;
-    }
-    isStopping = true;
-    isStarted = false;
     try {
-        if (sessionTimer !== null) {
-            clearInterval(sessionTimer);
-            sessionTimer = null;
+        if (isStopping) {
+            return;
         }
-    } catch (e1) {}
-    if (wv) {
-        var oldWv = wv;
-        wv = null;
-        wvReady = false;
+        isStopping = true;
+        isStarted = false;
         try {
-            if (typeof oldWv.close === "function") {
-                oldWv.close();
+            if (sessionTimer !== null) {
+                clearInterval(sessionTimer);
+                sessionTimer = null;
             }
-        } catch (e2) {}
+        } catch (e1) {}
+        destroyWebView();
+        wvReady = false;
+        activeConfigKey = "";
+        activeCfg = null;
+        failedPollCount = 0;
+        missedDescriptorCount = 0;
+        isStopping = false;
+    } catch (e) {
+        isStopping = false;
     }
-    wvReady = false;
-    activeConfigKey = "";
-    activeCfg = null;
-    isStopping = false;
 }

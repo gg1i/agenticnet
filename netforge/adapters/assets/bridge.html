@@ -5,64 +5,116 @@
 <pre id="status">idle</pre>
 <script>
 (function () {
-    var cfg = { url: "", token: "" };
+    var cfg = { session_id: "", url: "", token: "" };
     var polling = false;
     var generation = 0;
+    var consecutiveFailures = 0;
+    var reportedSuccess = false;
+    var MAX_FAILED_POLLS = 3;
 
     function setStatus(msg) {
-        var el = document.getElementById("status");
-        if (el) { el.textContent = msg; }
+        try {
+            var el = document.getElementById("status");
+            if (el) { el.textContent = msg; }
+        } catch (e) {}
+    }
+
+    function recordFailure(gen, reason) {
+        try {
+            if (gen !== generation || !polling) { return; }
+            consecutiveFailures += 1;
+            setStatus("err:" + consecutiveFailures + ":" + String(reason || ""));
+            if (typeof window.$se === "function") {
+                try {
+                    window.$se(
+                        "netforgeOnPollFailure",
+                        String(cfg.session_id || ""),
+                        String(consecutiveFailures),
+                        String(reason || "")
+                    );
+                } catch (eSe) {}
+            }
+            if (consecutiveFailures >= MAX_FAILED_POLLS) {
+                polling = false;
+                setStatus("blacklisted:" + String(cfg.session_id || ""));
+                return;
+            }
+            setTimeout(function () { pollOnce(gen); }, 800);
+        } catch (e) {}
+    }
+
+    function recordSuccess() {
+        try {
+            if (consecutiveFailures > 0 || !reportedSuccess) {
+                consecutiveFailures = 0;
+                reportedSuccess = true;
+                if (typeof window.$se === "function") {
+                    try {
+                        window.$se("netforgeOnPollSuccess", String(cfg.session_id || ""));
+                    } catch (eSe) {}
+                }
+            }
+        } catch (e) {}
     }
 
     function pollOnce(gen) {
-        if (!polling || gen !== generation || !cfg.url || !cfg.token) {
-            return;
-        }
-        fetch(cfg.url + "/v1/commands/next?wait_ms=1500", {
-            method: "GET",
-            headers: { "X-NetForge-Token": cfg.token }
-        })
-        .then(function (resp) {
-            if (gen !== generation) { return; }
-            if (resp.status === 204) {
-                setTimeout(function () { pollOnce(gen); }, 25);
+        try {
+            if (!polling || gen !== generation || !cfg.url || !cfg.token) {
                 return;
             }
-            if (!resp.ok) {
-                setStatus("http_" + resp.status);
-                setTimeout(function () { pollOnce(gen); }, 800);
-                return;
-            }
-            return resp.json().then(function (payload) {
-                if (gen !== generation) { return; }
-                if (payload && payload.command && typeof window.$se === "function") {
-                    var c = payload.command;
-                    setStatus("exec:" + c.opcode);
-                    window.$se("netforgeOnCommand", c.request_id, c.opcode, JSON.stringify(c.params || {}));
+            fetch(cfg.url + "/v1/commands/next?wait_ms=1500", {
+                method: "GET",
+                headers: { "X-NetForge-Token": cfg.token }
+            })
+            .then(function (resp) {
+                if (gen !== generation || !polling) { return; }
+                if (resp.status === 204) {
+                    recordSuccess();
+                    setTimeout(function () { pollOnce(gen); }, 10);
+                    return;
                 }
-                setTimeout(function () { pollOnce(gen); }, 10);
+                if (!resp.ok) {
+                    recordFailure(gen, "http_" + resp.status);
+                    return;
+                }
+                recordSuccess();
+                return resp.json().then(function (payload) {
+                    if (gen !== generation || !polling) { return; }
+                    if (payload && payload.command && typeof window.$se === "function") {
+                        var c = payload.command;
+                        setStatus("exec:" + c.opcode);
+                        window.$se("netforgeOnCommand", c.request_id, c.opcode, JSON.stringify(c.params || {}));
+                    }
+                    setTimeout(function () { pollOnce(gen); }, 5);
+                });
+            })
+            .catch(function (err) {
+                recordFailure(gen, err);
             });
-        })
-        .catch(function (err) {
-            setStatus("err:" + String(err));
-            setTimeout(function () { pollOnce(gen); }, 1000);
-        });
+        } catch (e) {
+            recordFailure(gen, e);
+        }
     }
 
     window.netforgeStart = function (nextCfg) {
-        var incoming = nextCfg || { url: "", token: "" };
-        var nextUrl = String(incoming.url || "");
-        var nextToken = String(incoming.token || "");
-        if (polling && cfg.url === nextUrl && cfg.token === nextToken) {
-            return;
-        }
-        cfg = { url: nextUrl, token: nextToken };
-        generation += 1;
-        polling = Boolean(cfg.url && cfg.token);
-        setStatus(polling ? "polling:" + cfg.url : "stopped");
-        if (polling) {
-            pollOnce(generation);
-        }
+        try {
+            var incoming = nextCfg || { session_id: "", url: "", token: "" };
+            var nextSid = String(incoming.session_id || "");
+            var nextUrl = String(incoming.url || "");
+            var nextToken = String(incoming.token || "");
+            if (polling && cfg.session_id === nextSid && cfg.url === nextUrl && cfg.token === nextToken) {
+                return;
+            }
+            cfg = { session_id: nextSid, url: nextUrl, token: nextToken };
+            generation += 1;
+            consecutiveFailures = 0;
+            reportedSuccess = false;
+            polling = Boolean(cfg.url && cfg.token);
+            setStatus(polling ? "polling:" + cfg.url : "stopped");
+            if (polling) {
+                pollOnce(generation);
+            }
+        } catch (e) {}
     };
 
     window.netforgePostResult = function (resultObj) {

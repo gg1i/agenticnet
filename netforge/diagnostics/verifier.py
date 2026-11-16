@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,20 +163,45 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
     if isinstance(req, RouteExistsRequirement):
         parsed_table = parse_show_ip_route(read.raw_evidence)
         routes = parsed_table["routes"]
-        candidates = [r for r in routes if r.network == req.network]
-        if req.protocol_code:
-            code_u = req.protocol_code.strip().upper()
-            candidates = [r for r in candidates if r.code.upper().startswith(code_u)]
-        if req.next_hop:
-            candidates = [r for r in candidates if r.next_hop == req.next_hop.strip()]
-        if req.outgoing_interface:
-            want_if = canonicalize_interface_name(req.outgoing_interface)
-            candidates = [
-                r
-                for r in candidates
-                if r.outgoing_interface
-                and canonicalize_interface_name(r.outgoing_interface) == want_if
-            ]
+
+        def _filter_route_attrs(items: list[Any]) -> list[Any]:
+            filtered = list(items)
+            if req.protocol_code:
+                code_u = req.protocol_code.strip().upper()
+                filtered = [r for r in filtered if r.code.upper().startswith(code_u)]
+            if req.next_hop:
+                filtered = [r for r in filtered if r.next_hop == req.next_hop.strip()]
+            if req.outgoing_interface:
+                want_if = canonicalize_interface_name(req.outgoing_interface)
+                filtered = [
+                    r
+                    for r in filtered
+                    if r.outgoing_interface
+                    and canonicalize_interface_name(r.outgoing_interface) == want_if
+                ]
+            return filtered
+
+        candidates = _filter_route_attrs([r for r in routes if r.network == req.network])
+        if not candidates and "/" in req.network:
+            try:
+                target_net = ipaddress.ip_network(req.network, strict=False)
+                if isinstance(target_net, ipaddress.IPv4Network):
+                    host_candidates: list[Any] = []
+                    for r in _filter_route_attrs(routes):
+                        if "/" in r.network and r.network.endswith("/32"):
+                            try:
+                                route_net = ipaddress.ip_network(r.network, strict=False)
+                            except ValueError:
+                                continue
+                            if (
+                                isinstance(route_net, ipaddress.IPv4Network)
+                                and route_net.subnet_of(target_net)
+                            ):
+                                host_candidates.append(r)
+                    candidates = host_candidates
+            except ValueError:
+                pass
+
         ok = len(candidates) > 0
         return {
             **base,
@@ -438,12 +465,17 @@ class LabVerifier:
         self,
         router: BackendRouter,
         *,
-        cli_pacing_seconds: float = 0.25,
+        cli_pacing_seconds: float | None = None,
         max_cli_retries: int = 2,
     ) -> None:
         self.router = router
+        effective_pacing = (
+            (0.02 if isinstance(router.script_backend, HttpScriptBridgeBackend) else 0.0)
+            if cli_pacing_seconds is None
+            else float(cli_pacing_seconds)
+        )
         self.cli_queue = PacedDeviceCliQueue(
-            pacing_seconds=cli_pacing_seconds,
+            pacing_seconds=effective_pacing,
             max_retries=max_cli_retries,
         )
 
@@ -464,6 +496,9 @@ class LabVerifier:
 
         pt_name = self.router.resolve_pt_device_name(device_name)
         retries = self.cli_queue.max_retries if max_retries is None else max_retries
+        retry_sleep = (
+            0.15 if isinstance(self.router.script_backend, HttpScriptBridgeBackend) else 0.0
+        )
         attempts = 0
         last_outcome: _CliReadOutcome | None = None
         mode_normalized = False
@@ -484,7 +519,8 @@ class LabVerifier:
                     error=f"CLI execution error on '{pt_name}': {exc.message}",
                 )
                 if attempts <= retries:
-                    time.sleep(0.3)
+                    if retry_sleep > 0:
+                        time.sleep(retry_sleep)
                     continue
                 return last_outcome
             except Exception as exc:
@@ -494,7 +530,8 @@ class LabVerifier:
                     error=f"Unexpected CLI read error on '{pt_name}': {exc}",
                 )
                 if attempts <= retries:
-                    time.sleep(0.3)
+                    if retry_sleep > 0:
+                        time.sleep(retry_sleep)
                     continue
                 return last_outcome
 
@@ -511,7 +548,8 @@ class LabVerifier:
                     timed_out=True,
                 )
                 if attempts <= retries:
-                    time.sleep(0.3)
+                    if retry_sleep > 0:
+                        time.sleep(retry_sleep)
                     continue
                 return last_outcome
 
@@ -581,16 +619,15 @@ class LabVerifier:
         *,
         timeout_seconds: float = 25.0,
         poll_wait_seconds: float | None = None,
-        poll_interval_seconds: float = 3.0,
+        poll_interval_seconds: float = 0.8,
         include_activity_grade: bool = True,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run live CLI verification across all declared requirements and keep raw evidence.
 
-        When ``poll_wait_seconds`` is ``None`` (default), waits up to ``45.0`` seconds per
-        failing requirement when connected to a real ``HttpScriptBridgeBackend`` (live PT),
-        and ``0.0`` seconds for offline/mock backends so unit tests remain fast. Passing an
-        explicit float overrides this in both live and mock runs.
+        When ``poll_wait_seconds`` is ``None`` (default), sweeps and polls failing requirements
+        under a shared ``45.0``-second convergence deadline when connected to a real
+        ``HttpScriptBridgeBackend`` (live PT), and ``0.0`` seconds for offline/mock backends.
         """
         spec = normalize_requirements_payload(requirements)
         expected_tasks = task_ids if task_ids is not None else spec.task_ids
@@ -607,83 +644,140 @@ class LabVerifier:
         else:
             effective_poll_wait = max(0.0, float(poll_wait_seconds)) if has_script else 0.0
 
+        req_meta = [_command_for_requirement(req) for req in spec.requirements]
         cache: dict[tuple[str, str], _CliReadOutcome] = {}
-        results: list[dict[str, Any]] = []
+        results_by_idx: list[dict[str, Any] | None] = [None] * len(spec.requirements)
+        pending_indices = list(range(len(spec.requirements)))
+        start_time = time.monotonic()
+        deadline = start_time + effective_poll_wait
 
-        for idx, req in enumerate(spec.requirements, start=1):
-            dev_name, command, cacheable = _command_for_requirement(req)
-            key = (dev_name, command)
+        while pending_indices:
+            next_pending: list[int] = []
+            keys_to_invalidate: set[tuple[str, str]] = set()
+            prefetched_by_key: dict[tuple[str, str], _CliReadOutcome] = {}
+            prefetched_by_idx: dict[int, _CliReadOutcome] = {}
 
-            start_req_time = time.monotonic()
-            evaluated: dict[str, Any] | None = None
-            outcome: _CliReadOutcome | None = None
+            if is_real_http_bridge and len(pending_indices) > 1:
+                tasks_by_device: dict[
+                    str, list[tuple[int, str, str, tuple[str, str], bool]]
+                ] = {}
+                seen_cache_keys: set[tuple[str, str]] = set()
+                for idx in pending_indices:
+                    dev_name, command, cacheable = req_meta[idx]
+                    pt_dev_name = self.router.resolve_pt_device_name(dev_name)
+                    key = (pt_dev_name, command)
+                    if cacheable:
+                        if key in cache or key in seen_cache_keys:
+                            continue
+                        seen_cache_keys.add(key)
+                    tasks_by_device.setdefault(pt_dev_name, []).append(
+                        (idx, dev_name, command, key, cacheable)
+                    )
 
-            while True:
+                if len(tasks_by_device) > 1:
+                    def _run_device_reads(
+                        items: list[tuple[int, str, str, tuple[str, str], bool]],
+                    ) -> list[tuple[int, tuple[str, str], bool, _CliReadOutcome]]:
+                        out: list[tuple[int, tuple[str, str], bool, _CliReadOutcome]] = []
+                        for item_idx, dev_name, command, key, cacheable in items:
+                            res_outcome = self._read_cli(
+                                dev_name, command, timeout_seconds=timeout_seconds
+                            )
+                            out.append((item_idx, key, cacheable, res_outcome))
+                        return out
+
+                    with ThreadPoolExecutor(max_workers=min(len(tasks_by_device), 6)) as pool:
+                        futures = [
+                            pool.submit(_run_device_reads, dev_items)
+                            for dev_items in tasks_by_device.values()
+                        ]
+                        for fut in futures:
+                            for item_idx, key, cacheable, res_outcome in fut.result():
+                                if cacheable:
+                                    prefetched_by_key[key] = res_outcome
+                                    if res_outcome.error is None:
+                                        cache[key] = res_outcome
+                                else:
+                                    prefetched_by_idx[item_idx] = res_outcome
+
+            for idx in pending_indices:
+                req = spec.requirements[idx]
+                dev_name, command, cacheable = req_meta[idx]
+                pt_dev_name = self.router.resolve_pt_device_name(dev_name)
+                key = (pt_dev_name, command)
+
                 if cacheable and key in cache:
                     outcome = cache[key]
+                elif cacheable and key in prefetched_by_key:
+                    outcome = prefetched_by_key[key]
+                elif idx in prefetched_by_idx:
+                    outcome = prefetched_by_idx[idx]
                 else:
                     outcome = self._read_cli(dev_name, command, timeout_seconds=timeout_seconds)
-                    if (
-                        isinstance(req, TelephonyServiceRequirement)
-                        and outcome.error is not None
-                        and any(
-                            tok in outcome.error.lower()
-                            for tok in ("% invalid", "% unrecognized", "% unknown")
-                        )
-                    ):
-                        cfg_key = (dev_name, "show running-config")
-                        cfg_outcome = cache.get(cfg_key)
-                        if cfg_outcome is None:
-                            cfg_outcome = self._read_cli(
-                                dev_name,
-                                "show running-config",
-                                timeout_seconds=timeout_seconds,
-                            )
-                            cache[cfg_key] = cfg_outcome
-                        if cfg_outcome.error is None:
-                            sections = parse_running_config_sections(
-                                cfg_outcome.raw_evidence,
-                                section="telephony-service",
-                            )
-                            sec_text = (
-                                sections[0].text
-                                if sections
-                                else "% Telephony-service is not configured"
-                            )
-                            outcome = _CliReadOutcome(
-                                command=(
-                                    "show telephony-service -> fallback: show running-config "
-                                    "(telephony-service section)"
-                                ),
-                                raw_evidence=sec_text
-                                if sections
-                                else cfg_outcome.raw_evidence,
-                            )
                     if cacheable and outcome.error is None:
                         cache[key] = outcome
 
-                assert outcome is not None
+                if (
+                    isinstance(req, TelephonyServiceRequirement)
+                    and outcome.error is not None
+                    and any(
+                        tok in outcome.error.lower()
+                        for tok in ("% invalid", "% unrecognized", "% unknown")
+                    )
+                ):
+                    cfg_key = (pt_dev_name, "show running-config")
+                    cfg_outcome = cache.get(cfg_key)
+                    if cfg_outcome is None:
+                        cfg_outcome = self._read_cli(
+                            dev_name,
+                            "show running-config",
+                            timeout_seconds=timeout_seconds,
+                        )
+                        if cfg_outcome.error is None:
+                            cache[cfg_key] = cfg_outcome
+                    if cfg_outcome.error is None:
+                        sections = parse_running_config_sections(
+                            cfg_outcome.raw_evidence,
+                            section="telephony-service",
+                        )
+                        sec_text = (
+                            sections[0].text
+                            if sections
+                            else "% Telephony-service is not configured"
+                        )
+                        outcome = _CliReadOutcome(
+                            command=(
+                                "show telephony-service -> fallback: show running-config "
+                                "(telephony-service section)"
+                            ),
+                            raw_evidence=(
+                                sec_text if sections else cfg_outcome.raw_evidence
+                            ),
+                        )
+                        if cacheable:
+                            cache[key] = outcome
+
                 evaluated = _evaluate_requirement(req, outcome)
-                if evaluated["status"] == "pass":
-                    break
+                evaluated["index"] = idx + 1
+                results_by_idx[idx] = evaluated
+                if evaluated["status"] != "pass":
+                    next_pending.append(idx)
+                    if cacheable:
+                        keys_to_invalidate.add(key)
+                        if isinstance(req, TelephonyServiceRequirement):
+                            keys_to_invalidate.add((pt_dev_name, "show running-config"))
 
-                # Requirement not yet passing; check if polling wait should continue
-                if not has_script or effective_poll_wait <= 0:
-                    break
-                elapsed = time.monotonic() - start_req_time
-                if elapsed >= effective_poll_wait:
-                    # Polling wait expired: final real failure with evidence
-                    break
+            if not next_pending or not has_script or effective_poll_wait <= 0:
+                break
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            for stale_key in keys_to_invalidate:
+                cache.pop(stale_key, None)
+            time.sleep(min(poll_interval_seconds, max(0.05, deadline - now)))
+            pending_indices = next_pending
 
-                # Clear cache entry before next poll iteration to fetch live update
-                if cacheable and key in cache:
-                    del cache[key]
-
-                time.sleep(min(poll_interval_seconds, max(0.1, effective_poll_wait - elapsed)))
-
-            assert evaluated is not None
-            evaluated["index"] = idx
-            results.append(evaluated)
+        results = [r for r in results_by_idx if r is not None]
 
         passed_count = sum(1 for r in results if r["status"] == "pass")
         failed_count = sum(1 for r in results if r["status"] == "fail")
@@ -708,8 +802,20 @@ class LabVerifier:
 
         activity_grade: dict[str, Any] | None = None
         if include_activity_grade and has_script:
-            # Optional extra evidence only; never overrides CLI verification results.
-            activity_grade = self.router.read_activity_status()
+            if getattr(self.router, "active_is_activity", None) is False:
+                activity_grade = {
+                    "is_activity": False,
+                    "state": "unavailable",
+                    "readable": False,
+                    "locked": False,
+                    "score": None,
+                    "fallback": "cli_verification",
+                    "reason": "Active workspace is not a Packet Tracer .pka activity file.",
+                    "execution_backend": "script_backend",
+                }
+            else:
+                # Optional extra evidence only; never overrides CLI verification results.
+                activity_grade = self.router.read_activity_status()
 
         return {
             "lab_name": spec.lab_name,

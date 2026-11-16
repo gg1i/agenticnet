@@ -16,6 +16,10 @@ import sys
 import time
 from pathlib import Path
 
+from netforge.adapters.discovery import (
+    gracefully_close_packet_tracer,
+    require_interactive_desktop_for_launch,
+)
 from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
 from netforge.core.settings import NetForgeSettings
 from netforge.gui.windows_backend import WindowsGuiBackend
@@ -70,6 +74,7 @@ def _find_pt_exe() -> Path:
 
 
 def _run_attempt(attempt: int, settings: NetForgeSettings, pt_exe: Path) -> bool:
+    require_interactive_desktop_for_launch("verify_7960_power_reliability")
     session_file = settings.data_dir / "bridge_session.json"
     server = HttpScriptBridgeServer(session_file=session_file)
     bridge = HttpScriptBridgeBackend(server)
@@ -153,11 +158,7 @@ def _run_attempt(attempt: int, settings: NetForgeSettings, pt_exe: Path) -> bool
         return registered
     finally:
         bridge.stop()
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
+        gracefully_close_packet_tracer([proc.pid], timeout_seconds=5.0)
         time.sleep(1.0)
 
 

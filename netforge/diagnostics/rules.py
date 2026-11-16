@@ -119,6 +119,7 @@ def check_missing_default_gateways(
                             except Exception:
                                 continue
 
+                    host_mask = iface.subnet_mask or "255.255.255.0"
                     repair = RepairProposal(
                         finding_id=finding.finding_id,
                         target_device=d_name,
@@ -127,7 +128,9 @@ def check_missing_default_gateways(
                             RepairAction(
                                 target_device=d_name,
                                 target_interface=if_name,
-                                command_sequence=[f"ipconfig /gateway {gw_suggestion}"],
+                                command_sequence=[
+                                    f"ipconfig {iface.ipv4_address} {host_mask} {gw_suggestion}"
+                                ],
                                 description=(
                                     f"Configure default gateway {gw_suggestion} on {d_name}."
                                 ),

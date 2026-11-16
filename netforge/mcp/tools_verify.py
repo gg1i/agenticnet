@@ -11,7 +11,16 @@ from netforge.core.enums import PermissionTier, StateLevel
 from netforge.core.exceptions import ValidationError
 from netforge.core.models import OperationResult
 from netforge.diagnostics.grader import grade_open_activity
-from netforge.diagnostics.lab_runner import evaluate_lab_status
+from netforge.diagnostics.lab_runner import (
+    build_snapshot_payload,
+    collect_lab_snapshot,
+    compute_lab_diff,
+    create_original_backup,
+    derive_working_copy_path,
+    evaluate_lab_status,
+    paths_refer_to_same_file,
+    start_lab_session,
+)
 from netforge.diagnostics.verifier import LabVerifier
 from netforge.diagnostics.verify_schema import get_verify_requirements_schema
 from netforge.mcp.registry import NetForgeRuntime
@@ -164,10 +173,108 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
 
         return runtime.execute("grade_lab", PermissionTier.READ_ONLY, {}, _run)
 
+    def lab_start(
+        input_target: str,
+        auto_approve: bool = False,
+        watch_mode: bool = True,
+        watch_pace_seconds: float = 0.15,
+        copy_on_write: bool = True,
+        working_copy_path: str | None = None,
+        overwrite_original: bool = False,
+        confirm_overwrite_original: bool = False,
+        wait_seconds: float = 30.0,
+        clarifications: str | None = None,
+        devices: list[dict[str, Any]] | None = None,
+        links: list[dict[str, Any]] | None = None,
+        configs: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any]:
+        """One-command live start for a `.pkt`/`.pka` file, `.md`/`.txt`/`.pdf` doc, or idea."""
+
+        def _run() -> OperationResult:
+            out = start_lab_session(
+                runtime,
+                input_target,
+                auto_approve=auto_approve,
+                watch_mode=watch_mode,
+                watch_pace_seconds=watch_pace_seconds,
+                copy_on_write=copy_on_write,
+                working_copy_path=working_copy_path,
+                overwrite_original=overwrite_original,
+                confirm_overwrite_original=confirm_overwrite_original,
+                wait_seconds=wait_seconds,
+                clarifications=clarifications,
+                devices=devices,
+                links=links,
+                configs=configs,
+            )
+            state = str(out.get("state", "ready"))
+            if state == "awaiting_plan_approval":
+                return OperationResult.ok(
+                    "lab_start",
+                    str(out.get("message") or "Prepared plan; awaiting user approval."),
+                    data=out,
+                    state_level=StateLevel.PLANNED,
+                    execution_backend="offline_model",
+                    evidence=list(out.get("narration_log") or []),
+                )
+            if state == "waiting_for_user_launch":
+                return OperationResult.fail(
+                    "lab_start",
+                    str(out["message"]),
+                    error_code="NON_INTERACTIVE_SESSION",
+                    details=out,
+                    remediation="Open Cisco Packet Tracer manually on your desktop and retry.",
+                )
+            if state == "waiting_for_login":
+                return OperationResult.fail(
+                    "lab_start",
+                    str(out["message"]),
+                    error_code="LOGIN_WALL",
+                    details=out,
+                    remediation="Sign in or accept Guest in the open PT window, then retry.",
+                )
+            if state == "bridge_timeout":
+                return OperationResult.fail(
+                    "lab_start",
+                    str(out["message"]),
+                    error_code="BRIDGE_TIMEOUT",
+                    details=out,
+                    remediation=(
+                        "Check Packet Tracer Extensions -> Scripting for com.netforge.bridge."
+                    ),
+                )
+            ev = list(out.get("narration_log") or [])
+            if out.get("working_copy_path"):
+                ev.append(f"Copy-on-write working file: {out['working_copy_path']}")
+            return OperationResult.ok(
+                "lab_start",
+                str(out.get("message") or "Live lab session ready."),
+                data=out,
+                state_level=StateLevel.EXECUTED,
+                execution_backend=out.get("execution_backend", "script_backend"),
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "lab_start",
+            PermissionTier.CONFIGURATION,
+            {
+                "input_target": input_target,
+                "auto_approve": auto_approve,
+                "watch_mode": watch_mode,
+                "copy_on_write": copy_on_write,
+                "working_copy_path": working_copy_path,
+                "overwrite_original": overwrite_original,
+            },
+            _run,
+        )
+
     def lab_open(
         path: str,
         timeout_seconds: float = 30.0,
         dry_run: bool = False,
+        copy_on_write: bool = False,
+        working_copy_path: str | None = None,
     ) -> dict[str, Any]:
         """Open a `.pkt` or `.pka` lab inside Packet Tracer via the bridge (`fileOpen`)."""
 
@@ -176,29 +283,67 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             if not cleaned:
                 raise ValidationError("Lab file path must not be empty.")
             if dry_run:
+                work_preview = (
+                    derive_working_copy_path(cleaned, working_copy_path)
+                    if copy_on_write
+                    else cleaned
+                )
                 return OperationResult.ok(
                     "lab_open",
                     f"Planned opening '{cleaned}' via script bridge fileOpen (dry_run).",
-                    data={"dry_run": True, "path": cleaned, "method": "fileOpen"},
+                    data={
+                        "dry_run": True,
+                        "path": cleaned,
+                        "copy_on_write": copy_on_write,
+                        "working_copy_path": work_preview,
+                        "method": "fileOpen",
+                    },
                     state_level=StateLevel.PLANNED,
                     execution_backend="offline_model",
                     evidence=[f"Dry-run: would dispatch ipc.appWindow().fileOpen('{cleaned}')."],
                 )
+            runtime.router.clear_aliases()
             backend, data, ev, warnings = runtime.router.open_file(
                 cleaned,
                 timeout_seconds=timeout_seconds,
             )
+            runtime.router.active_original_path = cleaned
+            if "is_activity_file" in data:
+                runtime.router.active_is_activity = bool(data["is_activity_file"])
+            elif cleaned.lower().endswith(".pka"):
+                runtime.router.active_is_activity = None
+            else:
+                runtime.router.active_is_activity = False
+            if copy_on_write:
+                work_path = derive_working_copy_path(cleaned, working_copy_path)
+                if not paths_refer_to_same_file(cleaned, work_path):
+                    _, _, save_ev, _ = runtime.router.save_file(
+                        work_path,
+                        overwrite=True,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    ev = [*ev, *save_ev]
+                runtime.router.active_working_path = work_path
+                data["original_path"] = cleaned
+                data["working_copy_path"] = work_path
+                data["copy_on_write"] = True
+            else:
+                runtime.router.active_working_path = None
             try:
                 _, snap_data, snap_ev, _ = runtime.router.list_devices(
                     timeout_seconds=min(timeout_seconds, 15.0)
                 )
-                devs = snap_data.get("devices", [])
-                links = snap_data.get("links", [])
+                snap = build_snapshot_payload(
+                    snap_data, cli_log=runtime.router.executed_cli_log
+                )
+                if runtime.router.initial_snapshot is None:
+                    runtime.router.initial_snapshot = snap
+                runtime.router.latest_snapshot = snap
                 data["discovered_devices"] = {
-                    "device_count": snap_data.get("device_count", len(devs)),
-                    "link_count": snap_data.get("link_count", len(links)),
-                    "devices": devs,
-                    "links": links,
+                    "device_count": snap["device_count"],
+                    "link_count": snap["link_count"],
+                    "devices": snap["devices"],
+                    "links": snap["links"],
                 }
                 ev = [*ev, *snap_ev]
             except Exception:
@@ -216,14 +361,23 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         return runtime.execute(
             "lab_open",
             PermissionTier.CONFIGURATION,
-            {"path": path, "timeout_seconds": timeout_seconds, "dry_run": dry_run},
+            {
+                "path": path,
+                "timeout_seconds": timeout_seconds,
+                "dry_run": dry_run,
+                "copy_on_write": copy_on_write,
+                "working_copy_path": working_copy_path,
+            },
             _run,
         )
 
     def lab_save(
         path: str | None = None,
         overwrite: bool = True,
+        overwrite_original: bool = False,
+        confirm_overwrite_original: bool = False,
         timeout_seconds: float = 30.0,
+        include_diff: bool = True,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         """Save the active Packet Tracer lab via bridge (`fileSave` or `fileSaveAsNoPrompt`)."""
@@ -232,26 +386,71 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             cleaned = str(path).strip() if path is not None else None
             if path is not None and not cleaned:
                 raise ValidationError("Destination path must not be blank when provided.")
-            method = "fileSaveAsNoPrompt" if cleaned else "fileSave"
+            effective_path = (
+                cleaned if cleaned is not None else runtime.router.active_working_path
+            )
+            method = "fileSaveAsNoPrompt" if effective_path else "fileSave"
             if dry_run:
                 return OperationResult.ok(
                     "lab_save",
                     f"Planned saving Packet Tracer lab via {method} (dry_run).",
                     data={
                         "dry_run": True,
-                        "path": cleaned,
+                        "path": effective_path,
                         "overwrite": overwrite,
+                        "overwrite_original": overwrite_original,
                         "method": method,
                     },
                     state_level=StateLevel.PLANNED,
                     execution_backend="offline_model",
                     evidence=[f"Dry-run: would dispatch {method} via script bridge."],
                 )
+            backup_path: str | None = None
+            orig_path = runtime.router.active_original_path
+            if (
+                orig_path
+                and effective_path
+                and paths_refer_to_same_file(effective_path, orig_path)
+            ):
+                if not (overwrite_original and confirm_overwrite_original):
+                    raise ValidationError(
+                        "Refusing to overwrite the original .pkt/.pka file without explicit "
+                        "request (overwrite_original=True, confirm_overwrite_original=True).",
+                        details={
+                            "original_path": orig_path,
+                            "working_copy_path": runtime.router.active_working_path,
+                        },
+                        remediation=(
+                            "Save to the working copy (path=None or *_netforge.pkt), or pass "
+                            "overwrite_original=True and confirm_overwrite_original=True."
+                        ),
+                    )
+                backup_path = create_original_backup(orig_path)
+                runtime.router.active_backup_path = backup_path
+
             backend, data, ev, warnings = runtime.router.save_file(
-                cleaned,
+                effective_path,
                 overwrite=overwrite,
                 timeout_seconds=timeout_seconds,
             )
+            if backup_path:
+                data["backup_path"] = backup_path
+                ev = [*ev, f"Created backup before overwrite: {backup_path}"]
+            if include_diff and runtime.router.initial_snapshot is not None:
+                try:
+                    _, final_snap, snap_ev, _ = collect_lab_snapshot(
+                        runtime.router, timeout_seconds=min(timeout_seconds, 15.0)
+                    )
+                    diff = compute_lab_diff(
+                        runtime.router.initial_snapshot,
+                        final_snap,
+                        cli_log=runtime.router.executed_cli_log,
+                    )
+                    data["final_snapshot"] = final_snap
+                    data["lab_diff"] = diff
+                    ev = [*ev, *snap_ev, diff["readable_summary"]]
+                except Exception:
+                    pass
             return OperationResult.ok(
                 "lab_save",
                 f"Saved Packet Tracer lab via {backend} ({method}).",
@@ -268,7 +467,9 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             {
                 "path": path,
                 "overwrite": overwrite,
+                "overwrite_original": overwrite_original,
                 "timeout_seconds": timeout_seconds,
+                "include_diff": include_diff,
                 "dry_run": dry_run,
             },
             _run,
@@ -393,45 +594,16 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         """Capture live lab snapshot: devices, models, IOS hostnames, links, and interfaces."""
 
         def _run() -> OperationResult:
-            backend, data, ev, warnings = runtime.router.list_devices(
+            backend, snapshot, ev, warnings = collect_lab_snapshot(
+                runtime.router,
                 timeout_seconds=timeout_seconds,
             )
-            devices = data.get("devices", [])
-            links = data.get("links", [])
-            iface_table: list[dict[str, Any]] = []
-            for d in devices:
-                d_name = d.get("name", "")
-                d_host = d.get("hostname", d_name)
-                for p in d.get("ports", []):
-                    ip = p.get("ip_address")
-                    mask = p.get("subnet_mask")
-                    if ip or p.get("port_up") or p.get("has_link"):
-                        iface_table.append(
-                            {
-                                "device": d_name,
-                                "hostname": d_host,
-                                "interface": p.get("name"),
-                                "ip_address": ip or None,
-                                "subnet_mask": mask or None,
-                                "port_up": p.get("port_up"),
-                                "protocol_up": p.get("protocol_up"),
-                                "remote_device": p.get("remote_device_name") or None,
-                                "remote_interface": p.get("remote_port_name") or None,
-                            }
-                        )
-            snapshot = {
-                "device_count": len(devices),
-                "link_count": len(links),
-                "active_interface_count": len(iface_table),
-                "devices": devices,
-                "links": links,
-                "active_interfaces": iface_table,
-            }
             return OperationResult.ok(
                 "lab_snapshot",
                 (
-                    f"Captured live lab snapshot: {len(devices)} device(s), "
-                    f"{len(links)} link(s), {len(iface_table)} active interface(s)."
+                    f"Captured live lab snapshot: {snapshot['device_count']} device(s), "
+                    f"{snapshot['link_count']} link(s), "
+                    f"{snapshot['active_interface_count']} active interface(s)."
                 ),
                 data=snapshot,
                 state_level=StateLevel.VERIFIED,
@@ -447,15 +619,58 @@ def register_verify_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
             _run,
         )
 
+    def lab_diff(
+        before_snapshot: dict[str, Any] | None = None,
+        after_snapshot: dict[str, Any] | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Return a readable diff of device, link, interface, and CLI config changes."""
+
+        def _run() -> OperationResult:
+            before = before_snapshot or runtime.router.initial_snapshot
+            if before is None:
+                raise ValidationError(
+                    "No baseline lab snapshot is available yet.",
+                    remediation="Call lab_start or lab_snapshot before running lab_diff.",
+                )
+            backend: str = "offline_model"
+            ev: list[str] = []
+            warnings: list[str] = []
+            if after_snapshot is not None:
+                after = after_snapshot
+            else:
+                backend, after, ev, warnings = collect_lab_snapshot(
+                    runtime.router, timeout_seconds=timeout_seconds
+                )
+            diff = compute_lab_diff(before, after, cli_log=runtime.router.executed_cli_log)
+            return OperationResult.ok(
+                "lab_diff",
+                diff["readable_summary"],
+                data=diff,
+                state_level=StateLevel.VERIFIED if after_snapshot is None else StateLevel.PLANNED,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=[*ev, diff["readable_summary"]],
+            )
+
+        return runtime.execute(
+            "lab_diff",
+            PermissionTier.READ_ONLY,
+            {"has_before": before_snapshot is not None, "has_after": after_snapshot is not None},
+            _run,
+        )
+
     specs = [
         ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
         ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
         ("grade_lab", grade_lab, PermissionTier.READ_ONLY, True),
+        ("lab_start", lab_start, PermissionTier.CONFIGURATION, False),
         ("lab_open", lab_open, PermissionTier.CONFIGURATION, False),
         ("lab_save", lab_save, PermissionTier.CONFIGURATION, False),
         ("lab_status", lab_status, PermissionTier.READ_ONLY, True),
         ("list_devices", list_devices, PermissionTier.READ_ONLY, True),
         ("lab_snapshot", lab_snapshot, PermissionTier.READ_ONLY, True),
+        ("lab_diff", lab_diff, PermissionTier.READ_ONLY, True),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(

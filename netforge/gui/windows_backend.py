@@ -16,7 +16,10 @@ import psutil
 from PIL import Image, ImageGrab
 
 from netforge.adapters.base import AdapterConnectionState, BackendStatus, GuiBackend
-from netforge.adapters.discovery import detect_packet_tracer_binary
+from netforge.adapters.discovery import (
+    detect_packet_tracer_binary,
+    require_interactive_desktop_for_launch,
+)
 from netforge.core.enums import StateLevel
 from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.core.settings import NetForgeSettings
@@ -335,7 +338,18 @@ class _BITMAPINFO(ctypes.Structure):
 
 def _query_process_exe(pid: int) -> str | None:
     """Resolve full image path for a single PID without iterating system-wide processes."""
-    k32 = ctypes.windll.kernel32
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:
         return None
@@ -351,13 +365,15 @@ def _query_process_exe(pid: int) -> str | None:
 
 def _snapshot_pt_processes() -> list[dict[str, Any]] | None:
     """Enumerate Packet Tracer processes in <1ms using CreateToolhelp32Snapshot."""
-    k32 = ctypes.windll.kernel32
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
     k32.Process32FirstW.restype = wintypes.BOOL
     k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
     k32.Process32NextW.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
 
     snap = k32.CreateToolhelp32Snapshot(_TOOLHELP_SNAP_PROCESS, 0)
     if snap == ctypes.c_void_p(-1).value or not snap:
@@ -901,6 +917,7 @@ class WindowsGuiBackend(GuiBackend):
     ) -> dict[str, Any]:
         """Launch Cisco Packet Tracer cleanly and wait for its main window."""
         self._require_windows()
+        require_interactive_desktop_for_launch("WindowsGuiBackend.launch_application")
         self.safety.check_safe_to_act(live_input=False)
         use_bg = self._resolve_background(background)
         prev_fg = _get_foreground_hwnd() if use_bg else 0
@@ -922,18 +939,12 @@ class WindowsGuiBackend(GuiBackend):
             }
 
         if existing["running"] and existing["window"] is None and not existing["dialogs"]:
-            # Brief grace check in case PT is already mid-startup; spawn if zombie helper remains.
+            # Never spawn a second Packet Tracer instance (ports 38000/39000 contention);
+            # wait briefly for an already-starting instance to surface its window or login dialog.
             time.sleep(1.0)
             existing = self._detect_fast()
 
-        already_running = bool(
-            existing["running"]
-            and (
-                self._has_usable_window_bounds(existing["window"])
-                or existing["dialogs"]
-                or existing["window"] is not None
-            )
-        )
+        already_running = bool(existing["running"])
         proc_pid: int | None = None
         exe = existing.get("executable_path")
         if not already_running:

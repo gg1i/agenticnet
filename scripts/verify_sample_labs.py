@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from netforge.adapters.discovery import (
+    gracefully_close_packet_tracer,
+    require_interactive_desktop_for_launch,
+)
 from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
 from netforge.core.settings import NetForgeSettings
 from netforge.gui.windows_backend import WindowsGuiBackend
@@ -24,13 +27,8 @@ LAB_FILES = [
 
 
 def _kill_packet_tracer() -> None:
-    subprocess.run(
-        ["taskkill", "/F", "/IM", "PacketTracer.exe"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    time.sleep(1.0)
+    gracefully_close_packet_tracer(timeout_seconds=5.0)
+    time.sleep(0.5)
 
 
 def _decode(call_result: Any) -> dict[str, Any]:
@@ -215,6 +213,7 @@ async def _run_single_lab(lab_path: Path, gui: WindowsGuiBackend) -> dict[str, A
 
 
 def main() -> int:
+    require_interactive_desktop_for_launch("verify_sample_labs")
     selected = sys.argv[1:]
     paths = [p for p in LAB_FILES if not selected or p.name in selected or p.stem in selected]
     if not paths:

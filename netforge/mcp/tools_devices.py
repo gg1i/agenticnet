@@ -41,7 +41,9 @@ def register_device_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
                 y=node.position.y,
                 dry_run=dry_run,
             )
-            if backend == "script_backend" and live_res.get("ok") is False:
+            if live_res.get("ok") is False or (
+                backend == "script_backend" and not str(live_res.get("device_name", "")).strip()
+            ):
                 topo.remove_device(node.name)
                 return OperationResult.fail(
                     "device_add",
@@ -242,8 +244,84 @@ def register_device_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
 
         return runtime.execute("device_capabilities", PermissionTier.READ_ONLY, params, _run)
 
+    def host_configure(
+        device_name: str,
+        port: str = "FastEthernet0",
+        dhcp: bool = False,
+        ip_address: str | None = None,
+        subnet_mask: str | None = None,
+        default_gateway: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Configure DHCP or static IPv4/mask/gateway on a PC/Laptop/Server in PT & topology."""
+        params = {
+            "device_name": device_name,
+            "port": port,
+            "dhcp": dhcp,
+            "ip_address": ip_address,
+            "subnet_mask": subnet_mask,
+            "default_gateway": default_gateway,
+            "dry_run": dry_run,
+        }
+
+        def _run() -> OperationResult:
+            if not dhcp and (not ip_address or not subnet_mask):
+                raise ValidationError(
+                    "Provide dhcp=True, or both ip_address and subnet_mask for static host setup."
+                )
+            _, topo, ipam, _ = runtime.manager.require_active()
+            dev = topo.get_device(device_name)
+            canon_port = runtime.catalog.normalize_interface_name(dev.model, port)
+            backend, live_res, ev, warnings = runtime.router.configure_host(
+                dev.name,
+                port=canon_port,
+                dhcp=dhcp,
+                ip=ip_address,
+                subnet_mask=subnet_mask,
+                default_gateway=default_gateway,
+                console_engine=runtime.console,
+                dry_run=dry_run,
+            )
+            if not dry_run and canon_port in dev.interfaces:
+                iface = dev.interfaces[canon_port]
+                if not dhcp and ip_address and subnet_mask:
+                    alloc = ipam.allocate_address(
+                        dev.name,
+                        canon_port,
+                        ip_address,
+                        subnet_mask=subnet_mask,
+                        gateway=default_gateway,
+                        allocation_type="static",
+                    )
+                    iface.ip_address = alloc.ip_address
+                    iface.subnet_mask = alloc.subnet_mask
+                    iface.default_gateway = default_gateway
+                elif dhcp:
+                    iface.default_gateway = default_gateway or iface.default_gateway
+            lvl = StateLevel.EXECUTED if backend == "script_backend" else StateLevel.PLANNED
+            mode_label = "DHCP" if dhcp else f"{ip_address}/{subnet_mask}"
+            return OperationResult.ok(
+                "host_configure",
+                f"Configured host '{dev.name}' ({canon_port}) via {mode_label}.",
+                data={"device_name": dev.name, "port": canon_port, "live_backend": live_res},
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=ev or [f"Updated host '{dev.name}:{canon_port}' configuration."],
+            )
+
+        return runtime.execute("host_configure", PermissionTier.CONFIGURATION, params, _run)
+
     specs = [
         ("device_add", PermissionTier.PLANNING, device_add.__doc__ or "", device_add, False, False),
+        (
+            "host_configure",
+            PermissionTier.CONFIGURATION,
+            host_configure.__doc__ or "",
+            host_configure,
+            False,
+            False,
+        ),
         (
             "device_remove",
             PermissionTier.DESTRUCTIVE,

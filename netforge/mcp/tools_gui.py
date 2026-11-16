@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
+from netforge.adapters.discovery import require_interactive_desktop_for_launch
 from netforge.core.enums import PermissionTier, StateLevel
 from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.core.models import OperationResult
@@ -52,6 +53,7 @@ def register_gui_tools(server: MCPServer, runtime: NetForgeRuntime) -> None:
         """Launch Cisco Packet Tracer (or attach if already running) and wait for window."""
 
         def _run() -> OperationResult:
+            require_interactive_desktop_for_launch("packet_tracer_launch")
             data = _call_with_optional(
                 runtime.gui.launch_application,
                 executable_path,

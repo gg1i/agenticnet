@@ -37,6 +37,10 @@ RESOURCE_DESCRIPTIONS: dict[str, str] = {
 }
 
 PROMPT_DESCRIPTIONS: dict[str, str] = {
+    "start_lab": (
+        "One-command live experience (`lab_start` -> plan-then-build -> step-by-step "
+        "watch mode -> `verify_lab`/`lab_status` -> `lab_snapshot` -> `lab_diff` -> `lab_save`)."
+    ),
     "solve_lab": (
         "Guided closed-loop lab solver (`lab_open` -> `verify_lab` / `grade_lab` / "
         "`lab_status` -> fix -> `lab_save`)."

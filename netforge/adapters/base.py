@@ -228,6 +228,32 @@ class ScriptBackend(ABC):
         """Attach AC power adapter onto a 7960 IP Phone in Packet Tracer via ScriptBackend."""
         raise NotImplementedError("ScriptBackend does not implement 'attach_ip_phone_power'.")
 
+    def configure_host(
+        self,
+        device_name: str,
+        *,
+        port: str = "FastEthernet0",
+        dhcp: bool = False,
+        ip: str | None = None,
+        subnet_mask: str | None = None,
+        default_gateway: str | None = None,
+        display_name: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Configure DHCP or static IPv4/gateway on a PT host device (`PC-PT`, `Laptop-PT`)."""
+        raise AdapterUnavailableError(
+            f"{self.__class__.__name__} does not implement configure_host."
+        )
+
+    def batch_ops(
+        self,
+        ops: list[dict[str, Any]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Execute multiple synchronous workspace ops in one Packet Tracer RPC call."""
+        raise AdapterUnavailableError(f"{self.__class__.__name__} does not implement batch_ops.")
+
     def backend_status(self) -> BackendStatus:
         """Describe script backend connection state and supported capabilities."""
         return BackendStatus(

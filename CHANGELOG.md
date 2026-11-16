@@ -5,6 +5,14 @@ All notable changes to **NetForge MCP** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-11-16 (Phases 2–5 & Release Hardening)
+
+### Added
+- **One-Command Live Workflow (`lab_start` / `start_lab`)**: Input auto-detection (`.pkt`/`.pka` vs `.md`/`.txt`/PDF/idea), Plan-then-Build approval gate, desktop-visible Watch Mode with per-step narration, copy-on-write `*_netforge.pkt` preservation, `lab_snapshot`, and readable `lab_diff`.
+- **Authenticated HTTP/WebView Script Bridge (`com.netforge.bridge`)**: Persistent HTTP/1.1 keep-alive (`TCP_NODELAY`), dynamic `bridge_session.json` discovery owned by `session_id`, `5ms` WebView re-polling, top-level JS `try/catch` guards, automatic HWIC-2T router serial population, `7960` IP phone auto-power, `Laptop-PT` model fallbacks, `host_configure` (`configure_host` IPC + `ipconfig` CLI fallback), and single-round-trip `batch_ops`.
+- **Live Verification, Grading & Diagnostics**: `verify_lab` CLI output parsers + multi-device parallel sweeps (`TerminalLine`-safe), read-only `.pka` `grade_lab` support, `lab_status` task coverage, `lab_save(..., include_diff=True)`, and root-cause `diagnostics` repair rules (including valid PT `ipconfig <ip> <mask> <gw>` syntax).
+- **MCP Server Expansion & Profiles**: Grown to **82** total MCP tools (**25** curated default tools in `solve_lab` profile, full suite in `advanced`), **7** MCP resources, **6** prompts, SQLite WAL storage, and dynamic scaling timeouts for multi-ping / DHCP batches.
+
 ## [0.1.0] - 2026-11-13 (Phase 1: Core Foundation)
 
 ### Added

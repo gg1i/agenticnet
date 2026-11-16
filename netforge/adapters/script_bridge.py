@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import socket
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -19,7 +22,11 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from netforge.adapters.base import AdapterConnectionState, BackendStatus, ScriptBackend
-from netforge.adapters.discovery import detect_packet_tracer_binary, is_packet_tracer_running
+from netforge.adapters.discovery import (
+    detect_packet_tracer_binary,
+    is_packet_tracer_running,
+    require_interactive_desktop_for_launch,
+)
 from netforge.core.exceptions import AdapterUnavailableError, ValidationError
 from netforge.gui.safety import EmergencyStopController
 
@@ -35,6 +42,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
         "list_devices",
         "attach_ip_phone_power",
         "configure_host",
+        "batch_ops",
     }
 )
 
@@ -163,6 +171,9 @@ class _PendingCommand:
 class HttpScriptBridgeServer:
     """Loopback-only authenticated HTTP RPC bridge consumed by PT's WebView extension."""
 
+    MODULE_ID: str = "com.netforge.bridge"
+    SESSION_TTL_MS: int = 60_000
+
     def __init__(
         self,
         *,
@@ -170,7 +181,9 @@ class HttpScriptBridgeServer:
         port: int = 0,
         auth_token: str | None = None,
         session_file: Path | None = None,
+        mirror_session_files: Sequence[Path] | None = None,
         connection_ttl_seconds: float = 10.0,
+        heartbeat_interval_seconds: float = 15.0,
     ) -> None:
         if host != "127.0.0.1":
             raise ValidationError(
@@ -182,17 +195,26 @@ class HttpScriptBridgeServer:
         self._requested_port = port
         self._token = auth_token or secrets.token_hex(24)
         self.session_file = session_file
+        self.mirror_session_files: tuple[Path, ...] = tuple(
+            Path(p) for p in (mirror_session_files or ())
+        )
         self.connection_ttl_seconds = connection_ttl_seconds
+        self.heartbeat_interval_seconds = heartbeat_interval_seconds
 
         self._cond = threading.Condition()
+        self._descriptor_lock = threading.Lock()
         self._queue: list[_PendingCommand] = []
         self._inflight: dict[str, _PendingCommand] = {}
         self._last_seen_monotonic: float | None = None
         self._last_origin: str | None = None
         self._stopped = False
+        self._session_id: str | None = None
+        self._created_at_ms: int | None = None
 
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
 
     @property
     def port(self) -> int:
@@ -218,10 +240,15 @@ class HttpScriptBridgeServer:
             return
         with self._cond:
             self._stopped = False
+        self._session_id = f"sess_{uuid4().hex[:16]}"
+        self._created_at_ms = int(time.time() * 1000)
+        self._heartbeat_stop.clear()
 
         bridge = self
 
         class _BridgeHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, format: str, *args: object) -> None:  # noqa: A002
                 return
 
@@ -246,11 +273,17 @@ class HttpScriptBridgeServer:
                     if not self._write_cors_headers():
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", "0")
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
                         self.end_headers()
                         return
-                    if body is not None:
-                        self.send_header("Content-Type", "application/json")
-                        self.send_header("Content-Length", str(len(raw)))
+                    if status == 204:
+                        self.send_header("Connection", "keep-alive")
+                        self.end_headers()
+                        return
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Connection", "keep-alive")
                     self.end_headers()
                     if raw:
                         self.wfile.write(raw)
@@ -355,7 +388,16 @@ class HttpScriptBridgeServer:
                     return
                 self._send_json(200, {"ok": True})
 
-        self._httpd = ThreadingHTTPServer((self.host, self._requested_port), _BridgeHandler)
+        class _NoDelayHTTPServer(ThreadingHTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+            def finish_request(self, request: Any, client_address: Any) -> None:
+                with suppress(OSError):
+                    request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                super().finish_request(request, client_address)
+
+        self._httpd = _NoDelayHTTPServer((self.host, self._requested_port), _BridgeHandler)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="netforge-script-bridge",
@@ -363,9 +405,17 @@ class HttpScriptBridgeServer:
         )
         self._thread.start()
         self._write_session_descriptor()
+        if self.session_file is not None and self.heartbeat_interval_seconds > 0:
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name="netforge-script-bridge-heartbeat",
+                daemon=True,
+            )
+            self._heartbeat_thread.start()
 
     def stop(self) -> None:
         """Stop the HTTP server cleanly and remove ephemeral session descriptor."""
+        self._heartbeat_stop.set()
         with self._cond:
             self._stopped = True
             for pending in list(self._queue) + list(self._inflight.values()):
@@ -380,6 +430,9 @@ class HttpScriptBridgeServer:
             self._inflight.clear()
             self._cond.notify_all()
 
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=2.0)
+            self._heartbeat_thread = None
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -491,25 +544,61 @@ class HttpScriptBridgeServer:
             pending.event.set()
             return True
 
+    def _heartbeat_loop(self) -> None:
+        interval = max(float(self.heartbeat_interval_seconds), 0.1)
+        while not self._heartbeat_stop.wait(timeout=interval):
+            if self._stopped or self._httpd is None:
+                break
+            try:
+                self._write_session_descriptor()
+            except OSError:
+                continue
+
     def _write_session_descriptor(self) -> None:
-        if self.session_file is None:
+        targets = [p for p in [self.session_file, *self.mirror_session_files] if p is not None]
+        if not targets or self._stopped or self._httpd is None:
             return
-        self.session_file.parent.mkdir(parents=True, exist_ok=True)
+        now_ms = int(time.time() * 1000)
         descriptor = {
+            "session_id": self._session_id or f"sess_{uuid4().hex[:16]}",
             "url": self.base_url,
             "token": self._token,
+            "server_pid": os.getpid(),
             "pid": os.getpid(),
+            "created_at": self._created_at_ms or now_ms,
+            "heartbeat_at": now_ms,
+            "ttl_ms": self.SESSION_TTL_MS,
+            "module_id": self.MODULE_ID,
             "bridge_version": "1",
         }
-        tmp = self.session_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(descriptor, indent=2), encoding="utf-8")
-        tmp.replace(self.session_file)
-        if os.name == "posix":
-            os.chmod(self.session_file, 0o600)
+        raw_text = json.dumps(descriptor, indent=2)
+        with self._descriptor_lock:
+            if self._stopped or self._httpd is None:
+                return
+            for target in targets:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_suffix(".tmp")
+                tmp.write_text(raw_text, encoding="utf-8")
+                tmp.replace(target)
+                if os.name == "posix":
+                    os.chmod(target, 0o600)
 
     def _remove_session_descriptor(self) -> None:
-        if self.session_file is not None and self.session_file.exists():
-            self.session_file.unlink()
+        targets = [p for p in [self.session_file, *self.mirror_session_files] if p is not None]
+        with self._descriptor_lock:
+            for target in targets:
+                if not target.exists():
+                    continue
+                # Never unlink a descriptor owned by another live server process.
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    owner_sid = existing.get("session_id") if isinstance(existing, dict) else None
+                    if self._session_id and owner_sid and owner_sid != self._session_id:
+                        continue
+                except (OSError, json.JSONDecodeError):
+                    pass
+                with suppress(OSError):
+                    target.unlink()
 
 
 class HttpScriptBridgeBackend(ScriptBackend):
@@ -571,6 +660,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
             return True
         if not self.auto_launch_pt or self.server._httpd is None:
             return False
+        require_interactive_desktop_for_launch("HttpScriptBridgeBackend.ensure_connected")
         pt_exe = detect_packet_tracer_binary(self.packet_tracer_path)
         if pt_exe is None:
             return False
@@ -583,7 +673,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
             while time.monotonic() < deadline:
                 if self.is_connected():
                     return True
-                time.sleep(0.5)
+                time.sleep(0.15)
         return self.is_connected()
 
     def ping(self) -> dict[str, Any]:
@@ -846,6 +936,67 @@ class HttpScriptBridgeBackend(ScriptBackend):
             **data,
         }
 
+    def configure_host(
+        self,
+        device_name: str,
+        *,
+        port: str = "FastEthernet0",
+        dhcp: bool = False,
+        ip: str | None = None,
+        subnet_mask: str | None = None,
+        default_gateway: str | None = None,
+        display_name: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Configure DHCP or static IPv4/mask/gateway on a PT host via Script Module IPC."""
+        dev = _require_non_empty(device_name, "device_name")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        payload: dict[str, Any] = {
+            "device_name": dev,
+            "port": port or "FastEthernet0",
+            "dhcp": bool(dhcp),
+        }
+        if ip:
+            payload["ip"] = str(ip)
+        if subnet_mask:
+            payload["subnet_mask"] = str(subnet_mask)
+        if default_gateway:
+            payload["default_gateway"] = str(default_gateway)
+        if display_name:
+            payload["display_name"] = str(display_name)
+        data = self.server.enqueue_command(
+            "configure_host",
+            payload,
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
+    def batch_ops(
+        self,
+        ops: list[dict[str, Any]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Execute multiple synchronous workspace ops in one Packet Tracer RPC call."""
+        if not ops:
+            return {"ok": True, "backend": "script_http", "results": [], "aliases": {}}
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        effective = timeout_seconds or max(self.default_timeout_seconds, 10.0 + len(ops) * 0.5)
+        data = self.server.enqueue_command(
+            "batch_ops",
+            {"ops": ops},
+            timeout_seconds=effective,
+        )
+        return {
+            "ok": True,
+            "backend": "script_http",
+            **data,
+        }
+
     def backend_status(self) -> BackendStatus:
         """Describe HTTP script bridge status and verified PT 8.2.2 capabilities."""
         return BackendStatus(
@@ -866,6 +1017,8 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 "save_file",
                 "list_devices",
                 "attach_ip_phone_power",
+                "configure_host",
+                "batch_ops",
             ],
             notes="127.0.0.1 token-authenticated WebView HTTP bridge.",
         )

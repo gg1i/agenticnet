@@ -60,6 +60,24 @@ def register_connection_tools(server: MCPServer, runtime: NetForgeRuntime) -> No
                 cable_type=link.cable_type.value,
                 dry_run=dry_run,
             )
+            if live_res.get("ok") is False or (
+                backend == "script_backend" and warnings and not live_ev
+            ):
+                topo.remove_connection(link.connection_id)
+                return OperationResult.fail(
+                    "connection_create",
+                    str(
+                        live_res.get("error")
+                        or (warnings[0] if warnings else "Packet Tracer rejected link creation.")
+                    ),
+                    error_code="PT_LINK_FAILED",
+                    details=live_res,
+                    remediation=(
+                        "Verify both device names and interface names exist and are free in PT."
+                    ),
+                    state_level=StateLevel.PLANNED,
+                    execution_backend=backend,
+                )
             payload = link.model_dump(mode="json")
             if live_res:
                 payload["live_backend"] = live_res

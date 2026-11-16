@@ -29,7 +29,7 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
             manifest_res = await client.read_resource("netforge://manifest")
             manifest_json = json.loads(manifest_res.contents[0].text)
             assert len(tools_res.tools) == manifest_json["tool_count"]
-            assert len(tools_res.tools) == 79
+            assert len(tools_res.tools) == 82
 
             prompt_res = await client.get_prompt(
                 "solve_lab",
@@ -64,13 +64,15 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
             assert client.server_info.name == "netforge-mcp"
             tools_res = await client.list_tools()
             tool_names = {t.name for t in tools_res.tools}
-            assert len(tool_names) == 22
+            assert len(tool_names) == 25
             assert {
+                "lab_start",
                 "lab_open",
                 "lab_save",
                 "lab_status",
                 "list_devices",
                 "lab_snapshot",
+                "lab_diff",
                 "verify_lab",
                 "grade_lab",
                 "gui_attach_ip_phone_power",

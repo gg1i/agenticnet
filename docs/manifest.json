@@ -37,18 +37,18 @@
     "solve_lab",
     "advanced"
   ],
-  "tool_count": 79,
+  "tool_count": 82,
   "categories": {
     "project": 7,
     "topology": 6,
-    "devices": 6,
+    "devices": 7,
     "connections": 5,
     "ipam": 5,
     "configuration": 14,
     "cli": 5,
     "gui": 10,
     "simulation": 6,
-    "diagnostics": 15
+    "diagnostics": 17
   },
   "tools": [
     {
@@ -173,6 +173,15 @@
       "category": "devices",
       "permission_tier": "planning",
       "description": "Add a network device using a verified Packet Tracer model from the DeviceCatalog.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "host_configure",
+      "category": "devices",
+      "permission_tier": "configuration",
+      "description": "Configure DHCP or static IPv4/mask/gateway on a PC/Laptop/Server in PT & topology.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -460,7 +469,7 @@
       "name": "console_execute",
       "category": "cli",
       "permission_tier": "configuration",
-      "description": "Execute commands inside a device CLI console with prompt tracking and error detection.",
+      "description": "Execute commands inside one or multiple device CLI consoles with prompt tracking.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -718,6 +727,15 @@
       "destructive": false
     },
     {
+      "name": "lab_start",
+      "category": "diagnostics",
+      "permission_tier": "configuration",
+      "description": "One-command live start for a `.pkt`/`.pka` file, `.md`/`.txt`/`.pdf` doc, or idea.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
       "name": "lab_open",
       "category": "diagnostics",
       "permission_tier": "configuration",
@@ -761,6 +779,15 @@
       "status": "stable",
       "read_only": true,
       "destructive": false
+    },
+    {
+      "name": "lab_diff",
+      "category": "diagnostics",
+      "permission_tier": "read_only",
+      "description": "Return a readable diff of device, link, interface, and CLI config changes.",
+      "status": "stable",
+      "read_only": true,
+      "destructive": false
     }
   ],
   "resources": [
@@ -773,6 +800,7 @@
     "netforge://logs/recent"
   ],
   "prompts": [
+    "start_lab",
     "solve_lab",
     "plan_network_architecture",
     "design_campus_vlan_network",

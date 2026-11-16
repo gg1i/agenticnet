@@ -8,6 +8,20 @@ NetForge MCP is a modular Model Context Protocol (MCP) server and engineering en
 
 ---
 
+## Why NetForge MCP? (One-Command Live Lab Experience)
+
+Hand your MCP agent (`Antigravity` or `Claude Desktop`) a networking idea, `.md`/`.txt`/PDF lab brief, or `.pkt`/`.pka` file with `lab_start` (`start_lab`), and watch Packet Tracer build and verify the lab live on your desktop:
+
+- **Plan -> Build -> Watch Mode**: For ideas or lab specs, NetForge drafts a concise topology, IP plan, and task list for your OK before touching Packet Tracer, then executes step-by-step with narration.
+- **Native PT Script Bridge (Not Brittle Macros)**: Dispatches `add_device`, `create_link`, `configure_host`, `batch_ops`, IOS/PC CLI execution, `list_devices`, and `fileOpen`/`fileSaveAsNoPrompt` over an authenticated `127.0.0.1` HTTP/WebView bridge inside Packet Tracer's own IPC (GUI automation stays fallback-only).
+- **Zero-Risk Copy-on-Write + Diff**: Never overwrites your original `.pkt`/`.pka` by default; saves to a sibling `*_netforge.pkt` working copy, takes start/end snapshots, and returns a readable `lab_diff`.
+- **Real CLI Verification (`planned` vs `executed` vs `verified`)**: `verify_lab` checks live `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and real `ping` output — never claiming pass without observed evidence.
+- **Curated Default Profile + Safe Parallel Speed**: Exposes **25** focused tools by default (`solve_lab`) or all **82** engineering/IPAM/IOS/diagnostics tools (`NETFORGE_TOOL_PROFILE=advanced`), with HTTP/1.1 keep-alive, single-round-trip `batch_ops`, SQLite WAL, and device-parallel CLI/verification.
+
+> **Platform Scope:** Offline unit/protocol tests and planning tools run cleanly on Windows, Linux, and macOS CI. Live Packet Tracer automation is tested on **Windows 10/11 + Cisco Packet Tracer 8.2.2** on an unlocked interactive desktop session.
+
+---
+
 ## Core Design Principles
 
 1. **Plan -> Design -> Validate -> Build -> Configure -> Test -> Diagnose -> Repair -> Save -> Document**
@@ -26,7 +40,7 @@ NetForge MCP is a modular Model Context Protocol (MCP) server and engineering en
 | **Phase 2 — Packet Tracer Adapter** | Windows PyWin32/ctypes GUI detection, DPI-aware calibration, visual anchor matching, SendInput mouse/keyboard input, fail-safe emergency stop, device console state machine | **Implemented (`v0.1.0`)** |
 | **Phase 3 — Live Network Automation** | Simulation/Realtime mode switching, PDU test packets, simulation event parsing, CLI ping execution, `show ip route` / `show arp` / `show ip int brief` table parsers | **Implemented (`v0.1.0`)** |
 | **Phase 4 — Intelligent Diagnostics** | Automated rule evaluators (missing gateway, disabled interface with IP, link subnet mismatch, native VLAN mismatch), ranked proposals, approval gates, verified self-repair | **Implemented (`v0.1.0`)** |
-| **Phase 5 — Public Release** | Multi-engine integration, capability manifest (`docs/manifest.json`), 79 MCP tools (22 in default `solve_lab` profile), 7 resources, 5 prompts, CI workflows, and complete documentation | **Implemented (`v0.1.0`)** |
+| **Phase 5 — Public Release** | Multi-engine integration, capability manifest (`docs/manifest.json`), 82 MCP tools (25 in default `solve_lab` profile), 7 resources, 6 prompts, CI workflows, and complete documentation | **Implemented (`v0.1.0`)** |
 
 ---
 
@@ -46,7 +60,7 @@ netforge/
 ├── console/      # (Phase 2) Device console state-machine, prompt detection, paging cleanup
 ├── simulation/   # (Phase 3) Simulation mode, PDU tracking, CLI/offline connectivity checks
 ├── diagnostics/  # (Phase 4) Root-cause rules, ranked repair proposals, verified execution
-└── mcp/          # Official Python MCP SDK server, 79 tools (22 default), 7 resources, 5 prompts, manifest
+└── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts, manifest
 ```
 
 ---
@@ -56,8 +70,11 @@ netforge/
 ### Requirements
 - Python **3.11+**
 - Optional (for live Packet Tracer `8.2.2` automation):
-  - Cisco Packet Tracer installed locally (e.g., `C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe`) with the NetForge Script Module installed via `netforge install-module`.
-  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power` — **experimental: not yet validated by the 5-attempt live protocol**) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
+  - Cisco Packet Tracer installed locally (e.g., `C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe`) with the NetForge Script Module (module ID `com.netforge.bridge`) registered once via `netforge-mcp install-module`.
+  - **Strict Non-Interactive Session Rule & Graceful Close:** Never start `PacketTracer.exe` from a non-interactive agent shell or isolated desktop (`WinSta0\exebox-*`, Session 0, or headless display); `packet_tracer_launch`, `WindowsGuiBackend.launch_application`, `HttpScriptBridgeBackend.ensure_connected`, and `run_live_pt_benchmark` automatically refuse with `NON_INTERACTIVE_SESSION`. Live test harnesses must close spawned instances via graceful close first (`WM_CLOSE` / `SIGTERM` before any forced cleanup) so `PT.conf` saves cleanly without leaving `PT-*.conf` temp files or orphan processes behind.
+  - **One-Time Re-Registration (`com.netforge.bridge`):** After exporting/installing the updated `.pts` (`com.netforge.bridge`), open `Extensions -> Scripting -> Configure PT Script Modules...` in Packet Tracer, remove any previous bridge entry (or `com.yourcompany.newptscriptmodule0`), add `%LOCALAPPDATA%\netforge\netforge_bridge.pts`, enable `On Startup`, accept script privileges, and restart Packet Tracer normally from the Start Menu. Note: NetForge never edits `PT.conf` programmatically.
+  - **Fail-Safe Bridge Startup:** `netforge_bridge.js` wraps every top-level function in `try/catch`, performs cheap ~5s idle file checks without spawning a `QWebView`, creates `QWebView` lazily only when a fresh `bridge_session.json` exists (`server_pid`, `created_at`, heartbeat within 60s), and destroys/blacklists the session after 3 consecutive failed polls.
+  - **Unlocked interactive Windows desktop session** for GUI fallback steps (`gui_*`): foreground GUI automation (`SendInput` drags, `ImageGrab` screen captures, and Physical-tab actions such as `gui_attach_ip_phone_power` — **experimental: not yet validated by the 5-attempt live protocol**) requires an unlocked interactive desktop (never a locked/asleep session or isolated non-interactive desktop object), temporarily takes over the physical mouse pointer during foreground drags, and is calibrated for Packet Tracer `8.2.2` at the tested `1920x1080` / `120 DPI` (`125%`) display scaling until the Phase 6 `netforge-mcp doctor` calibration gate exists. The `ScriptBackend` HTTP bridge continues to operate cleanly without pointer input after initial `.pts` registration.
 
 ### Installation
 

@@ -25,7 +25,7 @@ from netforge.adapters.script_bridge import (
     render_script_module_sources,
 )
 from netforge.core.logging import configure_logging
-from netforge.core.settings import NetForgeSettings
+from netforge.core.settings import NetForgeSettings, canonical_pt_bridge_data_dir
 from netforge.mcp.server import create_mcp_server
 from netforge.security.redaction import redact_path_home
 
@@ -101,15 +101,23 @@ def install_script_module(
     steps = [
         "1. Open Cisco Packet Tracer (8.2.2+).",
         "2. Go to Extensions -> Scripting -> Configure PT Script Modules...",
-        f"3. Click Add and select: {dest_pts}",
+        (
+            "3. One-time re-registration: if an older entry "
+            "(such as com.yourcompany.newptscriptmodule0 or a prior netforge_bridge.pts) "
+            "is listed, Remove it first; then click Add and select: "
+            f"{dest_pts} (canonical module ID: com.netforge.bridge; "
+            "when exporting from Script Module Editor -> Info tab, set ID to "
+            "`com.netforge.bridge` and import bridge_src/netforge_bridge.js + bridge.html)."
+        ),
         "4. Enable 'On Startup' (State: On) and accept the requested script privileges.",
         (
             "5. Restart Packet Tracer once; future `netforge-mcp serve` runs "
-            "auto-connect with no popups."
+            "auto-connect cleanly without spawning a WebView unless a fresh session exists."
         ),
     ]
     return {
         "installed": True,
+        "module_id": "com.netforge.bridge",
         "module_path": str(dest_pts),
         "redacted_module_path": redact_path_home(dest_pts),
         "bridge_src_dir": str(src_paths["js"].parent),
@@ -272,8 +280,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings.port = args.port
 
         configure_logging(settings.log_level, json_format=bool(getattr(args, "json_logs", False)))
+        primary_session = settings.data_dir / "bridge_session.json"
+        canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
+        mirrors = (
+            [canonical_session]
+            if canonical_session.resolve() != primary_session.resolve()
+            else None
+        )
         bridge = HttpScriptBridgeBackend(
-            HttpScriptBridgeServer(session_file=settings.data_dir / "bridge_session.json"),
+            HttpScriptBridgeServer(
+                session_file=primary_session,
+                mirror_session_files=mirrors,
+            ),
             auto_launch_pt=settings.auto_launch_packet_tracer,
             packet_tracer_path=settings.packet_tracer_path,
         )
