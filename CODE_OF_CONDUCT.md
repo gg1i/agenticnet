@@ -2,7 +2,7 @@
 
 ## Our Pledge
 
-We are committed to making participation in the **NetForge MCP** project a harassment-free, welcoming, and respectful experience for everyone, regardless of background, experience level, or identity.
+We are committed to making participation in the **AgenticNet** project a harassment-free, welcoming, and respectful experience for everyone, regardless of background, experience level, or identity.
 
 ## Expected Behavior
 

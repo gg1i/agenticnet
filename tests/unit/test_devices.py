@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.core.enums import ConfigCapability, DeviceCategory
-from netforge.core.exceptions import DeviceModelError, InterfaceError
-from netforge.devices import DEFAULT_CATALOG
+from agenticnet.core.enums import ConfigCapability, DeviceCategory
+from agenticnet.core.exceptions import DeviceModelError, InterfaceError
+from agenticnet.devices import DEFAULT_CATALOG
 
 
 @pytest.mark.unit

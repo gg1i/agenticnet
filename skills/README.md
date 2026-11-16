@@ -1,6 +1,6 @@
-# NetForge Engineering Skill Pack
+# AgenticNet Engineering Skill Pack
 
-Portable specialist skill modules (`SKILL.md`) for AI network engineers operating through **NetForge MCP** and **Cisco Packet Tracer `8.2.2+`**.
+Portable specialist skill modules (`SKILL.md`) for AI network engineers operating through **AgenticNet** and **Cisco Packet Tracer `8.2.2+`**.
 
 ## Selective Loading Guide
 
@@ -21,5 +21,5 @@ Load only the skills needed for the active task:
 ## Profile Awareness
 
 - Default `solve_lab` profile exposes **25** focused tools (`lab_*`, `project_*`, `device_*`, `connection_create`, `interface_status`, `host_configure`, `subnet_calculate`, `console_*`, `configuration_backup`, `connectivity_test`, `verify_*`, `grade_lab`, `gui_attach_ip_phone_power`).
-- `NETFORGE_TOOL_PROFILE=advanced` unlocks all **82** tools (including `vlsm_plan`, `address_*`, `topology_create`/`validate`/`analyze`/`visualize`, `configure_*`, `command_validate`, `network_diagnose`, `network_repair_*`, `simulation_*`, and `gui_*`).
+- `AGENTICNET_TOOL_PROFILE=advanced` unlocks all **82** tools (including `vlsm_plan`, `address_*`, `topology_create`/`validate`/`analyze`/`visualize`, `configure_*`, `command_validate`, `network_diagnose`, `network_repair_*`, `simulation_*`, and `gui_*`).
 - Every skill explicitly distinguishes tools available in both profiles from `advanced`-only tools.

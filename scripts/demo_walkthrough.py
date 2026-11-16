@@ -1,4 +1,4 @@
-"""NetForge MCP End-to-End Walkthrough Demonstration Script.
+"""AgenticNet End-to-End Walkthrough Demonstration Script.
 
 Runs the complete network automation workflow:
 PLAN -> DESIGN -> VALIDATE -> BUILD -> CONFIGURE -> DIAGNOSE -> VISUALIZE -> SAVE
@@ -12,17 +12,17 @@ from pathlib import Path
 # Add repo root to path for local execution
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
 
 
 def main() -> int:
     print("=" * 70)
-    print("NETFORGE MCP — LIVE AUTOMATION WALKTHROUGH")
+    print("AGENTICNET — LIVE AUTOMATION WALKTHROUGH")
     print("=" * 70)
 
     # Initialize in-memory runtime with isolated settings
-    server, runtime = create_mcp_server(NetForgeSettings.from_env())
+    server, runtime = create_mcp_server(AgenticNetSettings.from_env())
 
     # Step 1: Create or Open a Project
     import time
@@ -39,8 +39,8 @@ def main() -> int:
     # Step 2: VLSM Subnet Planning
     print("\n[2] Planning VLSM Subnets from 10.10.0.0/22...")
     _, topo, ipam, _ = runtime.manager.require_active()
-    from netforge.ipam.engine import plan_vlsm
-    from netforge.ipam.models import SubnetRequirement
+    from agenticnet.ipam.engine import plan_vlsm
+    from agenticnet.ipam.models import SubnetRequirement
 
     requirements = [
         SubnetRequirement(name="Students-VLAN10", required_hosts=120, vlan_id=10),
@@ -79,7 +79,7 @@ def main() -> int:
 
     # Step 4: Generate Validated Cisco IOS Configs
     print("\n[4] Generating Validated Cisco IOS Configuration...")
-    from netforge.ios.models import OspfConfigSpec, OspfNetworkEntry, VlanSpec
+    from agenticnet.ios.models import OspfConfigSpec, OspfNetworkEntry, VlanSpec
 
     # Configure VLANs on L3 switch
     vlans = [VlanSpec(vlan_id=10, name="Students"), VlanSpec(vlan_id=20, name="Faculty")]
@@ -121,7 +121,7 @@ def main() -> int:
     print(f"    - Backup archive: {save_info['backup_path']}")
 
     print("\n" + "=" * 70)
-    print("DEMO COMPLETE: NetForge MCP fully operational!")
+    print("DEMO COMPLETE: AgenticNet fully operational!")
     print("=" * 70)
     return 0
 

@@ -9,15 +9,15 @@ from typing import Any
 
 import pytest
 
-from netforge.core.settings import NetForgeSettings
-from netforge.gui.calibration import DEFAULT_PT_ANCHORS
-from netforge.gui.models import DialogType, GuiDialogInfo, Rect, WindowInfo
-from netforge.gui.windows_backend import (
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.gui.calibration import DEFAULT_PT_ANCHORS
+from agenticnet.gui.models import DialogType, GuiDialogInfo, Rect, WindowInfo
+from agenticnet.gui.windows_backend import (
     WindowsGuiBackend,
     _classify_dialog,
     _resolve_focus_child_hwnd,
 )
-from netforge.ios.validators import load_ios_command_sequence
+from agenticnet.ios.validators import load_ios_command_sequence
 
 
 def _sample_window_and_dialog() -> tuple[WindowInfo, GuiDialogInfo]:
@@ -81,10 +81,10 @@ def test_calibration_default_anchors_verified_pt822() -> None:
 
 @pytest.mark.unit
 def test_batch_click_and_drag_dialog_use_live_refreshed_geometry(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     win, dlg = _sample_window_and_dialog()
@@ -147,7 +147,7 @@ def test_batch_click_and_drag_dialog_use_live_refreshed_geometry(
 
 @pytest.mark.unit
 def test_batch_wait_dialog_waits_for_qt_geometry_settle(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = WindowsGuiBackend(isolated_settings)
@@ -230,10 +230,10 @@ def test_load_ios_command_sequence_device_class_safety(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_calibration_load_profile_backfills_new_anchors(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
-    from netforge.gui.calibration import CalibrationManager
-    from netforge.gui.models import AnchorBox, CalibrationProfile
+    from agenticnet.gui.calibration import CalibrationManager
+    from agenticnet.gui.models import AnchorBox, CalibrationProfile
 
     cal = CalibrationManager(isolated_settings)
     stale = CalibrationProfile(

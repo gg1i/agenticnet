@@ -2,7 +2,7 @@
 name: ip-addressing
 description: >-
   IPv4 and IPv6 CIDR subnetting, largest-first VLSM allocation, gateway and
-  DHCP range planning, and IPAM conflict validation in NetForge MCP.
+  DHCP range planning, and IPAM conflict validation in AgenticNet.
 ---
 
 # IP Addressing & VLSM Design
@@ -41,4 +41,4 @@ Produce conflict-free, deterministic addressing plans before configuring interfa
 ## 3. IPv6 Notes in Packet Tracer
 
 - `subnet_calculate` and `vlsm_plan` support IPv6 prefix calculations.
-- NetForge's `IOSGenerator` targets IPv4; if a Packet Tracer lab requires IPv6 (`ipv6 unicast-routing`, `ipv6 address ...`, OSPFv3), push verified commands via `console_execute` and validate with `show ipv6 interface brief` / `show ipv6 route`.
+- AgenticNet's `IOSGenerator` targets IPv4; if a Packet Tracer lab requires IPv6 (`ipv6 unicast-routing`, `ipv6 address ...`, OSPFv3), push verified commands via `console_execute` and validate with `show ipv6 interface brief` / `show ipv6 route`.

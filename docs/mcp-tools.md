@@ -1,10 +1,10 @@
-# NetForge MCP Tool & Capability Ecosystem
+# AgenticNet Tool & Capability Ecosystem
 
-NetForge MCP (`v0.1.0`, schema `1.0.0`) exposes **82 specialized MCP tools** (`25` enabled in default `solve_lab` profile; all `82` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
+AgenticNet (`v0.1.0`, schema `1.0.0`) exposes **82 specialized MCP tools** (`25` enabled in default `solve_lab` profile; all `82` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
 
 <!-- Generated counts and tables below are synced by scripts/generate_manifest.py -->
 
-Run `python -m netforge manifest` or read `netforge://manifest` for the live machine-readable JSON schema.
+Run `python -m agenticnet manifest` or read `agenticnet://manifest` for the live machine-readable JSON schema.
 
 ---
 
@@ -27,13 +27,13 @@ Run `python -m netforge manifest` or read `netforge://manifest` for the live mac
 
 ## 2. Resources (7)
 
-- `netforge://manifest` — Machine-readable manifest of all 82 tools, tiers, transports, and 17 supported device models.
-- `netforge://workflows/solve_lab` — Canonical closed-loop `solve_lab` workflow contract (25 default profile tools).
-- `netforge://project/current` — Active project summary and Planned vs. Executed vs. Verified state counts.
-- `netforge://project/topology` — Current normalized topology JSON export.
-- `netforge://project/ipam` — IPAM pools, allocations, and utilization JSON report.
-- `netforge://devices/catalog` — Verified Packet Tracer device profiles, physical interfaces, and capabilities.
-- `netforge://logs/recent` — Recent redacted SQLite execution audit logs.
+- `agenticnet://manifest` — Machine-readable manifest of all 82 tools, tiers, transports, and 17 supported device models.
+- `agenticnet://workflows/solve_lab` — Canonical closed-loop `solve_lab` workflow contract (25 default profile tools).
+- `agenticnet://project/current` — Active project summary and Planned vs. Executed vs. Verified state counts.
+- `agenticnet://project/topology` — Current normalized topology JSON export.
+- `agenticnet://project/ipam` — IPAM pools, allocations, and utilization JSON report.
+- `agenticnet://devices/catalog` — Verified Packet Tracer device profiles, physical interfaces, and capabilities.
+- `agenticnet://logs/recent` — Recent redacted SQLite execution audit logs.
 
 ---
 
@@ -51,6 +51,6 @@ Run `python -m netforge manifest` or read `netforge://manifest` for the live mac
 ## 4. State Level Contract (`StateLevel`)
 
 Every MCP tool returns an `OperationResult` envelope with explicit state separation:
-- `planned`: Design intent validated inside NetForge.
+- `planned`: Design intent validated inside AgenticNet.
 - `executed`: Dispatched to Packet Tracer GUI or device console.
 - `verified`: Independently confirmed via observed CLI output or simulation trace.

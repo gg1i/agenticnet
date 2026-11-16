@@ -1,4 +1,4 @@
-"""Benchmark runner skeleton for NetForge lab-solving evaluation (`offline_mock` / `live_pt`)."""
+"""Benchmark runner skeleton for AgenticNet lab-solving evaluation (`offline_mock` / `live_pt`)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from netforge.diagnostics.benchmark import (
+from agenticnet.diagnostics.benchmark import (
     LIVE_COMPARABILITY_NOTICE,
     MOCK_COMPARABILITY_NOTICE,
     BenchmarkResult,
@@ -26,10 +26,10 @@ SAMPLE_LABS = [
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct CLI parser for the NetForge lab benchmark harness."""
+    """Construct CLI parser for the AgenticNet lab benchmark harness."""
     parser = argparse.ArgumentParser(
         prog="run_benchmark",
-        description="Run NetForge lab-solving benchmarks and emit canonical JSON reports.",
+        description="Run AgenticNet lab-solving benchmarks and emit canonical JSON reports.",
     )
     parser.add_argument(
         "--lab",

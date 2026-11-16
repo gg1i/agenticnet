@@ -18,7 +18,7 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
     async def _exercise() -> None:
         async with Client(server) as client:
             assert client.server_info is not None
-            assert client.server_info.name == "netforge-mcp"
+            assert client.server_info.name == "agenticnet"
 
             tools_res = await client.list_tools()
             cap_res = await client.call_tool("device_capabilities", {"model": "2960-24TT"})
@@ -26,7 +26,7 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
             payload = json.loads(cap_res.content[0].text)
             assert payload["data"]["model"] == "2960-24TT"
 
-            manifest_res = await client.read_resource("netforge://manifest")
+            manifest_res = await client.read_resource("agenticnet://manifest")
             manifest_json = json.loads(manifest_res.contents[0].text)
             assert len(tools_res.tools) == manifest_json["tool_count"]
             assert len(tools_res.tools) == 82
@@ -42,13 +42,13 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
 
 @pytest.mark.integration
 def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
-    """Launch `python -m netforge serve --transport stdio` and verify default curated profile."""
+    """Launch `python -m agenticnet serve --transport stdio` and verify default curated profile."""
     repo_root = Path(__file__).resolve().parents[2]
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[
             "-m",
-            "netforge",
+            "agenticnet",
             "serve",
             "--transport",
             "stdio",
@@ -61,7 +61,7 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
     async def _exercise_stdio() -> None:
         async with Client(server_params) as client:
             assert client.server_info is not None
-            assert client.server_info.name == "netforge-mcp"
+            assert client.server_info.name == "agenticnet"
             tools_res = await client.list_tools()
             tool_names = {t.name for t in tools_res.tools}
             assert len(tool_names) == 25

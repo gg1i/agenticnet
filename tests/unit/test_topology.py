@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.core.enums import CableType
-from netforge.core.exceptions import InterfaceError, TopologyConflictError
-from netforge.topology import TopologyEngine
+from agenticnet.core.enums import CableType
+from agenticnet.core.exceptions import InterfaceError, TopologyConflictError
+from agenticnet.topology import TopologyEngine
 
 
 @pytest.mark.unit

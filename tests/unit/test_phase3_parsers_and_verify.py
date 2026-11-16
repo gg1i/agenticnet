@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from netforge.adapters.base import ScriptBackend
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
-from netforge.simulation.parsers import (
+from agenticnet.adapters.base import ScriptBackend
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
+from agenticnet.simulation.parsers import (
     canonicalize_interface_name,
     detect_cli_read_error,
     parse_ping_output,
@@ -323,7 +323,7 @@ def test_verify_requirements_schema_tool_and_pass_fail_error_semantics(tmp_path:
         },
     }
 
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     server, _ = create_mcp_server(settings=settings, script_backend=backend)
 
     async def _run() -> None:

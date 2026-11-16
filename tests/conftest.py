@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for NetForge MCP offline tests."""
+"""Shared pytest fixtures for AgenticNet offline tests."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
 
 
 @pytest.fixture
-def isolated_settings(tmp_path: Path) -> NetForgeSettings:
-    """Provide isolated NetForgeSettings pointing at a temporary directory."""
-    return NetForgeSettings(
+def isolated_settings(tmp_path: Path) -> AgenticNetSettings:
+    """Provide isolated AgenticNetSettings pointing at a temporary directory."""
+    return AgenticNetSettings(
         data_dir=tmp_path / ".netforge",
         db_filename="test_netforge.sqlite",
         log_level="WARNING",
@@ -24,6 +24,6 @@ def isolated_settings(tmp_path: Path) -> NetForgeSettings:
 
 
 @pytest.fixture
-def mcp_bundle(isolated_settings: NetForgeSettings):
-    """Create a fresh (MCPServer, NetForgeRuntime) pair with isolated SQLite DB."""
+def mcp_bundle(isolated_settings: AgenticNetSettings):
+    """Create a fresh (MCPServer, AgenticNetRuntime) pair with isolated SQLite DB."""
     return create_mcp_server(isolated_settings)

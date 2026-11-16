@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-command macOS/Linux installer for NetForge MCP (offline planning, IPAM, IOS & MCP server).
+# One-command macOS/Linux installer for AgenticNet (offline planning, IPAM, IOS & MCP server).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -72,11 +72,11 @@ else
   "$PY_EXE" -m pip install -e "$TARGET_SPEC"
 fi
 
-SETUP_ARGS=(-m netforge setup --client "$CLIENT" --tool-profile "$TOOL_PROFILE" --profile "$PERMISSION_PROFILE")
+SETUP_ARGS=(-m agenticnet setup --client "$CLIENT" --tool-profile "$TOOL_PROFILE" --profile "$PERMISSION_PROFILE")
 if [[ -n "$DATA_DIR" ]]; then
   SETUP_ARGS+=(--data-dir "$DATA_DIR")
 fi
 
 "$PY_EXE" "${SETUP_ARGS[@]}"
 echo ""
-"$PY_EXE" -m netforge doctor
+"$PY_EXE" -m agenticnet doctor

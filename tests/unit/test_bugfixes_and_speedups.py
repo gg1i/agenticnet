@@ -8,19 +8,19 @@ from typing import Any
 
 import pytest
 
-from netforge.adapters.base import ScriptBackend
-from netforge.adapters.router import BackendRouter, RoutedConsoleTransport
-from netforge.adapters.script_bridge import (
+from agenticnet.adapters.base import ScriptBackend
+from agenticnet.adapters.router import BackendRouter, RoutedConsoleTransport
+from agenticnet.adapters.script_bridge import (
     HttpScriptBridgeBackend,
     HttpScriptBridgeServer,
     ScriptBridgeError,
 )
-from netforge.console.engine import DeviceConsoleEngine, _compute_batch_timeout
-from netforge.core.settings import NetForgeSettings
-from netforge.diagnostics.rules import check_missing_default_gateways
-from netforge.diagnostics.verifier import LabVerifier
-from netforge.mcp.server import create_mcp_server
-from netforge.topology.engine import TopologyEngine
+from agenticnet.console.engine import DeviceConsoleEngine, _compute_batch_timeout
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.diagnostics.rules import check_missing_default_gateways
+from agenticnet.diagnostics.verifier import LabVerifier
+from agenticnet.mcp.server import create_mcp_server
+from agenticnet.topology.engine import TopologyEngine
 
 
 def _call_tool_sync(server: Any, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -135,7 +135,7 @@ class _FlakyDeviceAndLinkBackend(ScriptBackend):
 
 
 def _make_runtime_server(tmp_path: Path, backend: ScriptBackend) -> tuple[Any, Any]:
-    settings = NetForgeSettings(data_dir=tmp_path / "data", tool_profile="advanced")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data", tool_profile="advanced")
     server, runtime = create_mcp_server(settings)
     runtime.router = BackendRouter(
         script_backend=backend,
@@ -287,7 +287,7 @@ def test_parallel_batch_cli_batch_build_and_verifier_over_http_bridge(tmp_path: 
     import urllib.request
     from contextlib import suppress
 
-    from netforge.diagnostics.lab_runner import _apply_batch_build
+    from agenticnet.diagnostics.lab_runner import _apply_batch_build
 
     session_file = tmp_path / "bridge_session.json"
     bridge_server = HttpScriptBridgeServer(session_file=session_file)
@@ -463,10 +463,10 @@ def test_parallel_batch_cli_batch_build_and_verifier_over_http_bridge(tmp_path: 
 def test_windows_toolhelp_does_not_collide_across_modules() -> None:
     import platform
 
-    from netforge.adapters.discovery import list_packet_tracer_pids
+    from agenticnet.adapters.discovery import list_packet_tracer_pids
 
     if platform.system() == "Windows":
-        from netforge.gui.windows_backend import _snapshot_pt_processes
+        from agenticnet.gui.windows_backend import _snapshot_pt_processes
 
         snap = _snapshot_pt_processes()
         assert snap is None or isinstance(snap, list)
@@ -485,14 +485,14 @@ def test_core_imports_without_optional_gui_deps() -> None:
             "import sys",
             "for mod in ('psutil', 'cv2', 'numpy', 'PIL', 'PIL.Image', 'PIL.ImageGrab'):",
             "    sys.modules[mod] = None",
-            "from netforge.mcp.server import create_mcp_server",
-            "from netforge.gui.vision import compute_image_stats",
-            "from netforge.gui.windows_backend import WindowsGuiBackend",
-            "from netforge.core.exceptions import AdapterUnavailableError",
+            "from agenticnet.mcp.server import create_mcp_server",
+            "from agenticnet.gui.vision import compute_image_stats",
+            "from agenticnet.gui.windows_backend import WindowsGuiBackend",
+            "from agenticnet.core.exceptions import AdapterUnavailableError",
             "try:",
             "    compute_image_stats(None)",
             "except AdapterUnavailableError as exc:",
-            "    assert 'netforge-mcp[gui]' in str(exc.remediation)",
+            "    assert 'agenticnet[gui]' in str(exc.remediation)",
             "else:",
             "    raise AssertionError('Expected AdapterUnavailableError')",
         ]

@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from netforge.adapters.router import BackendRouter
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
+from agenticnet.adapters.router import BackendRouter
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
 
 
 class _FakeGradeScriptBackend:
@@ -110,7 +110,7 @@ def test_grade_lab_available_score_and_unmet_leaves(tmp_path: Path) -> None:
             ],
         }
     )
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     server, _ = create_mcp_server(settings=settings, script_backend=fake)
     out = _call_tool_sync(server, "grade_lab", {})
     assert out["success"] is True
@@ -149,7 +149,7 @@ def test_grade_lab_fail_closed_when_locked_or_assessment_mode(tmp_path: Path) ->
         status = router.read_activity_status()
         assert status["state"] == "unavailable"
         assert status["score"] is None
-        settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+        settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
         server, _ = create_mcp_server(settings=settings, script_backend=fake)
         out = _call_tool_sync(server, "grade_lab", {})
         data = out["data"]
@@ -169,7 +169,7 @@ def test_grade_lab_non_activity_and_offline_fallback(tmp_path: Path) -> None:
             "readable": False,
         }
     )
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     srv_live, _ = create_mcp_server(settings=settings, script_backend=fake_pkt)
     out_pkt = _call_tool_sync(srv_live, "grade_lab", {})
     assert out_pkt["data"]["state"] == "unavailable"
@@ -186,7 +186,7 @@ def test_grade_lab_non_activity_and_offline_fallback(tmp_path: Path) -> None:
 
 def test_verify_lab_task_ids_coverage_reporting(tmp_path: Path) -> None:
     fake = _FakeGradeScriptBackend({"is_activity_file": False, "state": "not_activity"})
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     server, _ = create_mcp_server(settings=settings, script_backend=fake)
 
     out = _call_tool_sync(
@@ -236,7 +236,7 @@ class _FakePowerGuiBackend:
         self.calls: list[dict[str, Any]] = []
 
     def attach_ip_phone_power(self, **kwargs: Any) -> dict[str, Any]:
-        from netforge.core.exceptions import AdapterUnavailableError
+        from agenticnet.core.exceptions import AdapterUnavailableError
 
         self.calls.append(dict(kwargs))
         if self.missing_window:
@@ -259,7 +259,7 @@ class _FakePowerGuiBackend:
 
 def test_gui_attach_ip_phone_power_dry_run_and_provenance(tmp_path: Path) -> None:
     fake_gui = _FakePowerGuiBackend()
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     server, _ = create_mcp_server(settings=settings, gui_backend=fake_gui)
     _call_tool_sync(server, "project_create", {"name": "PhoneDryRun"})
     _call_tool_sync(
@@ -293,7 +293,7 @@ def test_gui_attach_ip_phone_power_dry_run_and_provenance(tmp_path: Path) -> Non
 def test_gui_attach_ip_phone_power_fails_closed_on_missing_hwnd_or_locked_desktop(
     tmp_path: Path,
 ) -> None:
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="full")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="full")
     srv_no_win, _ = create_mcp_server(
         settings=settings, gui_backend=_FakePowerGuiBackend(missing_window=True)
     )
@@ -320,7 +320,7 @@ def test_gui_attach_ip_phone_power_fails_closed_on_missing_hwnd_or_locked_deskto
 def test_script_bridge_open_file_opcode() -> None:
     from unittest.mock import MagicMock
 
-    from netforge.adapters.script_bridge import HttpScriptBridgeBackend
+    from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend
 
     mock_server = MagicMock()
     mock_server.is_connected.return_value = True

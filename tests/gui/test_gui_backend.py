@@ -10,36 +10,36 @@ from typing import Any
 import pytest
 from PIL import Image, ImageDraw
 
-from netforge.adapters.base import GuiBackend
-from netforge.core.exceptions import (
+from agenticnet.adapters.base import GuiBackend
+from agenticnet.core.exceptions import (
     AdapterUnavailableError,
     ApprovalRequiredError,
     ValidationError,
 )
-from netforge.core.settings import NetForgeSettings
-from netforge.gui.calibration import CalibrationManager
-from netforge.gui.models import GuiDialogInfo, Rect, WindowInfo
-from netforge.gui.safety import AutomationStopError, EmergencyStopController
-from netforge.gui.vision import (
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.gui.calibration import CalibrationManager
+from agenticnet.gui.models import GuiDialogInfo, Rect, WindowInfo
+from agenticnet.gui.safety import AutomationStopError, EmergencyStopController
+from agenticnet.gui.vision import (
     compute_image_stats,
     detect_ui_regions_from_image,
     image_diff_ratio,
     match_template,
 )
-from netforge.gui.windows_backend import (
+from agenticnet.gui.windows_backend import (
     DialogType,
     WindowsGuiBackend,
     _classify_dialog,
     _parse_key_chord,
     _parse_pt_window_title,
 )
-from netforge.mcp.server import create_mcp_server
+from agenticnet.mcp.server import create_mcp_server
 
 
 class _FakeGuiBackend(GuiBackend):
     """Deterministic in-memory GUI backend verifying MCP GUI tools offline."""
 
-    def __init__(self, settings: NetForgeSettings) -> None:
+    def __init__(self, settings: AgenticNetSettings) -> None:
         self.calibration = CalibrationManager(settings)
         self.safety = EmergencyStopController()
         self.window = WindowInfo(
@@ -168,7 +168,7 @@ class _FakeGuiBackend(GuiBackend):
 
 @pytest.mark.unit
 def test_calibration_bounds_and_vision_template_matching(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     tmp_path: Path,
 ) -> None:
     cal = CalibrationManager(isolated_settings)
@@ -233,7 +233,7 @@ def test_emergency_stop_dialog_classification_and_key_chords() -> None:
 
 
 @pytest.mark.unit
-def test_mcp_gui_tools_with_fake_backend(isolated_settings: NetForgeSettings) -> None:
+def test_mcp_gui_tools_with_fake_backend(isolated_settings: AgenticNetSettings) -> None:
     fake = _FakeGuiBackend(isolated_settings)
     server, _ = create_mcp_server(isolated_settings, gui_backend=fake)
 
@@ -257,7 +257,7 @@ def test_mcp_gui_tools_with_fake_backend(isolated_settings: NetForgeSettings) ->
 
 @pytest.mark.unit
 def test_all_gui_tools_report_gui_backend_never_offline_model(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
     fake = _FakeGuiBackend(isolated_settings)
     server, _ = create_mcp_server(isolated_settings, gui_backend=fake)
@@ -291,7 +291,7 @@ def test_all_gui_tools_report_gui_backend_never_offline_model(
 
 @pytest.mark.unit
 def test_non_invasive_windows_packet_tracer_detection(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
     if platform.system() != "Windows":
         pytest.skip("Win32 detection test applies to Windows only.")
@@ -303,7 +303,7 @@ def test_non_invasive_windows_packet_tracer_detection(
 
 @pytest.mark.unit
 def test_windows_backend_rejects_tiny_boot_window_calibration(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
     tiny = {"client_rect": {"left": 0, "top": 0, "right": 1, "bottom": 1}}
     usable = {"client_rect": {"left": 0, "top": 29, "right": 1920, "bottom": 1019}}
@@ -332,7 +332,7 @@ def test_windows_backend_rejects_tiny_boot_window_calibration(
 
 @pytest.mark.unit
 def test_click_focuses_dialog_when_point_is_inside_dialog(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -368,20 +368,20 @@ def test_click_focuses_dialog_when_point_is_inside_dialog(
 def test_gui_background_mode_defaults_true_and_env_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("NETFORGE_DATA_DIR", str(tmp_path / ".nf"))
-    monkeypatch.delenv("NETFORGE_GUI_BACKGROUND", raising=False)
-    assert NetForgeSettings.from_env().gui_background_mode is True
+    monkeypatch.setenv("AGENTICNET_DATA_DIR", str(tmp_path / ".nf"))
+    monkeypatch.delenv("AGENTICNET_GUI_BACKGROUND", raising=False)
+    assert AgenticNetSettings.from_env().gui_background_mode is True
 
-    monkeypatch.setenv("NETFORGE_GUI_BACKGROUND", "false")
-    assert NetForgeSettings.from_env().gui_background_mode is False
+    monkeypatch.setenv("AGENTICNET_GUI_BACKGROUND", "false")
+    assert AgenticNetSettings.from_env().gui_background_mode is False
 
 
 @pytest.mark.unit
 def test_click_background_mode_routes_postmessage_without_focus_steal(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -422,10 +422,10 @@ def test_click_background_mode_routes_postmessage_without_focus_steal(
 
 @pytest.mark.unit
 def test_execute_batch_supports_click_dialog_and_paste_lines(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -494,13 +494,13 @@ def test_execute_batch_supports_click_dialog_and_paste_lines(
 
 @pytest.mark.unit
 def test_gui_batch_tool_calls_backend_execute_batch(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from netforge.mcp.server import create_mcp_server
+    from agenticnet.mcp.server import create_mcp_server
 
     server, runtime = create_mcp_server(isolated_settings)
-    assert server.name == "netforge-mcp"
+    assert server.name == "agenticnet"
     captured: list[dict[str, Any]] = []
 
     def _fake_batch(
@@ -553,13 +553,13 @@ def test_gui_batch_tool_calls_backend_execute_batch(
 
 @pytest.mark.unit
 def test_capture_screenshot_printwindow_background_returns_open_dialogs(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     from PIL import Image
 
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -602,7 +602,7 @@ def test_capture_window_printwindow_crops_client_rect_with_mock_gdi(
 ) -> None:
     import ctypes
 
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     class _FakeUser32:
         def GetWindowDC(self, _hwnd: int) -> int:
@@ -659,10 +659,10 @@ def test_capture_window_printwindow_crops_client_rect_with_mock_gdi(
 
 @pytest.mark.unit
 def test_ensure_usable_window_unminimizes_collapsed_pt_and_restores_focus(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     collapsed = WindowInfo(
@@ -718,10 +718,10 @@ def test_ensure_usable_window_unminimizes_collapsed_pt_and_restores_focus(
 
 @pytest.mark.unit
 def test_send_unicode_text_batches_sendinput_per_line(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     send_counts: list[int] = []
@@ -745,11 +745,11 @@ def test_send_unicode_text_batches_sendinput_per_line(
 
 @pytest.mark.unit
 def test_capture_screenshot_dialog_title_uses_dialog_printwindow(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -794,10 +794,10 @@ def test_capture_screenshot_dialog_title_uses_dialog_printwindow(
 
 @pytest.mark.unit
 def test_execute_batch_drag_and_drag_dialog_dispatch(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(
@@ -874,10 +874,10 @@ def test_execute_batch_drag_and_drag_dialog_dispatch(
 
 @pytest.mark.unit
 def test_execute_batch_paste_lines_does_not_exhaust_rate_limit(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     safety = EmergencyStopController(
         corner_failsafe=False, escape_failsafe=False, max_actions_per_minute=5
@@ -920,10 +920,10 @@ def test_execute_batch_paste_lines_does_not_exhaust_rate_limit(
 
 @pytest.mark.unit
 def test_execute_batch_dialog_normalized_coordinates(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.gui.windows_backend as wb
+    import agenticnet.gui.windows_backend as wb
 
     backend = WindowsGuiBackend(isolated_settings)
     main_win = WindowInfo(

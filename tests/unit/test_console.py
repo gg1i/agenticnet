@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.console.engine import DeviceConsoleEngine
-from netforge.console.models import CLIPromptMode
-from netforge.console.state_machine import ConsoleStateMachine, PromptDetector
-from netforge.console.transport import SimulatedConsoleTransport
-from netforge.core.enums import StateLevel
-from netforge.core.exceptions import IOSConfigError
+from agenticnet.console.engine import DeviceConsoleEngine
+from agenticnet.console.models import CLIPromptMode
+from agenticnet.console.state_machine import ConsoleStateMachine, PromptDetector
+from agenticnet.console.transport import SimulatedConsoleTransport
+from agenticnet.core.enums import StateLevel
+from agenticnet.core.exceptions import IOSConfigError
 
 
 @pytest.mark.unit

@@ -8,13 +8,13 @@ from typing import Any
 
 import pytest
 
-from netforge.adapters.base import ScriptBackend
-from netforge.adapters.router import BackendRouter
-from netforge.console.models import DeviceConsoleProfile
-from netforge.console.transport import ConsoleTransport
-from netforge.core.exceptions import AdapterUnavailableError
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
+from agenticnet.adapters.base import ScriptBackend
+from agenticnet.adapters.router import BackendRouter
+from agenticnet.console.models import DeviceConsoleProfile
+from agenticnet.console.transport import ConsoleTransport
+from agenticnet.core.exceptions import AdapterUnavailableError
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
 
 
 class _FakeScriptBackend(ScriptBackend):
@@ -168,7 +168,7 @@ def _decode(call_result: Any) -> dict[str, Any]:
 @pytest.mark.unit
 def test_migrated_live_tools_route_to_script_backend_with_provenance(tmp_path: Path) -> None:
     fake_script = _FakeScriptBackend(connected=True)
-    settings = NetForgeSettings(data_dir=tmp_path / "data", tool_profile="advanced")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data", tool_profile="advanced")
     server, _ = create_mcp_server(settings, script_backend=fake_script)
 
     async def _exercise() -> None:
@@ -261,7 +261,7 @@ def test_migrated_live_tools_route_to_script_backend_with_provenance(tmp_path: P
 @pytest.mark.unit
 def test_dry_run_never_dispatches_to_live_backends(tmp_path: Path) -> None:
     fake_script = _FakeScriptBackend(connected=True)
-    settings = NetForgeSettings(data_dir=tmp_path / "data", tool_profile="advanced")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data", tool_profile="advanced")
     server, _ = create_mcp_server(settings, script_backend=fake_script)
 
     async def _exercise() -> None:
@@ -309,7 +309,7 @@ def test_dry_run_never_dispatches_to_live_backends(tmp_path: Path) -> None:
 def test_router_falls_back_to_gui_then_offline_honestly(tmp_path: Path) -> None:
     disconnected_script = _FakeScriptBackend(connected=False)
     gui_fallback = _FakeGuiFallbackConsole()
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data")
     server, _ = create_mcp_server(
         settings,
         script_backend=disconnected_script,
@@ -405,7 +405,7 @@ def test_add_device_empty_name_retries_with_backoff_then_recovers(tmp_path: Path
             }
 
     script = _WarmingScriptBackend()
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data")
     server, runtime = create_mcp_server(settings, script_backend=script)
     runtime.router.add_device_retry_delays = (0.1, 0.2, 0.4)
     runtime.router._sleep = sleeps.append
@@ -443,7 +443,7 @@ def test_add_device_persistent_empty_name_fails_and_never_stores_empty_alias(
             return {"ok": True, "backend": "script_http", "device_name": "", "model": model}
 
     script = _AlwaysEmptyScriptBackend(connected=True)
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data")
     server, runtime = create_mcp_server(settings, script_backend=script)
     runtime.router.add_device_retry_delays = (0.1, 0.2)
     runtime.router._sleep = sleeps.append

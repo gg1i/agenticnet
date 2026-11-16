@@ -1,4 +1,4 @@
-"""Unit tests for `netforge doctor` honesty, live probes, and home/user path redaction."""
+"""Unit tests for `agenticnet doctor`, `setup`, and home/user path redaction."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from netforge import cli
-from netforge.adapters.script_bridge import HttpScriptBridgeServer
-from netforge.core.settings import NetForgeSettings
-from netforge.security.redaction import redact_path_home
+from agenticnet import cli
+from agenticnet.adapters.script_bridge import HttpScriptBridgeServer
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.security.redaction import redact_path_home
 
 
 @pytest.mark.unit
@@ -39,7 +39,7 @@ def test_doctor_reports_real_probes_without_hardcoded_phase_claims(
 ) -> None:
     data_dir = Path.home() / ".netforge_test_doctor"
     fake_pt = Path.home() / "apps" / "PacketTracer.exe"
-    settings = NetForgeSettings(data_dir=data_dir, packet_tracer_path=str(fake_pt))
+    settings = AgenticNetSettings(data_dir=data_dir, packet_tracer_path=str(fake_pt))
 
     monkeypatch.setattr(cli, "_detect_packet_tracer_binary", lambda _p: str(fake_pt))
     monkeypatch.setattr(cli, "_is_packet_tracer_running", lambda: True)
@@ -70,7 +70,7 @@ def test_doctor_reports_real_probes_without_hardcoded_phase_claims(
     if len(username) >= 2:
         assert username.lower() not in dumped.lower()
 
-    monkeypatch.setattr(cli.NetForgeSettings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(cli.AgenticNetSettings, "from_env", classmethod(lambda cls: settings))
     rc = cli.main(["doctor"])
     assert rc == 0
     stdout_text = capsys.readouterr().out
@@ -88,7 +88,7 @@ def test_doctor_probes_live_bridge_health_without_exposing_token(
     server.start()
     try:
         desc = json.loads(session_file.read_text(encoding="utf-8"))
-        settings = NetForgeSettings(data_dir=tmp_path)
+        settings = AgenticNetSettings(data_dir=tmp_path)
         monkeypatch.setattr(cli, "_detect_packet_tracer_binary", lambda _p: None)
         monkeypatch.setattr(cli, "_is_packet_tracer_running", lambda: False)
 
@@ -123,17 +123,19 @@ def test_default_data_dir_uses_localappdata_outside_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from netforge.core import settings as settings_mod
+    from agenticnet.core import settings as settings_mod
 
+    monkeypatch.delenv("AGENTICNET_DATA_DIR", raising=False)
     monkeypatch.delenv("NETFORGE_DATA_DIR", raising=False)
     monkeypatch.setattr(settings_mod, "_is_windows", lambda: True)
     fake_local = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(fake_local))
 
     resolved = settings_mod.default_data_dir()
-    assert resolved == (fake_local / "netforge").resolve()
+    assert resolved == (fake_local / "agenticnet").resolve()
     assert not resolved.is_relative_to(Path.cwd())
-    assert resolved.name == "netforge"
+    assert resolved.name == "agenticnet"
+    assert settings_mod.canonical_pt_bridge_data_dir() == (fake_local / "netforge").resolve()
 
 
 @pytest.mark.unit
@@ -143,7 +145,7 @@ def test_install_module_copies_pts_and_prints_registration_steps(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     dest = tmp_path / "netforge_data"
-    monkeypatch.setenv("NETFORGE_DATA_DIR", str(dest))
+    monkeypatch.setenv("AGENTICNET_DATA_DIR", str(dest))
 
     exit_code = cli.main(["install-module", "--dest-dir", str(dest)])
     assert exit_code == 0
@@ -236,11 +238,11 @@ def test_setup_dry_run_and_client_config_merge(
 
     merged = json.loads(ag_cfg.read_text(encoding="utf-8"))
     assert "other_tool" in merged["mcpServers"]
-    nf = merged["mcpServers"]["netforge"]
-    assert nf["args"] == ["-m", "netforge", "serve", "--transport", "stdio"]
-    assert nf["env"]["NETFORGE_TOOL_PROFILE"] == "advanced"
-    assert nf["env"]["NETFORGE_PT_PATH"] == fake_pt
-    assert nf["env"]["NETFORGE_DATA_DIR"] == str(data_dir.resolve())
+    an = merged["mcpServers"]["agenticnet"]
+    assert an["args"] == ["-m", "agenticnet", "serve", "--transport", "stdio"]
+    assert an["env"]["AGENTICNET_TOOL_PROFILE"] == "advanced"
+    assert an["env"]["AGENTICNET_PT_PATH"] == fake_pt
+    assert an["env"]["AGENTICNET_DATA_DIR"] == str(data_dir.resolve())
     assert ag_cfg.with_name("mcp_config.json.bak").is_file()
 
 
@@ -257,13 +259,13 @@ def test_setup_vscode_uses_servers_stdio_schema(
     monkeypatch.setattr(cli, "_detect_packet_tracer_binary", lambda _p: None)
     monkeypatch.setattr(cli, "canonical_pt_bridge_data_dir", lambda: tmp_path / "canon")
 
-    settings = NetForgeSettings(data_dir=tmp_path / "nf_data", tool_profile="solve_lab")
+    settings = AgenticNetSettings(data_dir=tmp_path / "nf_data", tool_profile="solve_lab")
     res = cli.run_guided_setup(settings, client="vscode", cwd=ws)
     assert res["mcp_client"]["configured"] is True
     vs_cfg = ws / ".vscode" / "mcp.json"
     assert vs_cfg.is_file()
     parsed = json.loads(vs_cfg.read_text(encoding="utf-8"))
-    assert parsed["servers"]["netforge"]["type"] == "stdio"
+    assert parsed["servers"]["agenticnet"]["type"] == "stdio"
 
 
 @pytest.mark.unit
@@ -271,7 +273,7 @@ def test_detect_packet_tracer_binary_discovers_newer_and_x86_versions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from netforge.adapters import discovery
+    from agenticnet.adapters import discovery
 
     pf = tmp_path / "ProgramFiles"
     pf86 = tmp_path / "ProgramFilesX86"

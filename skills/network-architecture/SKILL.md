@@ -21,7 +21,7 @@ Design clean, scalable, maintainable topologies matched to Packet Tracer capabil
 
 ## 2. Physical Interconnect & Cable Rules
 
-NetForge's `TopologyEngine` validates port availability and media compatibility (`connection_create` with `cable_type="auto"` resolves MDI/MDI-X automatically, or choose explicitly):
+AgenticNet's `TopologyEngine` validates port availability and media compatibility (`connection_create` with `cable_type="auto"` resolves MDI/MDI-X automatically, or choose explicitly):
 - **Straight-through (`straight_through`):** Unlike devices (Host/Router <-> Switch).
 - **Crossover (`crossover`):** Like devices (Switch <-> Switch, Router <-> Router, Router <-> Host).
 - **Serial (`serial_dce` / `serial_dte`):** Router `Serial` <-> Router `Serial` (`HWIC-2T` on `2911`/`1941`/`2811`); DCE side requires `clock rate` (e.g., `clock rate 64000`).

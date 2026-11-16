@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.console.engine import DeviceConsoleEngine
-from netforge.console.transport import SimulatedConsoleTransport
-from netforge.core.exceptions import ApprovalRequiredError
-from netforge.diagnostics.engine import DiagnosticsEngine
-from netforge.ipam.engine import IPAMEngine
-from netforge.topology.engine import TopologyEngine
+from agenticnet.console.engine import DeviceConsoleEngine
+from agenticnet.console.transport import SimulatedConsoleTransport
+from agenticnet.core.exceptions import ApprovalRequiredError
+from agenticnet.diagnostics.engine import DiagnosticsEngine
+from agenticnet.ipam.engine import IPAMEngine
+from agenticnet.topology.engine import TopologyEngine
 
 
 @pytest.mark.unit

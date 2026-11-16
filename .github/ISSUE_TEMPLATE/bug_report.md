@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a bug in NetForge MCP engines, CLI, or Packet Tracer automation
+about: Report a bug in AgenticNet MCP engines, CLI, or Packet Tracer automation
 title: "[Bug]: "
 labels: bug
 ---
@@ -8,7 +8,7 @@ labels: bug
 ## Environment
 - OS: (e.g., Windows 11 23H2)
 - Python version:
-- NetForge MCP version:
+- AgenticNet version:
 - Cisco Packet Tracer version (if applicable):
 
 ## Description

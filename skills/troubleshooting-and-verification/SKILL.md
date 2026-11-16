@@ -1,7 +1,7 @@
 ---
 name: troubleshooting-and-verification
 description: >-
-  Evidence-based 10-step network troubleshooting methodology, NetForge automated
+  Evidence-based 10-step network troubleshooting methodology, AgenticNet automated
   diagnostics, declarative verify_lab checks, and Packet Tracer root-cause
   isolation.
 ---
@@ -27,7 +27,7 @@ Diagnose network failures systematically from observed evidence and verify every
 9. **Backup and apply** (`configuration_backup` -> `console_execute` or `host_configure`, or `network_repair_propose`/`execute` in `advanced`).
 10. **Verify end-to-end** (`verify_lab`, `lab_status`, `connectivity_test`).
 
-## 2. Automated NetForge Diagnostics (`advanced` & Core Rules)
+## 2. Automated AgenticNet Diagnostics (`advanced` & Core Rules)
 
 - `DiagnosticsEngine` (`network_diagnose`, `vlan_diagnose`, `interface_diagnose` in `advanced`) checks topology/IPAM state for:
   - `INTERFACE_ADMIN_DOWN_WITH_IP` (missing `no shutdown`),

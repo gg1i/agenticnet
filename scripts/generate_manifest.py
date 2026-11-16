@@ -1,4 +1,4 @@
-"""Generate NetForge MCP `docs/manifest.json` and sync tool/resource/prompt counts in docs."""
+"""Generate AgenticNet `docs/manifest.json` and sync tool/resource/prompt counts in docs."""
 
 from __future__ import annotations
 
@@ -12,28 +12,28 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from netforge.core.settings import NetForgeSettings  # noqa: E402
-from netforge.mcp.profiles import SOLVE_LAB_TOOLS  # noqa: E402
-from netforge.mcp.server import create_mcp_server  # noqa: E402
+from agenticnet.core.settings import AgenticNetSettings  # noqa: E402
+from agenticnet.mcp.profiles import SOLVE_LAB_TOOLS  # noqa: E402
+from agenticnet.mcp.server import create_mcp_server  # noqa: E402
 
 RESOURCE_DESCRIPTIONS: dict[str, str] = {
-    "netforge://manifest": (
+    "agenticnet://manifest": (
         "Machine-readable manifest of all {tool_count} tools, tiers, transports, "
         "and {model_count} supported device models."
     ),
-    "netforge://workflows/solve_lab": (
+    "agenticnet://workflows/solve_lab": (
         "Canonical closed-loop `solve_lab` workflow contract "
         "({solve_lab_count} default profile tools)."
     ),
-    "netforge://project/current": (
+    "agenticnet://project/current": (
         "Active project summary and Planned vs. Executed vs. Verified state counts."
     ),
-    "netforge://project/topology": "Current normalized topology JSON export.",
-    "netforge://project/ipam": "IPAM pools, allocations, and utilization JSON report.",
-    "netforge://devices/catalog": (
+    "agenticnet://project/topology": "Current normalized topology JSON export.",
+    "agenticnet://project/ipam": "IPAM pools, allocations, and utilization JSON report.",
+    "agenticnet://devices/catalog": (
         "Verified Packet Tracer device profiles, physical interfaces, and capabilities."
     ),
-    "netforge://logs/recent": "Recent redacted SQLite execution audit logs.",
+    "agenticnet://logs/recent": "Recent redacted SQLite execution audit logs.",
 }
 
 PROMPT_DESCRIPTIONS: dict[str, str] = {
@@ -78,9 +78,9 @@ def _render_mcp_tools_doc(manifest: dict[str, Any], solve_lab_count: int) -> str
         by_cat.setdefault(str(entry["category"]), []).append(entry)
 
     lines: list[str] = [
-        "# NetForge MCP Tool & Capability Ecosystem",
+        "# AgenticNet Tool & Capability Ecosystem",
         "",
-        f"NetForge MCP (`v{manifest['version']}`, schema `{manifest['schema_version']}`) exposes "
+        f"AgenticNet (`v{manifest['version']}`, schema `{manifest['schema_version']}`) exposes "
         f"**{tool_count} specialized MCP tools** (`{solve_lab_count}` enabled in default "
         f"`solve_lab` profile; all `{tool_count}` in `advanced` profile) organized across "
         f"{cat_count} functional categories, **{resource_count} read-only resources**, and "
@@ -89,7 +89,7 @@ def _render_mcp_tools_doc(manifest: dict[str, Any], solve_lab_count: int) -> str
         "<!-- Generated counts and tables below are synced by scripts/generate_manifest.py -->",
         "",
         (
-            "Run `python -m netforge manifest` or read `netforge://manifest` "
+            "Run `python -m agenticnet manifest` or read `agenticnet://manifest` "
             "for the live machine-readable JSON schema."
         ),
         "",
@@ -113,7 +113,7 @@ def _render_mcp_tools_doc(manifest: dict[str, Any], solve_lab_count: int) -> str
 
     lines.extend(["", "---", "", f"## 2. Resources ({resource_count})", ""])
     for uri in resources:
-        desc_tpl = RESOURCE_DESCRIPTIONS.get(uri, "Read-only NetForge resource.")
+        desc_tpl = RESOURCE_DESCRIPTIONS.get(uri, "Read-only AgenticNet resource.")
         desc = desc_tpl.format(
             tool_count=tool_count,
             model_count=model_count,
@@ -123,7 +123,7 @@ def _render_mcp_tools_doc(manifest: dict[str, Any], solve_lab_count: int) -> str
 
     lines.extend(["", "---", "", f"## 3. Workflow Prompts ({prompt_count})", ""])
     for pname in prompts:
-        pdesc = PROMPT_DESCRIPTIONS.get(pname, "Guided NetForge workflow prompt.")
+        pdesc = PROMPT_DESCRIPTIONS.get(pname, "Guided AgenticNet workflow prompt.")
         lines.append(f"- `{pname}` — {pdesc}")
 
     lines.extend(
@@ -134,7 +134,7 @@ def _render_mcp_tools_doc(manifest: dict[str, Any], solve_lab_count: int) -> str
             "## 4. State Level Contract (`StateLevel`)",
             "",
             "Every MCP tool returns an `OperationResult` envelope with explicit state separation:",
-            "- `planned`: Design intent validated inside NetForge.",
+            "- `planned`: Design intent validated inside AgenticNet.",
             "- `executed`: Dispatched to Packet Tracer GUI or device console.",
             "- `verified`: Independently confirmed via observed CLI output or simulation trace.",
             "",
@@ -220,7 +220,7 @@ def _sync_architecture(arch_path: Path, manifest: dict[str, Any], solve_lab_coun
 def main() -> int:
     output = Path(sys.argv[1]) if len(sys.argv) > 1 else (REPO_ROOT / "docs" / "manifest.json")
     sync_docs = len(sys.argv) == 1
-    settings = NetForgeSettings.from_env()
+    settings = AgenticNetSettings.from_env()
     settings.tool_profile = "advanced"
     _, runtime = create_mcp_server(settings)
     manifest = runtime.build_manifest()
@@ -228,7 +228,7 @@ def main() -> int:
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"Wrote NetForge MCP manifest to {output}")
+    print(f"Wrote AgenticNet MCP manifest to {output}")
 
     if sync_docs:
         mcp_tools_path = REPO_ROOT / "docs" / "mcp-tools.md"

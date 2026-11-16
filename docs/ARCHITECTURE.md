@@ -1,6 +1,6 @@
-# NetForge MCP — Architecture Overview
+# AgenticNet — Architecture Overview
 
-NetForge MCP pairs a **cross-platform network engineering core** (topology modeling, VLSM/CIDR IPAM, Cisco IOS generation & validation, diagnostics, and SQLite state management) with an **authenticated local Cisco Packet Tracer Script Bridge** and optional Windows GUI fallback.
+AgenticNet pairs a **cross-platform network engineering core** (topology modeling, VLSM/CIDR IPAM, Cisco IOS generation & validation, diagnostics, and SQLite state management) with an **authenticated local Cisco Packet Tracer Script Bridge** and optional Windows GUI fallback.
 
 <!-- BEGIN MANIFEST COUNTS -->
 > **Current Live Registry Counts (`docs/manifest.json`):** `82` registered tools (`advanced` profile) / `25` default (`solve_lab` profile), `7` resources, `6` prompts, `17` device models.
@@ -16,7 +16,7 @@ NetForge MCP pairs a **cross-platform network engineering core** (topology model
 +------------------------------------+------------------------------------+
                                      | stdio / Streamable HTTP
 +------------------------------------v------------------------------------+
-|                     NetForge MCP Server (MCPServer)                     |
+|                     AgenticNet MCP Server (MCPServer)                   |
 |  Tool Profiles (solve_lab / advanced) + Permission Tiers + Redaction    |
 +-------------+--------------------------------------------+--------------+
               |                                            |
@@ -52,11 +52,11 @@ NetForge MCP pairs a **cross-platform network engineering core** (topology model
    - `verified`: Confirmed by observed live CLI output (`show` / `ping`) or `.pka` activity state.
 2. **Backend Provenance:** Every `OperationResult` identifies which backend executed the operation (`offline_model`, `script_backend`, `gui_backend`, or `hybrid`).
 3. **Closed-Loop Lab Execution (`LabRunner`, `LabVerifier`, `ActivityGrader`):**
-   - `lab_start`: Detects whether input is a `.pkt`/`.pka` file, text/PDF spec, or freeform prompt, drafts a concise plan before mutating Packet Tracer, tracks step-by-step snapshots (`lab_snapshot`), computes diffs (`lab_diff`), and saves copy-on-write `*_netforge.pkt` files.
+   - `lab_start`: Detects whether input is a `.pkt`/`.pka` file, text/PDF spec, or freeform prompt, drafts a concise plan before mutating Packet Tracer, tracks step-by-step snapshots (`lab_snapshot`), computes diffs (`lab_diff`), and saves copy-on-write `*_agenticnet.pkt` files.
    - `verify_lab` & `lab_status`: Executes multi-device CLI checks and ICMP pings in parallel where safe, parses structured outputs, redacts secrets, and reports remaining unmet requirements honestly.
    - `grade_lab`: Reads Packet Tracer's native `.pka` completion tree (`ActivityFile`) read-only when available, cleanly degrading to `verify_lab` when grading reads are unavailable or locked.
 4. **Loopback-Only Security Boundary:**
-   - The HTTP Script Bridge binds strictly to `127.0.0.1` (`localhost`), enforces a per-session CSPRNG `X-NetForge-Token` header and origin/content-type checks, and uses allowlisted typed operations rather than unconstrained dynamic code evaluation (`eval` / `new Function`).
+   - The HTTP Script Bridge binds strictly to `127.0.0.1` (`localhost`), enforces a per-session CSPRNG `X-AgenticNet-Token` (and legacy `X-NetForge-Token`) header and origin/content-type checks, and uses allowlisted typed operations rather than unconstrained dynamic code evaluation (`eval` / `new Function`).
    - Five permission tiers (`read_only`, `planning`, `configuration`, `gui_control`, `destructive`), confirmation gates, audit logging, and secret scrubbing protect local environments.
 
 ---
@@ -64,7 +64,7 @@ NetForge MCP pairs a **cross-platform network engineering core** (topology model
 ## 3. Package Layout
 
 ```text
-netforge/
+agenticnet/
 ├── core/         # StateLevel, OperationResult, exceptions, settings, logging
 ├── security/     # Permission tiers, confirmation gates, path safety, secret redaction
 ├── devices/      # Verified Packet Tracer device catalog & port normalization (17 models)
@@ -78,12 +78,13 @@ netforge/
 ├── simulation/   # Simulation/realtime controls, PDU specs, show/ping/ephone CLI parsers
 ├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
 └── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts
+netforge/         # Legacy Python/CLI compatibility shim redirecting cleanly to agenticnet
 ```
 
 ---
 
 ## 4. Acknowledgements & Prior Art
 
-NetForge MCP's clean-room companion `.pts` bridge architecture acknowledges earlier open-source Packet Tracer MCP pioneering work:
+AgenticNet's clean-room companion `.pts` bridge architecture acknowledges earlier open-source Packet Tracer MCP pioneering work:
 - **`Mats2208/MCP-Packet-Tracer`** (**MIT License**) for demonstrating companion `.pts` Script Module + `127.0.0.1` HTTP bridging with Packet Tracer.
 - **`kiskander/pt-mcp-server`** (**BSD-2-Clause License**) as prior-art inspiration for broad Packet Tracer IPC object coverage.

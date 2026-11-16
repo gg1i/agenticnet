@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    One-command Windows installer for NetForge MCP.
+    One-command Windows installer for AgenticNet.
 .DESCRIPTION
-    Creates/reuses a local .venv (unless -SystemPython is specified), installs NetForge MCP,
+    Creates/reuses a local .venv (unless -SystemPython is specified), installs AgenticNet,
     copies the Packet Tracer bridge module, optionally configures your MCP client JSON, and
-    runs `netforge doctor`.
+    runs `agenticnet doctor`.
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 .EXAMPLE
@@ -81,7 +81,7 @@ try {
     if ($WithDev) { $extras += "dev" }
     $targetSpec = if ($extras.Count -gt 0) { ".[$($extras -join ',')]" } else { "." }
 
-    Write-Host "Installing NetForge MCP ($targetSpec) using $pyExe ..."
+    Write-Host "Installing AgenticNet ($targetSpec) using $pyExe ..."
     if ($NoEditable) {
         & $pyExe -m pip install $targetSpec
     } else {
@@ -90,7 +90,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "pip install failed." }
 
     $setupArgs = @(
-        "-m", "netforge", "setup",
+        "-m", "agenticnet", "setup",
         "--client", $Client,
         "--tool-profile", $ToolProfile,
         "--profile", $PermissionProfile
@@ -101,11 +101,11 @@ try {
 
     Write-Host ""
     & $pyExe @setupArgs
-    if ($LASTEXITCODE -ne 0) { throw "netforge setup failed." }
+    if ($LASTEXITCODE -ne 0) { throw "agenticnet setup failed." }
 
     Write-Host ""
-    Write-Host "Running environment check (netforge doctor)..."
-    & $pyExe -m netforge doctor
+    Write-Host "Running environment check (agenticnet doctor)..."
+    & $pyExe -m agenticnet doctor
 } finally {
     Pop-Location
 }

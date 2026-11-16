@@ -6,8 +6,8 @@ import ipaddress
 
 import pytest
 
-from netforge.core.exceptions import IPAMConflictError
-from netforge.ipam import IPAMEngine, SubnetRequirement, calculate_subnet, plan_vlsm
+from agenticnet.core.exceptions import IPAMConflictError
+from agenticnet.ipam import IPAMEngine, SubnetRequirement, calculate_subnet, plan_vlsm
 
 
 @pytest.mark.unit

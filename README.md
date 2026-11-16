@@ -1,10 +1,10 @@
-# NetForge MCP
+# AgenticNet
 
-**AI-Native Network Automation & Live Cisco Packet Tracer MCP Server**
+*Agentic Networking Platform* — **"Networks. Understood. Engineered. Automated."**
 
-NetForge MCP connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Google Antigravity, and any MCP client) directly to **Cisco Packet Tracer `8.2.2+`** and a cross-platform network engineering engine so your AI can plan subnets, build topologies, push verified Cisco IOS configs, test live pings, grade `.pka` activities, and diagnose broken labs without overwriting your original `.pkt`/`.pka` files.
+An open-source agentic networking platform (**current development focus: Cisco Packet Tracer `8.2.2+`**). AgenticNet connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Google Antigravity, and any MCP client) directly to **Cisco Packet Tracer `8.2.2+`** and a cross-platform network engineering engine so your AI can plan subnets, build topologies, push verified Cisco IOS configs, test live pings, grade `.pka` activities, and diagnose broken labs without overwriting your original `.pkt`/`.pka` files.
 
-> **Independent Community Project:** NetForge MCP is an open-source MIT project and is **not affiliated with, sponsored by, or endorsed by Cisco Systems, Inc.** Cisco Packet Tracer is a trademark of Cisco Systems, Inc. This repository contains no Cisco binaries or copyrighted lab files.
+> **Independent Community Project:** AgenticNet is an open-source MIT project and is **not affiliated with, sponsored by, or endorsed by Cisco Systems, Inc.** Cisco Packet Tracer is a trademark of Cisco Systems, Inc. This repository contains no Cisco binaries or copyrighted lab files.
 
 ---
 
@@ -17,13 +17,13 @@ NetForge MCP connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Go
 
 ---
 
-## Why NetForge MCP?
+## Why AgenticNet?
 
-- **One-Command Live Lab Workflow (`lab_start` / `start_lab`):** Give your AI a `.pkt`/`.pka` file, PDF/Markdown lab brief, or plain-English description. NetForge drafts a concise plan for your confirmation first, builds and configures the lab live in Packet Tracer, narrates progress, and verifies every step.
-- **Native Packet Tracer Script Bridge:** Uses an authenticated `127.0.0.1` HTTP bridge inside Packet Tracer (`com.netforge.bridge`) for reliable `add_device`, `create_link`, `configure_host`, `batch_ops`, `HWIC-2T` module attachment, `7960` IP phone powering, IOS CLI execution, and `.pkt`/`.pka` open/save (desktop mouse/keyboard GUI automation stays fallback-only).
-- **Non-Destructive Copy-on-Write + Diffs:** Original `.pkt`/`.pka` files stay untouched by default (`*_netforge.pkt`), with before/after snapshots (`lab_snapshot`) and readable change summaries (`lab_diff`).
+- **One-Command Live Lab Workflow (`lab_start` / `start_lab`):** Give your AI a `.pkt`/`.pka` file, PDF/Markdown lab brief, or plain-English description. AgenticNet drafts a concise plan for your confirmation first, builds and configures the lab live in Packet Tracer, narrates progress, and verifies every step.
+- **Native Packet Tracer Script Bridge:** Uses an authenticated `127.0.0.1` HTTP bridge inside Packet Tracer (`com.netforge.bridge`, shipped as `netforge_bridge.pts`) for reliable `add_device`, `create_link`, `configure_host`, `batch_ops`, `HWIC-2T` module attachment, `7960` IP phone powering, IOS CLI execution, and `.pkt`/`.pka` open/save (desktop mouse/keyboard GUI automation stays fallback-only).
+- **Non-Destructive Copy-on-Write + Diffs:** Original `.pkt`/`.pka` files stay untouched by default (`*_agenticnet.pkt`), with before/after snapshots (`lab_snapshot`) and readable change summaries (`lab_diff`).
 - **Evidence-First Verification (`planned` vs. `executed` vs. `verified`):** Never claims success without proof — `verify_lab` and `lab_status` inspect real `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and live `ping` outputs.
-- **Clean Default Profile + Power-User Mode:** Exposes **25** focused tools in the default `solve_lab` profile (reducing prompt clutter for agents) or all **82** engineering, IPAM, IOS, simulation, and GUI tools via `NETFORGE_TOOL_PROFILE=advanced`.
+- **Clean Default Profile + Power-User Mode:** Exposes **25** focused tools in the default `solve_lab` profile (reducing prompt clutter for agents) or all **82** engineering, IPAM, IOS, simulation, and GUI tools via `AGENTICNET_TOOL_PROFILE=advanced`.
 
 > **Platform Support:** Planning, VLSM IPAM, IOS generation/validation, SQLite persistence, and all unit/protocol tests run natively on **Windows, Linux, and macOS**. Live Cisco Packet Tracer automation runs on **Windows 10/11 + Cisco Packet Tracer 8.2.2+** on an unlocked interactive desktop session.
 
@@ -36,8 +36,8 @@ Requires **Python 3.11+**.
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/gg1i/netforge-mcp.git
-cd netforge-mcp
+git clone https://github.com/gg1i/agenticnet.git
+cd agenticnet
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -WithGui -Client antigravity
 ```
 
@@ -46,8 +46,8 @@ Supported `-Client` values: `antigravity`, `claude`, `cursor`, `vscode`, or `non
 ### macOS / Linux (Offline Planning, IPAM & IOS Core)
 
 ```bash
-git clone https://github.com/gg1i/netforge-mcp.git
-cd netforge-mcp
+git clone https://github.com/gg1i/agenticnet.git
+cd agenticnet
 bash scripts/install.sh --client claude
 ```
 
@@ -55,14 +55,14 @@ bash scripts/install.sh --client claude
 
 ```bash
 pip install .            # or pip install ".[gui]" on Windows for GUI fallback
-netforge-mcp setup       # installs netforge_bridge.pts + prints ready-to-paste MCP config
-netforge-mcp doctor      # checks Python, PT, and script bridge status
+agenticnet setup         # installs netforge_bridge.pts + prints ready-to-paste MCP config
+agenticnet doctor        # checks Python, PT, and script bridge status
 ```
 
 ### One-Time Packet Tracer Bridge Registration (Windows, `8.2.2+`)
 
 1. Open **Cisco Packet Tracer** -> **Extensions -> Scripting -> Configure PT Script Modules...**
-2. Click **Add** and select `%LOCALAPPDATA%\netforge\netforge_bridge.pts` (already copied by `setup`).
+2. Click **Add** and select `%LOCALAPPDATA%\netforge\netforge_bridge.pts` (mirrored automatically by `setup` so the compiled `com.netforge.bridge` module discovers `bridge_session.json` seamlessly).
 3. Check **On Startup**, click **Save**, accept the one-time script privilege prompt, and restart Packet Tracer.
 
 > **Physical-Tab Fallback Note:** Standard topology, cabling, IOS CLI, host IP, `7960` power via script bridge, `.pka` grading, and verification require **no** mouse input. Only Physical-tab mouse-drag fallback actions (`gui_*` in `advanced` mode, plus `gui_attach_ip_phone_power` — *experimental: not yet validated by the 5-attempt live protocol*) require an unlocked interactive Windows desktop session.
@@ -73,20 +73,20 @@ See [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json)
 
 ```bash
 # Default stdio transport
-netforge-mcp serve --transport stdio
+agenticnet serve --transport stdio
 
 # Local Streamable HTTP transport
-netforge-mcp serve --transport streamable-http --host 127.0.0.1 --port 8765
+agenticnet serve --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
 ---
 
 ## Features & Architecture
 
-NetForge exposes **82 MCP tools (25 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **17 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
+AgenticNet exposes **82 MCP tools (25 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **17 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
 
 ```text
-netforge/
+agenticnet/
 ├── core/         # State separation (planned/executed/verified), OperationResult, settings
 ├── security/     # 5-tier permission enforcement, confirmation gates, secret redaction
 ├── devices/      # Verified Packet Tracer device catalog & interface normalization (17 models)
@@ -100,22 +100,25 @@ netforge/
 ├── simulation/   # Simulation/realtime controls, PDU specs, show/ping/ephone CLI parsers
 ├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
 └── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts, manifest
+netforge/         # Legacy Python/CLI compatibility shim redirecting cleanly to agenticnet
 ```
 
 ---
 
-## Environment Variables
+## Environment Variables & Compatibility
+
+All `AGENTICNET_*` variables fall back to legacy `NETFORGE_*` names so existing configurations continue working seamlessly. Legacy CLI commands (`netforge`, `netforge-mcp`) and Python imports (`import netforge`) remain supported.
 
 | Variable | Default | Description |
 |---|---|---|
-| `NETFORGE_TOOL_PROFILE` | `solve_lab` | `solve_lab` (`25` focused lab tools) or `advanced` (all `82` tools) |
-| `NETFORGE_PERMISSION_PROFILE` | `standard` | One of `read-only`, `planning`, `configuration`, `standard` |
-| `NETFORGE_REQUIRE_CONFIRM` | `true` | Require explicit `confirm=True` for destructive actions |
-| `NETFORGE_DATA_DIR` | `%LOCALAPPDATA%\netforge` (Win) / `~/.netforge` | Directory storing SQLite DB, backups, and bridge runtime files |
-| `NETFORGE_DB_NAME` | `netforge.sqlite` | SQLite database filename |
-| `NETFORGE_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `NETFORGE_TRANSPORT` | `stdio` | Transport (`stdio`, `streamable-http`, `sse`) |
-| `NETFORGE_PT_PATH` | *(auto-detect)* | Explicit path to `PacketTracer.exe` |
+| `AGENTICNET_TOOL_PROFILE` | `solve_lab` | `solve_lab` (`25` focused lab tools) or `advanced` (all `82` tools) |
+| `AGENTICNET_PERMISSION_PROFILE` | `standard` | One of `read-only`, `planning`, `configuration`, `standard` |
+| `AGENTICNET_REQUIRE_CONFIRM` | `true` | Require explicit `confirm=True` for destructive actions |
+| `AGENTICNET_DATA_DIR` | `%LOCALAPPDATA%\agenticnet` (Win) / `~/.local/share/agenticnet` | Directory storing SQLite DB and backups (mirrors `bridge_session.json` to `%LOCALAPPDATA%\netforge` for `.pts` discovery) |
+| `AGENTICNET_DB_NAME` | `agenticnet.sqlite` | SQLite database filename |
+| `AGENTICNET_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `AGENTICNET_TRANSPORT` | `stdio` | Transport (`stdio`, `streamable-http`, `sse`) |
+| `AGENTICNET_PT_PATH` | *(auto-detect)* | Explicit path to `PacketTracer.exe` |
 
 ---
 
@@ -150,7 +153,7 @@ All unit and MCP protocol tests run completely offline with no Packet Tracer ins
 ```bash
 pip install -e .[dev]
 pytest
-ruff check netforge tests
+ruff check agenticnet netforge tests scripts
 ```
 
 See [Contributing](CONTRIBUTING.md) and [Security Policy](SECURITY.md) for guidelines.
@@ -159,7 +162,7 @@ See [Contributing](CONTRIBUTING.md) and [Security Policy](SECURITY.md) for guide
 
 ## Acknowledgements
 
-NetForge's clean-room companion `.pts` Script Module architecture acknowledges prior open-source Packet Tracer MCP projects:
+AgenticNet's clean-room companion `.pts` Script Module architecture acknowledges prior open-source Packet Tracer MCP projects:
 - [`Mats2208/MCP-Packet-Tracer`](https://github.com/Mats2208/MCP-Packet-Tracer) (MIT) — Pioneered the companion `.pts` Script Module + `127.0.0.1` HTTP bridge pattern.
 - [`kiskander/pt-mcp-server`](https://github.com/kiskander/pt-mcp-server) (BSD-2-Clause) — Prior-art reference for broad Packet Tracer IPC coverage.
 

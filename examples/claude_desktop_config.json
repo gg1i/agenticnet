@@ -1,15 +1,15 @@
 {
   "mcpServers": {
-    "netforge": {
-      "command": "netforge-mcp",
+    "agenticnet": {
+      "command": "agenticnet",
       "args": [
         "serve",
         "--transport",
         "stdio"
       ],
       "env": {
-        "NETFORGE_PERMISSION_PROFILE": "standard",
-        "NETFORGE_REQUIRE_CONFIRM": "true"
+        "AGENTICNET_PERMISSION_PROFILE": "standard",
+        "AGENTICNET_REQUIRE_CONFIRM": "true"
       }
     }
   }

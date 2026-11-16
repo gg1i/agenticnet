@@ -11,19 +11,19 @@ from typing import Any
 
 import pytest
 
-from netforge.adapters.base import ScriptBackend
-from netforge.adapters.router import BackendRouter
-from netforge.core.exceptions import AdapterUnavailableError
-from netforge.core.settings import NetForgeSettings
-from netforge.diagnostics.benchmark import (
+from agenticnet.adapters.base import ScriptBackend
+from agenticnet.adapters.router import BackendRouter
+from agenticnet.core.exceptions import AdapterUnavailableError
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.diagnostics.benchmark import (
     BenchmarkResult,
     evaluate_benchmark_with_reference,
     extract_agent_lab_brief,
     load_reference_spec,
     run_offline_mock_benchmark,
 )
-from netforge.mcp.profiles import RAW_GUI_INPUT_TOOLS, SOLVE_LAB_TOOLS, resolve_tool_profile
-from netforge.mcp.server import create_mcp_server
+from agenticnet.mcp.profiles import RAW_GUI_INPUT_TOOLS, SOLVE_LAB_TOOLS, resolve_tool_profile
+from agenticnet.mcp.server import create_mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_LAB_IDS = ("01_static_routing", "02_vlan_dhcp", "03_small_voice")
@@ -278,14 +278,14 @@ def test_default_solve_lab_excludes_raw_gui_and_keeps_purpose_built_actions(tmp_
     assert SOLVE_LAB_TOOLS.isdisjoint(RAW_GUI_INPUT_TOOLS)
     assert "gui_attach_ip_phone_power" in SOLVE_LAB_TOOLS
 
-    default_srv, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_def"))
+    default_srv, _ = create_mcp_server(AgenticNetSettings(data_dir=tmp_path / ".nf_def"))
     default_tools = {t.name for t in asyncio.run(default_srv.list_tools())}
     assert default_tools.isdisjoint(raw_input_and_screenshot_tools)
     assert "gui_attach_ip_phone_power" in default_tools
 
     # Explicit opt-in to advanced exposes raw GUI input & screenshot tools
     adv_srv, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_adv", tool_profile="advanced")
+        AgenticNetSettings(data_dir=tmp_path / ".nf_adv", tool_profile="advanced")
     )
     adv_tools = {t.name for t in asyncio.run(adv_srv.list_tools())}
     assert raw_input_and_screenshot_tools <= adv_tools
@@ -293,7 +293,7 @@ def test_default_solve_lab_excludes_raw_gui_and_keeps_purpose_built_actions(tmp_
 
 @pytest.mark.unit
 def test_solve_lab_prompt_and_resource_treat_lab_text_as_untrusted_data(tmp_path: Path) -> None:
-    srv, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_prompt"))
+    srv, _ = create_mcp_server(AgenticNetSettings(data_dir=tmp_path / ".nf_prompt"))
 
     prompt_res = asyncio.run(srv.get_prompt("solve_lab", arguments={}))
     prompt_text = str(prompt_res.messages[0].content.text).lower()
@@ -302,7 +302,7 @@ def test_solve_lab_prompt_and_resource_treat_lab_text_as_untrusted_data(tmp_path
     assert "override tool policy" in prompt_text
     assert "permission tiers" in prompt_text
 
-    res_chunks = asyncio.run(srv.read_resource("netforge://workflows/solve_lab"))
+    res_chunks = asyncio.run(srv.read_resource("agenticnet://workflows/solve_lab"))
     res_text = "".join(str(getattr(c, "content", c)) for c in res_chunks).lower()
     assert "untrusted data" in res_text
     assert "never as commands" in res_text
@@ -322,7 +322,7 @@ def test_benchmark_isolation_doc_and_experimental_gui_phone_marker(tmp_path: Pat
     readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8").lower()
     assert "experimental: not yet validated by the 5-attempt live protocol" in readme_text
 
-    srv, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_exp"))
+    srv, _ = create_mcp_server(AgenticNetSettings(data_dir=tmp_path / ".nf_exp"))
     tools = {t.name: t for t in asyncio.run(srv.list_tools())}
     desc = (tools["gui_attach_ip_phone_power"].description or "").lower()
     assert "experimental: not yet validated by the 5-attempt live protocol" in desc
@@ -330,7 +330,7 @@ def test_benchmark_isolation_doc_and_experimental_gui_phone_marker(tmp_path: Pat
 
 @pytest.mark.unit
 def test_every_default_profile_and_prompt_tool_is_registered(tmp_path: Path) -> None:
-    srv, runtime = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_strict_reg"))
+    srv, runtime = create_mcp_server(AgenticNetSettings(data_dir=tmp_path / ".nf_strict_reg"))
     registered_tools = {t.name for t in asyncio.run(srv.list_tools())}
 
     # 1. Every tool in resolve_tool_profile("solve_lab") must be registered
@@ -352,7 +352,7 @@ def test_every_default_profile_and_prompt_tool_is_registered(tmp_path: Path) -> 
 
 @pytest.mark.unit
 def test_readme_and_docs_counts_match_manifest(tmp_path: Path) -> None:
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf_manifest", tool_profile="advanced")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf_manifest", tool_profile="advanced")
     _, runtime = create_mcp_server(settings=settings)
     manifest = runtime.build_manifest()
 
@@ -407,21 +407,21 @@ def test_non_interactive_session_refuses_launch_and_graceful_close_first(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import netforge.adapters.discovery as disc
-    from netforge.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
-    from netforge.diagnostics.benchmark import run_live_pt_benchmark
-    from netforge.gui.windows_backend import WindowsGuiBackend
+    import agenticnet.adapters.discovery as disc
+    from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
+    from agenticnet.diagnostics.benchmark import run_live_pt_benchmark
+    from agenticnet.gui.windows_backend import WindowsGuiBackend
 
     # 1. Explicit env refusal
-    monkeypatch.delenv("NETFORGE_ALLOW_NON_INTERACTIVE_LAUNCH", raising=False)
-    monkeypatch.setenv("NETFORGE_NON_INTERACTIVE", "1")
+    monkeypatch.delenv("AGENTICNET_ALLOW_NON_INTERACTIVE_LAUNCH", raising=False)
+    monkeypatch.setenv("AGENTICNET_NON_INTERACTIVE", "1")
     assert disc.is_interactive_desktop() is False
     with pytest.raises(AdapterUnavailableError) as env_exc:
         disc.require_interactive_desktop_for_launch("test_env")
     assert env_exc.value.error_code == "NON_INTERACTIVE_SESSION"
 
     # 2. Windows isolated desktop (e.g. WinSta0\exebox-*) refusal
-    monkeypatch.delenv("NETFORGE_NON_INTERACTIVE", raising=False)
+    monkeypatch.delenv("AGENTICNET_NON_INTERACTIVE", raising=False)
     monkeypatch.setattr(disc.platform, "system", lambda: "Windows")
 
     class _FakeKernel32:
@@ -450,16 +450,16 @@ def test_non_interactive_session_refuses_launch_and_graceful_close_first(
     # Ensure subprocess.Popen is never called when launchers refuse
     popen_calls: list[Any] = []
     monkeypatch.setattr(
-        "netforge.adapters.script_bridge.subprocess.Popen",
+        "agenticnet.adapters.script_bridge.subprocess.Popen",
         lambda *a, **kw: popen_calls.append((a, kw)),
     )
     monkeypatch.setattr(
-        "netforge.gui.windows_backend.subprocess.Popen",
+        "agenticnet.gui.windows_backend.subprocess.Popen",
         lambda *a, **kw: popen_calls.append((a, kw)),
     )
 
     # 3. WindowsGuiBackend.launch_application refuses
-    gui = WindowsGuiBackend(NetForgeSettings(data_dir=tmp_path / ".nf_gui"))
+    gui = WindowsGuiBackend(AgenticNetSettings(data_dir=tmp_path / ".nf_gui"))
     monkeypatch.setattr(gui, "_require_windows", lambda: None)
     with pytest.raises(AdapterUnavailableError) as gui_exc:
         gui.launch_application(wait_seconds=1.0)
@@ -467,7 +467,7 @@ def test_non_interactive_session_refuses_launch_and_graceful_close_first(
 
     # 4. MCP tool packet_tracer_launch refuses with NON_INTERACTIVE_SESSION
     srv, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_mcp", tool_profile="advanced"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf_mcp", tool_profile="advanced"),
         gui_backend=gui,
     )
     mcp_out = asyncio.run(srv.call_tool("packet_tracer_launch", {}))
@@ -482,7 +482,7 @@ def test_non_interactive_session_refuses_launch_and_graceful_close_first(
     srv_bridge.start()
     try:
         monkeypatch.setattr(
-            "netforge.adapters.script_bridge.detect_packet_tracer_binary",
+            "agenticnet.adapters.script_bridge.detect_packet_tracer_binary",
             lambda _p=None: "C:\\Program Files\\Cisco Packet Tracer 8.2.2\\bin\\PacketTracer.exe",
         )
         with pytest.raises(AdapterUnavailableError) as br_exc:
@@ -604,10 +604,10 @@ def _extract_top_level_js_function_bodies(js_source: str) -> dict[str, str]:
 
 @pytest.mark.unit
 def test_netforge_bridge_js_failsafe_invariants_and_heartbeat(tmp_path: Path) -> None:
-    from netforge.adapters.script_bridge import HttpScriptBridgeServer
+    from agenticnet.adapters.script_bridge import HttpScriptBridgeServer
 
-    js_path = REPO_ROOT / "netforge" / "adapters" / "assets" / "netforge_bridge.js"
-    html_path = REPO_ROOT / "netforge" / "adapters" / "assets" / "bridge.html"
+    js_path = REPO_ROOT / "agenticnet" / "adapters" / "assets" / "netforge_bridge.js"
+    html_path = REPO_ROOT / "agenticnet" / "adapters" / "assets" / "bridge.html"
     js_text = js_path.read_text(encoding="utf-8")
     html_text = html_path.read_text(encoding="utf-8")
 

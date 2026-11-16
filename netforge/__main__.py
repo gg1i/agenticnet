@@ -1,8 +1,8 @@
-"""Module execution entry point (`python -m netforge`)."""
+"""Legacy module execution entry point (`python -m netforge`), delegating to AgenticNet."""
 
 from __future__ import annotations
 
-from netforge.cli import main
+from agenticnet.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

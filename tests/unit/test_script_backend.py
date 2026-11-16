@@ -12,21 +12,21 @@ from typing import Any
 
 import pytest
 
-from netforge.adapters import (
+from agenticnet.adapters import (
     AdapterConnectionState,
     HttpScriptBridgeBackend,
     HttpScriptBridgeServer,
     ScriptBackend,
     ScriptBridgeError,
 )
-from netforge.adapters.script_bridge import (
+from agenticnet.adapters.script_bridge import (
     is_allowed_bridge_origin,
     render_script_module_sources,
     resolve_connect_type,
     resolve_device_type,
 )
-from netforge.core.exceptions import ValidationError
-from netforge.gui.safety import AutomationStopError, EmergencyStopController
+from agenticnet.core.exceptions import ValidationError
+from agenticnet.gui.safety import AutomationStopError, EmergencyStopController
 
 
 class _FakePtBridgeClient:
@@ -375,7 +375,7 @@ def test_bridge_idempotent_start_stop_and_cli_hardening(tmp_path: Path) -> None:
 def test_bridge_js_sends_cli_commands_sequentially() -> None:
     js = (
         Path(__file__).resolve().parents[2]
-        / "netforge/adapters/assets/netforge_bridge.js"
+        / "agenticnet/adapters/assets/netforge_bridge.js"
     ).read_text(encoding="utf-8")
     assert "nextIdx" in js
     batch = "for (var i = 0; i < commands.length; i++) {"

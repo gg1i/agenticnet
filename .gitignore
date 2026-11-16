@@ -17,7 +17,8 @@ env/
 htmlcov/
 .coverage
 
-# NetForge local runtime data
+# AgenticNet local runtime data (and legacy .netforge path)
+.agenticnet/
 .netforge/
 *.sqlite
 *.sqlite3

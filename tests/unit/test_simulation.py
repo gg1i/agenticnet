@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.console.engine import DeviceConsoleEngine
-from netforge.console.transport import SimulatedConsoleTransport
-from netforge.simulation.engine import SimulationEngine
-from netforge.simulation.models import SimulationSource, SimulatorMode
-from netforge.simulation.parsers import (
+from agenticnet.console.engine import DeviceConsoleEngine
+from agenticnet.console.transport import SimulatedConsoleTransport
+from agenticnet.simulation.engine import SimulationEngine
+from agenticnet.simulation.models import SimulationSource, SimulatorMode
+from agenticnet.simulation.parsers import (
     parse_ios_ping_output,
     parse_pc_ping_output,
     parse_ping_output,
@@ -19,7 +19,7 @@ from netforge.simulation.parsers import (
     parse_show_vlan_brief,
     parse_simulation_event_lines,
 )
-from netforge.topology.engine import TopologyEngine
+from agenticnet.topology.engine import TopologyEngine
 
 
 @pytest.mark.unit

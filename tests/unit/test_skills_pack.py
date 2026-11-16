@@ -1,4 +1,4 @@
-"""Unit tests validating the portable NetForge engineering skill pack under `skills/`."""
+"""Unit tests validating the portable AgenticNet engineering skill pack under `skills/`."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS_DIR = REPO_ROOT / "skills"
@@ -26,7 +26,7 @@ EXPECTED_SKILLS: tuple[str, ...] = (
     "network-security-basics",
 )
 
-# Backticked identifiers matching NetForge MCP tool naming conventions
+# Backticked identifiers matching AgenticNet tool naming conventions
 _TOOL_PREFIX_RE = re.compile(
     r"`((?:lab|project|device|host|connection|interface|topology|subnet|vlsm|address|ipam|"
     r"configure|configuration|command|console|gui|simulation|packet|connectivity|verify|"
@@ -92,7 +92,7 @@ def test_skills_pack_structure_and_frontmatter() -> None:
 
 @pytest.mark.unit
 def test_skills_only_reference_real_mcp_tools() -> None:
-    settings = NetForgeSettings.from_env()
+    settings = AgenticNetSettings.from_env()
     settings.tool_profile = "advanced"
     _, runtime = create_mcp_server(settings)
     registered_tools = {t.name for t in runtime.registry.tools}

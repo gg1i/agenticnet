@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from netforge.core.enums import StateLevel
-from netforge.core.exceptions import IOSConfigError
-from netforge.devices import DEFAULT_CATALOG
-from netforge.ios import (
+from agenticnet.core.enums import StateLevel
+from agenticnet.core.exceptions import IOSConfigError
+from agenticnet.devices import DEFAULT_CATALOG
+from agenticnet.ios import (
     AccessPortSpec,
     AclRule,
     AclSpec,
@@ -146,7 +146,7 @@ def test_ios_generator_protocols_and_capability_guards() -> None:
     ssh = ios.ssh(
         SshConfigSpec(
             device_name="R1",
-            domain_name="netforge.local",
+            domain_name="agenticnet.local",
             username="netops",
             secret="VerySecretKey99",
             enable_secret="Enable99",

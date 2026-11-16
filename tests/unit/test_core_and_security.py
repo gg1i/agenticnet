@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from netforge.core.enums import OperationStatus, PermissionTier, StateLevel
-from netforge.core.exceptions import ApprovalRequiredError, PermissionDeniedError, ValidationError
-from netforge.core.models import OperationResult
-from netforge.security.permissions import PermissionGuard, PermissionPolicy
-from netforge.security.redaction import redact_cli_text, redact_secrets
-from netforge.security.validation import (
+from agenticnet.core.enums import OperationStatus, PermissionTier, StateLevel
+from agenticnet.core.exceptions import ApprovalRequiredError, PermissionDeniedError, ValidationError
+from agenticnet.core.models import OperationResult
+from agenticnet.security.permissions import PermissionGuard, PermissionPolicy
+from agenticnet.security.redaction import redact_cli_text, redact_secrets
+from agenticnet.security.validation import (
     safe_resolve_path,
     validate_device_name,
     validate_project_id,
@@ -157,9 +157,9 @@ def test_configuration_backup_redacts_all_sensitive_ios_secrets(tmp_path: Path) 
     import asyncio
     from typing import Any
 
-    from netforge.adapters.base import ScriptBackend
-    from netforge.core.settings import NetForgeSettings
-    from netforge.mcp.server import create_mcp_server
+    from agenticnet.adapters.base import ScriptBackend
+    from agenticnet.core.settings import AgenticNetSettings
+    from agenticnet.mcp.server import create_mcp_server
 
     raw_running_config = "\n".join(
         [
@@ -206,7 +206,7 @@ def test_configuration_backup_redacts_all_sensitive_ios_secrets(tmp_path: Path) 
         ) -> dict[str, Any]:
             return {"ok": True, "raw_output": raw_running_config, "prompt": "CoreR1#"}
 
-    settings = NetForgeSettings(data_dir=tmp_path / "data")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data")
     server, _ = create_mcp_server(settings, script_backend=_SecretConfigBackend())
 
     async def _run() -> dict[str, Any]:
@@ -255,7 +255,7 @@ def test_input_validation_and_safe_paths(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_load_ios_command_sequence_never_sends_no_to_switches(tmp_path: Path) -> None:
-    from netforge.ios.validators import load_ios_command_sequence
+    from agenticnet.ios.validators import load_ios_command_sequence
 
     sw_file = tmp_path / "switch_access.ios"
     sw_file.write_text("!\nenable\nconfigure terminal\nhostname SW_ACCESS\n", encoding="utf-8")

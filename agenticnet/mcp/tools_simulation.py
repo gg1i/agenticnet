@@ -1,0 +1,220 @@
+"""MCP tools for Packet Tracer simulation controls, PDU tracing, and connectivity tests."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from mcp.server.mcpserver import MCPServer
+
+from agenticnet.adapters.router import transport_to_execution_backend
+from agenticnet.core.enums import PermissionTier, StateLevel
+from agenticnet.core.models import ExecutionBackend, OperationResult
+from agenticnet.mcp.registry import AgenticNetRuntime
+
+
+def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
+    """Register Packet Tracer simulation mode and verification tools."""
+
+    def simulation_mode(mode: Literal["realtime", "simulation"]) -> dict[str, Any]:
+        """Switch Packet Tracer between 'realtime' and 'simulation' clock modes."""
+
+        def _run() -> OperationResult:
+            data = runtime.simulation.set_mode(mode)
+            lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
+            return OperationResult.ok(
+                "simulation_mode",
+                f"Switched Packet Tracer mode to '{mode}'.",
+                data=data,
+                state_level=lvl,
+                evidence=[f"Mode transition to {mode} requested."],
+            )
+
+        return runtime.execute(
+            "simulation_mode",
+            PermissionTier.GUI_CONTROL,
+            {"mode": mode},
+            _run,
+        )
+
+    def simulation_start() -> dict[str, Any]:
+        """Activate Simulation Mode in Packet Tracer."""
+
+        def _run() -> OperationResult:
+            data = runtime.simulation.start_simulation()
+            lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
+            return OperationResult.ok(
+                "simulation_start",
+                "Simulation mode activated.",
+                data=data,
+                state_level=lvl,
+                evidence=["Simulation mode enabled."],
+            )
+
+        return runtime.execute(
+            "simulation_start",
+            PermissionTier.GUI_CONTROL,
+            {},
+            _run,
+        )
+
+    def simulation_stop() -> dict[str, Any]:
+        """Return Packet Tracer to Realtime Mode."""
+
+        def _run() -> OperationResult:
+            data = runtime.simulation.stop_simulation()
+            lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
+            return OperationResult.ok(
+                "simulation_stop",
+                "Realtime mode restored.",
+                data=data,
+                state_level=lvl,
+                evidence=["Realtime mode restored."],
+            )
+
+        return runtime.execute(
+            "simulation_stop",
+            PermissionTier.GUI_CONTROL,
+            {},
+            _run,
+        )
+
+    def packet_create(
+        source_device: str,
+        destination_ip: str,
+        protocol: Literal["ICMP", "ARP", "TCP", "UDP", "HTTP", "DNS", "DHCP"] = "ICMP",
+        source_ip: str | None = None,
+        destination_port: int | None = None,
+    ) -> dict[str, Any]:
+        """Create and track a test PDU packet specification for Simulation Mode."""
+
+        def _run() -> OperationResult:
+            data = runtime.simulation.create_packet(
+                source_device=source_device,
+                destination_ip=destination_ip,
+                protocol=protocol,
+                source_ip=source_ip,
+                destination_port=destination_port,
+            )
+            pkt = data["packet"]
+            return OperationResult.ok(
+                "packet_create",
+                (
+                    f"Created {protocol} test packet {pkt['packet_id']} "
+                    f"({source_device} -> {destination_ip})."
+                ),
+                data=data,
+                state_level=StateLevel.PLANNED,
+                evidence=[f"Registered test packet spec {pkt['packet_id']}."],
+            )
+
+        return runtime.execute(
+            "packet_create",
+            PermissionTier.PLANNING,
+            {
+                "source_device": source_device,
+                "destination_ip": destination_ip,
+                "protocol": protocol,
+            },
+            _run,
+        )
+
+    def packet_inspect(
+        packet_id: str | None = None,
+        event_log_text: str | None = None,
+    ) -> dict[str, Any]:
+        """Inspect tracked test packets and optionally parse Simulation Event List output."""
+
+        def _run() -> OperationResult:
+            data = runtime.simulation.inspect_packet_events(
+                packet_id=packet_id,
+                event_log_text=event_log_text,
+            )
+            lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
+            event_count = len(data.get("parsed_events", []))
+            summary = (
+                f"Tracked packets={len(data.get('tracked_packets', []))}, "
+                f"parsed events={event_count}."
+            )
+            ev = [f"Parsed {event_count} simulation event records."] if event_count else []
+            return OperationResult.ok(
+                "packet_inspect",
+                summary,
+                data=data,
+                state_level=lvl,
+                evidence=ev,
+            )
+
+        return runtime.execute(
+            "packet_inspect",
+            PermissionTier.READ_ONLY,
+            {"packet_id": packet_id, "has_log_text": bool(event_log_text)},
+            _run,
+        )
+
+    def connectivity_test(
+        source_device: str,
+        destination_ip: str,
+        count: int = 4,
+        allow_offline_estimation: bool = True,
+    ) -> dict[str, Any]:
+        """Run connectivity check via device CLI ping or offline topology path analysis."""
+
+        def _run() -> OperationResult:
+            topo = None
+            if runtime.manager.has_active_project:
+                _, topo, _, _ = runtime.manager.require_active()
+
+            data = runtime.simulation.run_connectivity_check(
+                source=source_device,
+                destination_ip=destination_ip,
+                topology=topo,
+                count=count,
+                allow_offline_estimation=allow_offline_estimation,
+            )
+            lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
+            backend: ExecutionBackend = (
+                transport_to_execution_backend(runtime.console.transport.transport_name)
+                if data.get("verified_in_pt")
+                else "offline_model"
+            )
+            status_word = "REACHABLE" if data.get("reachable") else "UNREACHABLE"
+            summary = (
+                f"Connectivity {source_device} -> {destination_ip}: "
+                f"{status_word} ({data.get('simulation_source')})."
+            )
+            return OperationResult.ok(
+                "connectivity_test",
+                summary,
+                data=data,
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=data.get("warnings", []),
+                evidence=data.get("evidence", []),
+            )
+
+        return runtime.execute(
+            "connectivity_test",
+            PermissionTier.READ_ONLY,
+            {"source_device": source_device, "destination_ip": destination_ip},
+            _run,
+        )
+
+    specs = [
+        ("simulation_mode", simulation_mode, PermissionTier.GUI_CONTROL, False),
+        ("simulation_start", simulation_start, PermissionTier.GUI_CONTROL, False),
+        ("simulation_stop", simulation_stop, PermissionTier.GUI_CONTROL, False),
+        ("packet_create", packet_create, PermissionTier.PLANNING, False),
+        ("packet_inspect", packet_inspect, PermissionTier.READ_ONLY, True),
+        ("connectivity_test", connectivity_test, PermissionTier.READ_ONLY, True),
+    ]
+    for name, fn, tier, ro in specs:
+        runtime.registry.register_tool(
+            server,
+            name=name,
+            category="simulation",
+            permission_tier=tier,
+            description=(fn.__doc__ or name).strip(),
+            fn=fn,
+            read_only=ro,
+            idempotent=ro,
+        )

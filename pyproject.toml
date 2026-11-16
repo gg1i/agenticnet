@@ -3,16 +3,17 @@ requires = ["setuptools>=65.5.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "netforge-mcp"
+name = "agenticnet"
 version = "0.1.0"
-description = "Open-source AI-native MCP platform for designing, configuring, validating, and automating Cisco Packet Tracer networks."
+description = "An open-source agentic networking platform focusing on Cisco Packet Tracer."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [
-    { name = "NetForge Contributors" },
+    { name = "AgenticNet Contributors" },
 ]
 keywords = [
+    "agentic-networking",
     "mcp",
     "model-context-protocol",
     "cisco",
@@ -72,21 +73,24 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/gg1i/netforge-mcp"
-Documentation = "https://github.com/gg1i/netforge-mcp/tree/main/docs"
-Repository = "https://github.com/gg1i/netforge-mcp"
-Issues = "https://github.com/gg1i/netforge-mcp/issues"
+Homepage = "https://github.com/gg1i/agenticnet"
+Documentation = "https://github.com/gg1i/agenticnet/tree/main/docs"
+Repository = "https://github.com/gg1i/agenticnet"
+Issues = "https://github.com/gg1i/agenticnet/issues"
 
 [project.scripts]
-netforge-mcp = "netforge.cli:main"
-netforge = "netforge.cli:main"
+agenticnet = "agenticnet.cli:main"
+agenticnet-mcp = "agenticnet.cli:main"
+# Legacy CLI aliases preserved for existing user setups.
+netforge-mcp = "agenticnet.cli:main"
+netforge = "agenticnet.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["netforge*"]
+include = ["agenticnet*", "netforge*"]
 
 [tool.setuptools.package-data]
-"netforge.adapters.assets" = ["*.js", "*.html", "*.pts"]
+"agenticnet.adapters.assets" = ["*.js", "*.html", "*.pts"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

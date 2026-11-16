@@ -11,13 +11,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from netforge.adapters.base import ScriptBackend
-from netforge.adapters.script_bridge import ALLOWED_OPCODES, HttpScriptBridgeBackend
-from netforge.core.exceptions import ValidationError
-from netforge.core.settings import NetForgeSettings
-from netforge.diagnostics.benchmark import BenchmarkResult
-from netforge.mcp.profiles import SOLVE_LAB_TOOLS, resolve_tool_profile
-from netforge.mcp.server import create_mcp_server
+from agenticnet.adapters.base import ScriptBackend
+from agenticnet.adapters.script_bridge import ALLOWED_OPCODES, HttpScriptBridgeBackend
+from agenticnet.core.exceptions import ValidationError
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.diagnostics.benchmark import BenchmarkResult
+from agenticnet.mcp.profiles import SOLVE_LAB_TOOLS, resolve_tool_profile
+from agenticnet.mcp.server import create_mcp_server
 
 
 def _call_tool_sync(server: Any, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -192,7 +192,7 @@ class _MockLabBackend(ScriptBackend):
 @pytest.mark.unit
 def test_lab_open_and_lab_save_live_mocked_and_fail_closed(tmp_path: Path) -> None:
     backend = _MockLabBackend()
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
     srv_live, _ = create_mcp_server(settings=settings, script_backend=backend)
 
     # Dry-run checks require zero live bridge
@@ -259,7 +259,7 @@ def test_http_script_bridge_save_file_opcode() -> None:
 @pytest.mark.unit
 def test_lab_status_what_is_left_and_fail_closed_grading(tmp_path: Path) -> None:
     backend = _MockLabBackend()
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
     server, _ = create_mcp_server(settings=settings, script_backend=backend)
 
     reqs = {
@@ -353,10 +353,10 @@ def test_lab_status_what_is_left_and_fail_closed_grading(tmp_path: Path) -> None
 
 @pytest.mark.unit
 def test_solve_lab_prompt_and_resource(tmp_path: Path) -> None:
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf")
     server, runtime = create_mcp_server(settings=settings)
     assert "solve_lab" in runtime.registry.prompt_names
-    assert "netforge://workflows/solve_lab" in runtime.registry.resource_uris
+    assert "agenticnet://workflows/solve_lab" in runtime.registry.resource_uris
 
     prompt_res = asyncio.run(
         server.get_prompt(
@@ -381,14 +381,14 @@ def test_solve_lab_prompt_and_resource(tmp_path: Path) -> None:
     ):
         assert required in text
 
-    resources = asyncio.run(server.read_resource("netforge://workflows/solve_lab"))
+    resources = asyncio.run(server.read_resource("agenticnet://workflows/solve_lab"))
     res_text = "".join(str(getattr(c, "content", c)) for c in resources)
     assert "lab_status" in res_text and "lab_save" in res_text
 
 
 @pytest.mark.unit
 def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
-    default_settings = NetForgeSettings(data_dir=tmp_path / ".nf1")
+    default_settings = AgenticNetSettings(data_dir=tmp_path / ".nf1")
     assert default_settings.tool_profile == "solve_lab"
     srv_default, rt_default = create_mcp_server(default_settings)
     default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
@@ -397,7 +397,7 @@ def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
     assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
     assert "configure_ospf" not in default_names
 
-    adv_settings = NetForgeSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
+    adv_settings = AgenticNetSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
     srv_adv, rt_adv = create_mcp_server(adv_settings)
     adv_names = {t.name for t in asyncio.run(srv_adv.list_tools())}
     assert len(adv_names) == 82
@@ -445,7 +445,7 @@ def test_benchmark_runner_mock_and_fail_closed_live(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_list_devices_and_lab_snapshot_mocked_and_fail_closed(tmp_path: Path) -> None:
     backend = _MockLabBackend()
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", permission_profile="standard")
     srv_live, _ = create_mcp_server(settings=settings, script_backend=backend)
 
     # 1. list_devices live via mock backend
@@ -480,8 +480,8 @@ def test_list_devices_and_lab_snapshot_mocked_and_fail_closed(tmp_path: Path) ->
 
 @pytest.mark.unit
 def test_verifier_polling_wait_passes_eventually_and_fails_with_evidence(tmp_path: Path) -> None:
-    from netforge.adapters.router import BackendRouter
-    from netforge.diagnostics.verifier import LabVerifier
+    from agenticnet.adapters.router import BackendRouter
+    from agenticnet.diagnostics.verifier import LabVerifier
 
     class _ConvergenceBackend(_MockLabBackend):
         def __init__(self) -> None:
@@ -557,9 +557,9 @@ def test_verifier_polling_wait_passes_eventually_and_fails_with_evidence(tmp_pat
 
 @pytest.mark.unit
 def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
-    from netforge.adapters.router import BackendRouter
-    from netforge.core.exceptions import NetForgeError
-    from netforge.diagnostics.verifier import LabVerifier, PacedDeviceCliQueue
+    from agenticnet.adapters.router import BackendRouter
+    from agenticnet.core.exceptions import AgenticNetError
+    from agenticnet.diagnostics.verifier import LabVerifier, PacedDeviceCliQueue
 
     # 1. Test pacing queue timing
     queue = PacedDeviceCliQueue(pacing_seconds=0.05, max_retries=2)
@@ -580,7 +580,7 @@ def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
         ) -> dict[str, Any]:
             self.calls += 1
             if self.calls < 3:
-                raise NetForgeError("Transient bridge timeout")
+                raise AgenticNetError("Transient bridge timeout")
             return {
                 "ok": True,
                 "raw_output": (
@@ -641,8 +641,8 @@ def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_attach_ip_phone_power_script_first_and_gui_fallback(tmp_path: Path) -> None:
-    from netforge.core.exceptions import AdapterUnavailableError
-    from netforge.gui.adapter import NullGuiBackend
+    from agenticnet.core.exceptions import AdapterUnavailableError
+    from agenticnet.gui.adapter import NullGuiBackend
 
     assert "attach_ip_phone_power" in ALLOWED_OPCODES
     bridge_meta = HttpScriptBridgeBackend()
@@ -666,7 +666,7 @@ def test_attach_ip_phone_power_script_first_and_gui_fallback(tmp_path: Path) -> 
                 "method_used": "rootModule.addModuleAt(IP_PHONE_POWER_ADAPTER,0)",
             }
 
-    settings = NetForgeSettings(data_dir=tmp_path / ".nf", tool_profile="solve_lab")
+    settings = AgenticNetSettings(data_dir=tmp_path / ".nf", tool_profile="solve_lab")
     backend = _PhonePowerBackend()
     gui_mock = NullGuiBackend(settings)
     gui_mock.attach_ip_phone_power = MagicMock(  # type: ignore[attr-defined]
@@ -717,18 +717,18 @@ def test_attach_ip_phone_power_script_first_and_gui_fallback(tmp_path: Path) -> 
 def test_zero_touch_auto_launch_and_auto_create_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from netforge.adapters.router import BackendRouter
-    from netforge.core.exceptions import ProjectNotOpenError
-    from netforge.storage.project_manager import ProjectManager
+    from agenticnet.adapters.router import BackendRouter
+    from agenticnet.core.exceptions import ProjectNotOpenError
+    from agenticnet.storage.project_manager import ProjectManager
 
     # 1. Settings defaults and env overrides
-    default_s = NetForgeSettings(data_dir=tmp_path / ".nf1")
+    default_s = AgenticNetSettings(data_dir=tmp_path / ".nf1")
     assert default_s.auto_launch_packet_tracer is True
     assert default_s.auto_create_project is True
 
-    monkeypatch.setenv("NETFORGE_AUTO_LAUNCH_PT", "0")
-    monkeypatch.setenv("NETFORGE_AUTO_CREATE_PROJECT", "false")
-    env_s = NetForgeSettings.from_env()
+    monkeypatch.setenv("AGENTICNET_AUTO_LAUNCH_PT", "0")
+    monkeypatch.setenv("AGENTICNET_AUTO_CREATE_PROJECT", "false")
+    env_s = AgenticNetSettings.from_env()
     assert env_s.auto_launch_packet_tracer is False
     assert env_s.auto_create_project is False
 
@@ -741,7 +741,7 @@ def test_zero_touch_auto_launch_and_auto_create_project(
     assert meta2.project_id == "default-workspace"
 
     pm_manual = ProjectManager(
-        NetForgeSettings(data_dir=tmp_path / ".nf2", auto_create_project=False)
+        AgenticNetSettings(data_dir=tmp_path / ".nf2", auto_create_project=False)
     )
     with pytest.raises(ProjectNotOpenError):
         pm_manual.require_active()
@@ -786,7 +786,7 @@ def test_zero_touch_auto_launch_and_auto_create_project(
     assert add_data["device_name"] == "2911"
 
     srv, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf3", tool_profile="solve_lab"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf3", tool_profile="solve_lab"),
         script_backend=auto_b,
     )
     opened = _call_tool_sync(srv, "lab_open", {"path": "sample.pkt"})
@@ -799,8 +799,8 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from netforge.adapters.base import GuiBackend
-    from netforge.mcp.profiles import RAW_GUI_INPUT_TOOLS
+    from agenticnet.adapters.base import GuiBackend
+    from agenticnet.mcp.profiles import RAW_GUI_INPUT_TOOLS
 
     class _FakeGui(GuiBackend):
         def __init__(self, *, running: bool = False, login_wall: bool = False) -> None:
@@ -860,7 +860,7 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
             return {}
 
     # 1. Default profile keeps raw GUI input tools out and includes start_lab prompt
-    srv_def, _ = create_mcp_server(NetForgeSettings(data_dir=tmp_path / ".nf_def"))
+    srv_def, _ = create_mcp_server(AgenticNetSettings(data_dir=tmp_path / ".nf_def"))
     prompt_res = asyncio.run(srv_def.get_prompt("start_lab", arguments={"lab_input": "demo"}))
     assert "lab_start" in prompt_res.messages[0].content.text
     assert SOLVE_LAB_TOOLS.isdisjoint(RAW_GUI_INPUT_TOOLS)
@@ -869,7 +869,7 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     # 2. Idea / .md plan-then-build mode: waits for approval without touching PT; <= 3 questions
     gui_idle = _FakeGui(running=False)
     srv_plan, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_plan"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf_plan"),
         gui_backend=gui_idle,
     )
     vague = _call_tool_sync(srv_plan, "lab_start", {"input_target": "build a small network"})
@@ -894,7 +894,7 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert any(d["name"] == "R2" for d in md_plan["data"]["plan"]["devices"])
 
     # 3. Non-interactive session refuses hidden PT launch cleanly
-    monkeypatch.setenv("NETFORGE_NON_INTERACTIVE", "1")
+    monkeypatch.setenv("AGENTICNET_NON_INTERACTIVE", "1")
     non_int = _call_tool_sync(
         srv_plan, "lab_start", {"input_target": str(md_file), "auto_approve": True}
     )
@@ -903,10 +903,10 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert gui_idle.launch_calls == []
 
     # 4. Login wall pauses cleanly and never clicks
-    monkeypatch.delenv("NETFORGE_NON_INTERACTIVE", raising=False)
+    monkeypatch.delenv("AGENTICNET_NON_INTERACTIVE", raising=False)
     gui_login = _FakeGui(running=True, login_wall=True)
     srv_login, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_login"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf_login"),
         gui_backend=gui_login,
     )
     login_out = _call_tool_sync(
@@ -917,12 +917,12 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert gui_login.click_calls == 0
 
     # 5. Bridge timeout returns clear error when interactive PT launches without bridge
-    import netforge.diagnostics.lab_runner as lr
+    import agenticnet.diagnostics.lab_runner as lr
 
     monkeypatch.setattr(lr, "require_interactive_desktop_for_launch", lambda *_a: None)
     gui_launch = _FakeGui(running=False)
     srv_timeout, _ = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_to"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf_to"),
         gui_backend=gui_launch,
     )
     to_out = _call_tool_sync(
@@ -1029,7 +1029,7 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     gui_reused = _FakeGui(running=True)
     sleep_calls: list[float] = []
     srv_live, rt_live = create_mcp_server(
-        NetForgeSettings(data_dir=tmp_path / ".nf_live"),
+        AgenticNetSettings(data_dir=tmp_path / ".nf_live"),
         gui_backend=gui_reused,
         script_backend=live_b,
     )
@@ -1045,10 +1045,10 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert started["data"]["pt_status"] == "reused_running_instance"
     assert gui_reused.launch_calls == []
     assert started["data"]["original_path"] == str(orig_pkt)
-    assert started["data"]["working_copy_path"] == str(tmp_path / "campus_netforge.pkt")
+    assert started["data"]["working_copy_path"] == str(tmp_path / "campus_agenticnet.pkt")
     assert started["data"]["initial_snapshot"]["device_count"] == 2
     assert live_b.opened == [str(orig_pkt)]
-    assert live_b.saved[0]["path"] == str(tmp_path / "campus_netforge.pkt")
+    assert live_b.saved[0]["path"] == str(tmp_path / "campus_agenticnet.pkt")
     assert orig_pkt.read_bytes() == b"ORIGINAL_PKT_DATA"
 
     # Register pre-existing Switch0 in local TopologyEngine before linking a new R2
@@ -1090,7 +1090,7 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     # lab_save defaults to copy-on-write working file and protects original
     saved_cow = _call_tool_sync(srv_live, "lab_save", {})
     assert saved_cow["success"] is True
-    assert live_b.saved[-1]["path"] == str(tmp_path / "campus_netforge.pkt")
+    assert live_b.saved[-1]["path"] == str(tmp_path / "campus_agenticnet.pkt")
     assert "lab_diff" in saved_cow["data"]
 
     refused_orig = _call_tool_sync(srv_live, "lab_save", {"path": str(orig_pkt)})
@@ -1110,8 +1110,8 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert backup_p.is_file()
     assert backup_p.read_bytes() == b"ORIGINAL_PKT_DATA"
 
-    # 7. Mirror session file works for custom NETFORGE_DATA_DIR and cleans up on stop()
-    from netforge.adapters.script_bridge import HttpScriptBridgeServer
+    # 7. Mirror session file works for custom AGENTICNET_DATA_DIR and cleans up on stop()
+    from agenticnet.adapters.script_bridge import HttpScriptBridgeServer
 
     mirror_file = tmp_path / "mirror" / "bridge_session.json"
     srv_mirrored = HttpScriptBridgeServer(

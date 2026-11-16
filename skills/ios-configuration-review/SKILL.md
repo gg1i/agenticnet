@@ -1,7 +1,7 @@
 ---
 name: ios-configuration-review
 description: >-
-  Pre-execution and post-execution Cisco IOS auditing using NetForge capability
+  Pre-execution and post-execution Cisco IOS auditing using AgenticNet capability
   profiles, static validators, mode safety, configuration backups/diffs, and
   secret redaction.
 ---
@@ -36,4 +36,4 @@ Before calling `console_execute`:
 
 ## 3. Secret Redaction
 
-- Never echo plaintext passwords, enable secrets, or bridge tokens in engineering reports; NetForge automatically scrubs secrets in `configuration_backup` and SQLite audit logs (`redact_cli_text`).
+- Never echo plaintext passwords, enable secrets, or bridge tokens in engineering reports; AgenticNet automatically scrubs secrets in `configuration_backup` and SQLite audit logs (`redact_cli_text`).

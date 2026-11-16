@@ -1,4 +1,4 @@
-"""End-to-end unit tests for NetForge MCP tools, permissions, resources, and prompts."""
+"""End-to-end unit tests for AgenticNet tools, permissions, resources, and prompts."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from netforge.core.settings import NetForgeSettings
-from netforge.mcp.server import create_mcp_server
-from netforge.security.permissions import PermissionPolicy
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.server import create_mcp_server
+from agenticnet.security.permissions import PermissionPolicy
 
 
 def _decode_tool_result(call_result) -> dict:
@@ -71,9 +71,9 @@ def test_mcp_tool_resource_prompt_discovery_and_manifest(mcp_bundle) -> None:
     assert len(resources) == 7
     assert len(prompts) == 6
     assert {str(r.uri) for r in resources} >= {
-        "netforge://manifest",
-        "netforge://workflows/solve_lab",
-        "netforge://devices/catalog",
+        "agenticnet://manifest",
+        "agenticnet://workflows/solve_lab",
+        "agenticnet://devices/catalog",
     }
     assert {p.name for p in prompts} >= {
         "start_lab",
@@ -244,7 +244,7 @@ def test_end_to_end_enterprise_workflow_via_mcp_tools(mcp_bundle) -> None:
 
 @pytest.mark.unit
 def test_read_only_permission_profile_blocks_mutations(tmp_path: Path) -> None:
-    ro_settings = NetForgeSettings(
+    ro_settings = AgenticNetSettings(
         data_dir=tmp_path / ".netforge_ro",
         permission_profile="read-only",
         allowed_tiers=PermissionPolicy.from_profile("read-only").allowed_tiers,

@@ -1,10 +1,10 @@
-# NetForge MCP Benchmark Protocol (`BENCHMARK.md`)
+# AgenticNet Benchmark Protocol (`BENCHMARK.md`)
 
-This document defines the standardized evaluation protocol and JSON output format for measuring how reliably an AI client agent solves Cisco Packet Tracer labs using NetForge MCP.
+This document defines the standardized evaluation protocol and JSON output format for measuring how reliably an AI client agent solves Cisco Packet Tracer labs using AgenticNet.
 
 ## 1. Architecture & Blind Scoring Principles
-- **No embedded LLM in NetForge:** NetForge exposes deterministic MCP tools, prompts, and resources (`solve_lab`, `lab_open`, `lab_status`, `lab_save`). The external MCP client agent performs all planning and reasoning.
-- **Process & Workspace Isolation (Mandatory):** Benchmark runs MUST launch the client agent inside a **separate, clean working directory containing only the installed `netforge-mcp` server** (no repo checkout, no `benchmarks/reference/`, no source tests or answer keys on disk). Official evaluation and scoring are performed afterward by a **separate harness process** with read access to `benchmarks/reference/`.
+- **No embedded LLM in AgenticNet:** AgenticNet exposes deterministic MCP tools, prompts, and resources (`solve_lab`, `lab_open`, `lab_status`, `lab_save`). The external MCP client agent performs all planning and reasoning.
+- **Process & Workspace Isolation (Mandatory):** Benchmark runs MUST launch the client agent inside a **separate, clean working directory containing only the installed `agenticnet` server** (no repo checkout, no `benchmarks/reference/`, no source tests or answer keys on disk). Official evaluation and scoring are performed afterward by a **separate harness process** with read access to `benchmarks/reference/`.
 - **Hidden Human-Authored Reference Scoring:** Every benchmarked lab has a human-authored reference requirement set stored in `benchmarks/reference/<lab_id>.json` (`"authored_by": "human_reference"`, `"agent_visible": false`). The client agent **never** sees this reference requirement set (use `extract_agent_lab_brief()` when preparing prompts; MCP resources and prompts never expose `benchmarks/reference/`).
 - **Public Demo Set vs. Held-Out Evaluation:** The 3 sample labs under `labs/` (`01_static_routing`, `02_vlan_dhcp`, `03_small_voice`) are a **public demo set** for smoke-testing and harness reproducibility, **not a held-out test**; held-out unseen labs are required for generalization claims.
 - **Agent Self-Report Never Counts as Score:** During a run, the client agent writes its own requirements JSON and `task_ids` for iterative debugging via `lab_status`. That agent self-report (`verify_summary`, `task_coverage`) may be recorded under `agent_self_report` (`"counts_toward_score": false`), and **never** counts toward `score_pct` or `passed`. Only `reference_score` (and native `.pka` `grade_lab` when available) determines pass/fail.
@@ -85,4 +85,4 @@ Runner commands:
   ```bash
   python scripts/run_benchmark.py --all-sample-labs --mock
   ```
-- Live benchmark runs (`--live`) require an active Cisco Packet Tracer `8.2.2` Script Bridge connection (`netforge-mcp doctor`).
+- Live benchmark runs (`--live`) require an active Cisco Packet Tracer `8.2.2` Script Bridge connection (`agenticnet doctor`).

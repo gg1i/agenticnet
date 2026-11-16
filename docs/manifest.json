@@ -1,8 +1,8 @@
 {
-  "name": "netforge-mcp",
+  "name": "agenticnet",
   "version": "0.1.0",
   "schema_version": "1.0.0",
-  "disclaimer": "NetForge MCP is an independent open-source project and is not affiliated with or endorsed by Cisco Systems, Inc.",
+  "disclaimer": "AgenticNet is an independent open-source project and is not affiliated with or endorsed by Cisco Systems, Inc.",
   "transports": {
     "default": "stdio",
     "supported": [
@@ -55,7 +55,7 @@
       "name": "project_create",
       "category": "project",
       "permission_tier": "planning",
-      "description": "Create and activate a new NetForge project backed by SQLite storage.",
+      "description": "Create and activate a new AgenticNet project backed by SQLite storage.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -64,7 +64,7 @@
       "name": "project_open",
       "category": "project",
       "permission_tier": "read_only",
-      "description": "Open an existing NetForge project from SQLite and make it active.",
+      "description": "Open an existing AgenticNet project from SQLite and make it active.",
       "status": "stable",
       "read_only": true,
       "destructive": false
@@ -73,7 +73,7 @@
       "name": "project_save",
       "category": "project",
       "permission_tier": "planning",
-      "description": "Persist the active NetForge project to SQLite and optionally create a JSON backup.",
+      "description": "Persist the active AgenticNet project to SQLite and optionally create a JSON backup.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -82,7 +82,7 @@
       "name": "project_close",
       "category": "project",
       "permission_tier": "planning",
-      "description": "Close the currently active NetForge project cleanly.",
+      "description": "Close the currently active AgenticNet project cleanly.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -791,13 +791,13 @@
     }
   ],
   "resources": [
-    "netforge://manifest",
-    "netforge://workflows/solve_lab",
-    "netforge://project/current",
-    "netforge://project/topology",
-    "netforge://project/ipam",
-    "netforge://devices/catalog",
-    "netforge://logs/recent"
+    "agenticnet://manifest",
+    "agenticnet://workflows/solve_lab",
+    "agenticnet://project/current",
+    "agenticnet://project/topology",
+    "agenticnet://project/ipam",
+    "agenticnet://devices/catalog",
+    "agenticnet://logs/recent"
   ],
   "prompts": [
     "start_lab",

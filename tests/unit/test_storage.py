@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from netforge.core.enums import OperationStatus, PermissionTier, StateLevel
-from netforge.core.exceptions import ProjectNotFoundError, StorageError
-from netforge.core.models import ExecutionLogEntry
-from netforge.core.settings import NetForgeSettings
-from netforge.ios import IOSGenerator, SshConfigSpec
-from netforge.storage import ProjectManager, migrate_project_payload
+from agenticnet.core.enums import OperationStatus, PermissionTier, StateLevel
+from agenticnet.core.exceptions import ProjectNotFoundError, StorageError
+from agenticnet.core.models import ExecutionLogEntry
+from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.ios import IOSGenerator, SshConfigSpec
+from agenticnet.storage import ProjectManager, migrate_project_payload
 
 
 @pytest.mark.unit
 def test_project_manager_lifecycle_and_secret_scrubbing(
-    isolated_settings: NetForgeSettings,
+    isolated_settings: AgenticNetSettings,
 ) -> None:
     mgr = ProjectManager(isolated_settings)
     mgr.create_project("Campus Demo", project_id="campus-demo", description="Unit test lab")
@@ -81,7 +81,7 @@ def test_project_manager_lifecycle_and_secret_scrubbing(
 
 
 @pytest.mark.unit
-def test_example_yaml_import_and_schema_migration(isolated_settings: NetForgeSettings) -> None:
+def test_example_yaml_import_and_schema_migration(isolated_settings: AgenticNetSettings) -> None:
     example_path = Path(__file__).resolve().parents[2] / "examples" / "university_topology.yaml"
     assert example_path.exists()
 

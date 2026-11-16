@@ -1,22 +1,22 @@
 ---
 name: packet-tracer-lab-engineer
 description: >-
-  Operational runbook for Cisco Packet Tracer 8.2.2+ automation via NetForge's
+  Operational runbook for Cisco Packet Tracer 8.2.2+ automation via AgenticNet's
   Script Bridge, copy-on-write file lifecycle, 17-model catalog quirks, and
   closed-loop .pkt/.pka verification.
 ---
 
 # Packet Tracer Lab Engineer
 
-Execute and verify live Cisco Packet Tracer `8.2.2+` labs safely through NetForge MCP's Script Bridge (`com.netforge.bridge`).
+Execute and verify live Cisco Packet Tracer `8.2.2+` labs safely through AgenticNet's Script Bridge (`com.netforge.bridge`, shipped as `netforge_bridge.pts`).
 
 ## 1. Live Connection & File Lifecycle
 
 1. **Check Bridge Connectivity First:**
-   - Run `list_devices` or `lab_open`; if unavailable, instruct the user to run `netforge-mcp doctor` and verify `Extensions -> Scripting -> Configure PT Script Modules...` has `netforge_bridge.pts` checked **On Startup** in Packet Tracer.
+   - Run `list_devices` or `lab_open`; if unavailable, instruct the user to run `agenticnet doctor` and verify `Extensions -> Scripting -> Configure PT Script Modules...` has `netforge_bridge.pts` checked **On Startup** in Packet Tracer.
    - If `lab_start` reports `waiting_for_login` (Skills for All / Guest wall) or `waiting_for_user_launch`, stop and let the user sign in or open PT visibly—never spam GUI clicks or spawn a second PT instance.
 2. **Preserve Original Files (Copy-on-Write):**
-   - Use `lab_open(..., copy_on_write=True)` or `lab_start` so edits save to `*_netforge.pkt` / working copy.
+   - Use `lab_open(..., copy_on_write=True)` or `lab_start` so edits save to `*_agenticnet.pkt` / working copy.
    - Only overwrite an original `.pkt`/`.pka` if explicitly authorized (`overwrite_original=True, confirm_overwrite_original=True`).
 3. **Closed-Loop Lab Solving (`solve_lab` / `start_lab`):**
    - Open lab (`lab_open` / `lab_start`) -> capture baseline (`lab_snapshot`) -> enumerate every task ID into `task_ids` -> author declarative requirements via `verify_requirements_schema` -> build/configure -> iterate `lab_status(requirements=..., task_ids=...)` -> inspect `lab_diff` -> persist via `lab_save`.
@@ -40,8 +40,8 @@ Always call `device_capabilities(model=...)` before selecting interfaces. Key ve
 
 ## 3. Script Bridge Constraints & GUI Fallback Escalation
 
-- `terminal length 0` returns `status=2` on PT `2911` routers; NetForge marks it non-fatal and auto-advances `--More--` prompts.
+- `terminal length 0` returns `status=2` on PT `2911` routers; AgenticNet marks it non-fatal and auto-advances `--More--` prompts.
 - Prefer `console_execute(..., batch_configs={...})` for multi-device CLI provisioning rather than single-command round-trips.
 - Avoid `gui_screenshot` or raw GUI clicks when `console_execute`, `list_devices`, `verify_lab`, or `interface_status(live=True)` provide exact text evidence.
-- **When the Script Bridge Cannot Automate an Action:** Escalate to the Windows GUI tools (available when `NETFORGE_TOOL_PROFILE=advanced` is enabled and the Windows desktop is unlocked)—specifically for `3650-24PS` PSU installation, `Laptop-PT` Ethernet-to-wireless module swaps, `Server-PT` GUI Services (DHCP/DNS/HTTP), `WRT300N`/`AccessPoint-PT` GUI config, `Simulation` toolbar clicks, and Physical-tab dragging (`gui_calibrate` -> `gui_state_inspect` -> `gui_batch` / `gui_click` / `gui_keypress`, using `gui_screenshot` / `click_template` only when visual verification or locating unanchored controls is required). `gui_batch` supports `click`, `click_dialog` (supports `nx`/`ny` or `offset_x`/`offset_y`), `click_template`, `drag`, `drag_dialog` (supports `from_nx`/`from_ny`/`to_nx`/`to_ny` or pixel offsets), `wait_dialog`, `close_dialog`, `keypress`, `paste_lines`, `sleep`, and `screenshot`.
+- **When the Script Bridge Cannot Automate an Action:** Escalate to the Windows GUI tools (available when `AGENTICNET_TOOL_PROFILE=advanced` is enabled and the Windows desktop is unlocked)—specifically for `3650-24PS` PSU installation, `Laptop-PT` Ethernet-to-wireless module swaps, `Server-PT` GUI Services (DHCP/DNS/HTTP), `WRT300N`/`AccessPoint-PT` GUI config, `Simulation` toolbar clicks, and Physical-tab dragging (`gui_calibrate` -> `gui_state_inspect` -> `gui_batch` / `gui_click` / `gui_keypress`, using `gui_screenshot` / `click_template` only when visual verification or locating unanchored controls is required). `gui_batch` supports `click`, `click_dialog` (supports `nx`/`ny` or `offset_x`/`offset_y`), `click_template`, `drag`, `drag_dialog` (supports `from_nx`/`from_ny`/`to_nx`/`to_ny` or pixel offsets), `wait_dialog`, `close_dialog`, `keypress`, `paste_lines`, `sleep`, and `screenshot`.
 - `grade_lab` is fail-closed: if `.pka` Assessment mode or password protection hides grading, report `unavailable` and rely on `verify_lab`.
