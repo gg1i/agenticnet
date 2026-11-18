@@ -370,6 +370,7 @@ function handleCliExec(requestId, params) {
     var nonFatalCommands = [];
     var moreCount = 0;
     var lastMoreChunkLen = -1;
+    var lastMoreSentAt = 0;
     var lastInteractiveLen = -1;
     var cmdStartLen = 0;
     var sent = false;
@@ -379,6 +380,7 @@ function handleCliExec(requestId, params) {
     var yesNoHandled = false;
     var pressReturnSentAt = 0;
     var lastCmdSentAt = 0;
+    var lastOutputAt = Date.now();
     var finished = false;
     var iv = null;
 
@@ -387,6 +389,7 @@ function handleCliExec(requestId, params) {
         var trimmedCmd = s.replace(/^\s+|\s+$/g, "");
         cmdStartLen = chunks.join("").length;
         lastCmdSentAt = Date.now();
+        lastOutputAt = lastCmdSentAt;
         if (trimmedCmd.length > 0 && trimmedCmd.slice(-1) === "?" && typeof term.enterChar === "function") {
             var prefix = trimmedCmd.slice(0, -1);
             for (var chIdx = 0; chIdx < prefix.length; chIdx += 1) {
@@ -405,7 +408,28 @@ function handleCliExec(requestId, params) {
         );
     };
 
-    var onOut = function (_src, args) { chunks.push(String(args.newOutput || "")); };
+    var hasPingOrTraceFinished = function (sliceText) {
+        return /(Success rate is\s+\d+\s+percent|Lost\s*=\s*\d+|Approximate round trip|Trace complete|could not find host|%\s*(Invalid|Incomplete|Ambiguous|Unrecognized))/i.test(
+            String(sliceText || "")
+        );
+    };
+
+    var advancePagerOnce = function () {
+        var nowMs = Date.now();
+        var curLen = chunks.join("").length;
+        if (curLen === lastMoreChunkLen || (nowMs - lastMoreSentAt) < 80) {
+            return;
+        }
+        lastMoreChunkLen = curLen;
+        lastMoreSentAt = nowMs;
+        moreCount += 1;
+        try { term.enterChar(32, 0); } catch (e) {}
+    };
+
+    var onOut = function (_src, args) {
+        chunks.push(String(args.newOutput || ""));
+        lastOutputAt = Date.now();
+    };
     var onEnd = function (_src, args) {
         if (!sent) {
             return;
@@ -431,9 +455,7 @@ function handleCliExec(requestId, params) {
         }
     };
     var onMore = function () {
-        moreCount += 1;
-        lastMoreChunkLen = chunks.join("").length;
-        try { term.enterChar(32, 0); } catch (e) {}
+        advancePagerOnce();
     };
 
     term.registerEvent("outputWritten", null, onOut);
@@ -486,9 +508,11 @@ function handleCliExec(requestId, params) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
                     stage = "wait_prompt";
-                } else if (elapsed > 1500 && rawNow.length === 0 && !pressReturnSentAt) {
+                } else if (elapsed > 1200 && !pressReturnSentAt) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
+                } else if (rawNow.length > 0 && elapsed > 3500) {
+                    stage = "send";
                 } else if (elapsed > Math.min(effectiveTimeoutMs * 0.75, 16000)) {
                     stage = "send";
                 }
@@ -498,6 +522,8 @@ function handleCliExec(requestId, params) {
                 } else if (rawNow.indexOf("Press RETURN") !== -1 && (Date.now() - pressReturnSentAt > 600)) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
+                } else if (rawNow.length > 0 && elapsed > 4500) {
+                    stage = "send";
                 } else if (elapsed > Math.min(effectiveTimeoutMs * 0.8, 17000)) {
                     stage = "send";
                 }
@@ -543,10 +569,8 @@ function handleCliExec(requestId, params) {
                     tail.indexOf("--More--") !== -1
                     || tail.indexOf("<--- More --->") !== -1
                 );
-                if (atMore && rawNow.length !== lastMoreChunkLen) {
-                    lastMoreChunkLen = rawNow.length;
-                    moreCount += 1;
-                    try { term.enterChar(32, 0); } catch (eMore) {}
+                if (atMore) {
+                    advancePagerOnce();
                 }
                 // Handle interactive ASA blank enable Password: and [confirm] prompts
                 if (statuses.length < nextIdx && !atMore && rawNow.length !== lastInteractiveLen) {
@@ -565,18 +589,30 @@ function handleCliExec(requestId, params) {
                         term.enterCommand("1024");
                     }
                 }
-                // Recover if PT drops a `commandEnded` event while an async syslog line
-                // interleaves and the CLI prompt is already back (skip slow ping/traceroute).
-                if (statuses.length < nextIdx && hasCliPrompt && !atMore
-                    && lastCmdSentAt > 0 && (Date.now() - lastCmdSentAt > 250)) {
+                // Recover if PT drops a `commandEnded` event while output has settled
+                // and the CLI prompt is already back.
+                var nowTick = Date.now();
+                var cmdElapsed = lastCmdSentAt > 0 ? (nowTick - lastCmdSentAt) : 0;
+                var outputIdle = lastOutputAt > 0 ? (nowTick - lastOutputAt) : cmdElapsed;
+                if (statuses.length < nextIdx && hasCliPrompt && !atMore && cmdElapsed > 400) {
                     var pendingCmd = String(execCommands[statuses.length] || "");
                     var pendingLow = pendingCmd.replace(/^\s+|\s+$/g, "").toLowerCase();
                     var isSlowNetCmd = (
                         pendingLow.indexOf("ping") === 0
                         || pendingLow.indexOf("traceroute") === 0
+                        || pendingLow.indexOf("tracert") === 0
                     );
-                    if (!isSlowNetCmd) {
-                        var synthSlice = rawNow.slice(cmdStartLen);
+                    var synthSlice = rawNow.slice(cmdStartLen);
+                    var canSynth = false;
+                    if (isSlowNetCmd) {
+                        canSynth = hasPingOrTraceFinished(synthSlice) && outputIdle >= 350;
+                    } else {
+                        canSynth = outputIdle >= 400 && (
+                            /([>#])\s*$/.test(rawNow)
+                            || (synthSlice.length === 0 && cmdElapsed >= 600)
+                        );
+                    }
+                    if (canSynth) {
                         cmdStartLen = rawNow.length;
                         commandOutputs.push(synthSlice);
                         var synthErr = hasSliceError(synthSlice);
@@ -588,7 +624,8 @@ function handleCliExec(requestId, params) {
                         if (stopOnError && synthErr) {
                             stoppedOnError = true;
                         }
-                        lastCmdSentAt = Date.now();
+                        lastCmdSentAt = nowTick;
+                        lastOutputAt = nowTick;
                     }
                 }
                 // Send commands one at a time: queued keystrokes typed while a
@@ -1048,6 +1085,11 @@ function configureHostSync(params, aliasMap) {
         var useDhcp = Boolean(params.dhcp);
         try {
             if (typeof hPort.setDhcpClientFlag === "function") {
+                if (useDhcp) {
+                    // Toggle false -> true so PT always triggers a fresh DHCP Discover
+                    // even when DHCP was already enabled prior to VLAN/DHCP server config.
+                    try { hPort.setDhcpClientFlag(false); } catch (eDhcpOff) {}
+                }
                 hPort.setDhcpClientFlag(useDhcp);
             }
         } catch (eDhcp) {}
@@ -1057,7 +1099,7 @@ function configureHostSync(params, aliasMap) {
             hPort.setIpSubnetMask(hIp, hMask);
         }
         var hGw = params.default_gateway ? String(params.default_gateway) : "";
-        if (hGw) {
+        if (!useDhcp && hGw) {
             try {
                 if (typeof hPort.setDefaultGateway === "function") {
                     hPort.setDefaultGateway(hGw);
@@ -1070,7 +1112,7 @@ function configureHostSync(params, aliasMap) {
             } catch (eGw2) {}
         }
         var hDns = params.dns_server ? String(params.dns_server) : "";
-        if (hDns) {
+        if (!useDhcp && hDns) {
             try {
                 if (typeof hPort.setDnsServerIp === "function") {
                     hPort.setDnsServerIp(hDns);
@@ -1085,16 +1127,28 @@ function configureHostSync(params, aliasMap) {
         if (params.display_name) {
             try { hDev.setName(String(params.display_name)); } catch (eDn) {}
         }
+        var liveIp = "";
+        var liveMask = "";
+        var liveGw = "";
+        try { if (typeof hPort.getIpAddress === "function") { liveIp = String(hPort.getIpAddress() || ""); } } catch (eLip) {}
+        try { if (typeof hPort.getSubnetMask === "function") { liveMask = String(hPort.getSubnetMask() || ""); } } catch (eLmk) {}
+        try { if (typeof hPort.getDefaultGateway === "function") { liveGw = String(hPort.getDefaultGateway() || ""); } } catch (eLgw) {}
+        if (!liveGw) {
+            try { if (typeof hDev.getDefaultGateway === "function") { liveGw = String(hDev.getDefaultGateway() || ""); } } catch (eLgw2) {}
+        }
         return {
             ok: true,
             data: {
                 device_name: String(hDev.getName() || hDevName),
                 port: hPortName,
                 dhcp: useDhcp,
-                ip: hIp,
-                subnet_mask: hMask,
-                default_gateway: hGw,
-                dns_server: hDns
+                ip: hIp || liveIp,
+                subnet_mask: hMask || liveMask,
+                default_gateway: hGw || liveGw,
+                dns_server: hDns,
+                applied_ip: liveIp,
+                applied_subnet_mask: liveMask,
+                applied_default_gateway: liveGw
             },
             error: null
         };

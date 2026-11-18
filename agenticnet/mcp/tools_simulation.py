@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from agenticnet.adapters.router import transport_to_execution_backend
+from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend
 from agenticnet.core.enums import PermissionTier, StateLevel
+from agenticnet.core.exceptions import ValidationError
 from agenticnet.core.models import ExecutionBackend, OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
 
@@ -166,17 +169,93 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
         )
 
     def connectivity_test(
-        source_device: str,
-        destination_ip: str,
-        count: int = 4,
+        source_device: str = "",
+        destination_ip: str = "",
+        count: int = 2,
         allow_offline_estimation: bool = True,
+        checks: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Run connectivity check via device CLI ping or offline topology path analysis."""
+        """Run one or multiple (parallel) connectivity ping checks via live PT CLI or topology.
+
+        Pass `checks=[{"source_device": "PC-A1", "destination_ip": "10.10.20.11"}, ...]` to run
+        an entire ping verification matrix in parallel in a single round-trip.
+        """
+        params: dict[str, Any] = {
+            "source_device": source_device,
+            "destination_ip": destination_ip,
+            "count": count,
+        }
+        if checks is not None:
+            params["checks_count"] = len(checks)
 
         def _run() -> OperationResult:
             topo = None
             if runtime.manager.has_active_project:
                 _, topo, _, _ = runtime.manager.require_active()
+
+            if checks is not None:
+                if not checks:
+                    raise ValidationError(
+                        "checks must contain at least one {source_device, destination_ip} entry."
+                    )
+                normalized_checks: list[tuple[str, str]] = []
+                for item in checks:
+                    src = str(item.get("source_device") or item.get("source") or "").strip()
+                    dst = str(item.get("destination_ip") or item.get("destination") or "").strip()
+                    if not src or not dst:
+                        raise ValidationError(
+                            "Each item in checks must provide 'source_device' and 'destination_ip'."
+                        )
+                    normalized_checks.append((src, dst))
+
+                def _run_one(pair: tuple[str, str]) -> dict[str, Any]:
+                    return runtime.simulation.run_connectivity_check(
+                        source=pair[0],
+                        destination_ip=pair[1],
+                        topology=topo,
+                        count=count,
+                        allow_offline_estimation=allow_offline_estimation,
+                    )
+
+                use_parallel = (
+                    len(normalized_checks) > 1
+                    and runtime.router.ensure_live_script()
+                    and isinstance(runtime.router.script_backend, HttpScriptBridgeBackend)
+                )
+                if use_parallel:
+                    with ThreadPoolExecutor(max_workers=min(len(normalized_checks), 6)) as pool:
+                        results = list(pool.map(_run_one, normalized_checks))
+                else:
+                    results = [_run_one(pair) for pair in normalized_checks]
+
+                passed = sum(1 for r in results if r.get("reachable"))
+                all_verified = all(r.get("verified_in_pt") for r in results)
+                backend: ExecutionBackend = (
+                    transport_to_execution_backend(runtime.console.transport.transport_name)
+                    if any(r.get("verified_in_pt") for r in results)
+                    else "offline_model"
+                )
+                all_warnings = [w for r in results for w in r.get("warnings", [])]
+                all_evidence = [e for r in results for e in r.get("evidence", [])]
+                return OperationResult.ok(
+                    "connectivity_test",
+                    f"Batch connectivity: {passed}/{len(results)} reachable.",
+                    data={
+                        "results": results,
+                        "total": len(results),
+                        "reachable_count": passed,
+                        "all_reachable": passed == len(results),
+                    },
+                    state_level=StateLevel.VERIFIED if all_verified else StateLevel.PLANNED,
+                    execution_backend=backend,
+                    warnings=all_warnings,
+                    evidence=all_evidence,
+                )
+
+            if not source_device.strip() or not destination_ip.strip():
+                raise ValidationError(
+                    "Provide source_device and destination_ip, or a checks list."
+                )
 
             data = runtime.simulation.run_connectivity_check(
                 source=source_device,
@@ -186,7 +265,7 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
                 allow_offline_estimation=allow_offline_estimation,
             )
             lvl = StateLevel(data.get("state_level", StateLevel.PLANNED.value))
-            backend: ExecutionBackend = (
+            backend = (
                 transport_to_execution_backend(runtime.console.transport.transport_name)
                 if data.get("verified_in_pt")
                 else "offline_model"
@@ -209,7 +288,7 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
         return runtime.execute(
             "connectivity_test",
             PermissionTier.READ_ONLY,
-            {"source_device": source_device, "destination_ip": destination_ip},
+            params,
             _run,
         )
 

@@ -44,8 +44,9 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
         layout_strategy: Literal["hierarchical", "grid"] = "hierarchical",
         replace_existing: bool = False,
         confirm: bool = False,
+        apply_live: bool = False,
     ) -> dict[str, Any]:
-        """Build a multi-device topology atomically from device and connection lists."""
+        """Build a multi-device topology; set apply_live=True to push to PT in 1 batch."""
         params = {
             "device_count": len(devices),
             "connection_count": len(connections),
@@ -53,6 +54,7 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             "layout_strategy": layout_strategy,
             "replace_existing": replace_existing,
             "confirm": confirm,
+            "apply_live": apply_live,
         }
         tier = PermissionTier.DESTRUCTIVE if replace_existing else PermissionTier.PLANNING
 
@@ -73,10 +75,13 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                 model=TopologyModel() if replace_existing else topo.model,
                 catalog=runtime.catalog,
             )
+            added_dev_names: list[str] = []
             for dev in devices:
                 staged.add_device(dev.name, dev.model, x=dev.x, y=dev.y, role=dev.role)
+                added_dev_names.append(dev.name)
+            added_links = []
             for link in connections:
-                staged.connect(
+                edge = staged.connect(
                     link.source_device,
                     link.source_interface,
                     link.target_device,
@@ -84,6 +89,7 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                     cable_type=link.cable_type,
                     clock_rate=link.clock_rate,
                 )
+                added_links.append(edge)
             if auto_layout:
                 staged.auto_layout(strategy=layout_strategy)
 
@@ -95,21 +101,117 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             topo._rebuild_graph()
             issues = topo.validate()
 
+            live_backend_name = "offline_model"
+            live_state = StateLevel.PLANNED
+            live_ev: list[str] = []
+            live_warnings = [i.message for i in issues if i.severity == "warning"]
+            live_payload: dict[str, Any] = {}
+
+            if apply_live and runtime.router.ensure_live_script():
+                from agenticnet.adapters.script_bridge import (
+                    resolve_connect_type,
+                    resolve_device_type,
+                )
+
+                ops: list[dict[str, Any]] = []
+                for d_name in added_dev_names:
+                    node = topo.model.devices[d_name]
+                    try:
+                        dtype = resolve_device_type(node.category.value)
+                    except Exception:
+                        dtype = 0
+                    ops.append(
+                        {
+                            "op": "add_device",
+                            "params": {
+                                "model": node.model,
+                                "device_type": dtype,
+                                "x": node.position.x,
+                                "y": node.position.y,
+                                "display_name": node.name,
+                                "alias": node.name,
+                            },
+                        }
+                    )
+                for edge in added_links:
+                    try:
+                        ctype = resolve_connect_type(edge.cable_type.value)
+                    except Exception:
+                        ctype = 8107
+                    d1, p1 = edge.source_device, edge.source_interface
+                    d2, p2 = edge.target_device, edge.target_interface
+                    if edge.cable_type.value == "serial_dte":
+                        d1, p1, d2, p2 = d2, p2, d1, p1
+                    ops.append(
+                        {
+                            "op": "create_link",
+                            "params": {
+                                "device1": d1,
+                                "port1": p1,
+                                "device2": d2,
+                                "port2": p2,
+                                "conn_type": ctype,
+                            },
+                        }
+                    )
+
+                batch_res = runtime.router.batch_ops(ops)
+                if batch_res is not None:
+                    live_backend_name = "script_backend"
+                    live_state = StateLevel.EXECUTED
+                    live_payload = batch_res
+                    live_ev.append(
+                        f"Deployed {len(added_dev_names)} device(s) and {len(added_links)} link(s) "
+                        "to Packet Tracer in 1 batch_ops round-trip."
+                    )
+                else:
+                    # Fallback when running an older bridge without batch_ops
+                    for d_name in added_dev_names:
+                        node = topo.model.devices[d_name]
+                        b, _, ev, w = runtime.router.add_device(
+                            node.name,
+                            node.model,
+                            category=node.category,
+                            x=node.position.x,
+                            y=node.position.y,
+                        )
+                        if b == "script_backend":
+                            live_backend_name = "script_backend"
+                            live_state = StateLevel.EXECUTED
+                        live_ev.extend(ev)
+                        live_warnings.extend(w)
+                    for edge in added_links:
+                        b, _, ev, w = runtime.router.create_link(
+                            edge.source_device,
+                            edge.source_interface,
+                            edge.target_device,
+                            edge.target_interface,
+                            cable_type=edge.cable_type.value,
+                        )
+                        live_ev.extend(ev)
+                        live_warnings.extend(w)
+
+            out_data: dict[str, Any] = {
+                "devices": sorted(topo.model.devices.keys()),
+                "connections": [
+                    c.model_dump(mode="json") for c in topo.model.connections.values()
+                ],
+                "validation_issues": [i.model_dump(mode="json") for i in issues],
+            }
+            if live_payload:
+                out_data["live_backend"] = live_payload
+
             return OperationResult.ok(
                 "topology_create",
                 f"Built topology with {len(topo.model.devices)} devices and "
                 f"{len(topo.model.connections)} links.",
-                data={
-                    "devices": sorted(topo.model.devices.keys()),
-                    "connections": [
-                        c.model_dump(mode="json") for c in topo.model.connections.values()
-                    ],
-                    "validation_issues": [i.model_dump(mode="json") for i in issues],
-                },
-                state_level=StateLevel.PLANNED,
-                warnings=[i.message for i in issues if i.severity == "warning"],
+                data=out_data,
+                state_level=live_state,
+                execution_backend=live_backend_name,  # type: ignore[arg-type]
+                warnings=live_warnings,
                 evidence=[
-                    "Validated device models, interfaces, and cable rules in TopologyEngine."
+                    "Validated device models, interfaces, and cable rules in TopologyEngine.",
+                    *live_ev,
                 ],
             )
 

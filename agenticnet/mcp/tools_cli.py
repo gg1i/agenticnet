@@ -152,7 +152,14 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         capture_before_after: bool = False,
         batch_configs: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
-        """Execute commands inside one or multiple device CLI consoles with prompt tracking."""
+        """Execute CLI commands on one or many devices in parallel.
+
+        Prefer `batch_configs={device: [cmds...]}` to configure or inspect multiple devices in a
+        single parallel round-trip instead of sequential 1-command calls. In Packet Tracer IOS,
+        avoid unsupported commands like `show run interface X` (use `show running-config`) and
+        `ip ospf <pid> area` (use `network ... area ...` under `router ospf`), and never leave
+        `debug` commands enabled.
+        """
         normalized_batch: dict[str, list[str]] = (
             {str(dev): list(cmds) for dev, cmds in batch_configs.items()}
             if batch_configs is not None
@@ -256,7 +263,7 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 use_parallel = (
                     not dry_run
                     and len(normalized_batch) > 1
-                    and runtime.router.has_live_script()
+                    and runtime.router.ensure_live_script()
                     and isinstance(runtime.router.script_backend, HttpScriptBridgeBackend)
                 )
                 if use_parallel:

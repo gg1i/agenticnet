@@ -186,7 +186,7 @@
       "name": "topology_create",
       "category": "topology",
       "permission_tier": "planning",
-      "description": "Build a multi-device topology atomically from device and connection lists.",
+      "description": "Build a multi-device topology; set apply_live=True to push to PT in 1 batch.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -627,7 +627,7 @@
       "name": "console_execute",
       "category": "cli",
       "permission_tier": "configuration",
-      "description": "Execute commands inside one or multiple device CLI consoles with prompt tracking.",
+      "description": "Execute CLI commands on one or many devices in parallel.\n\n        Prefer `batch_configs={device: [cmds...]}` to configure or inspect multiple devices in a\n        single parallel round-trip instead of sequential 1-command calls. In Packet Tracer IOS,\n        avoid unsupported commands like `show run interface X` (use `show running-config`) and\n        `ip ospf <pid> area` (use `network ... area ...` under `router ospf`), and never leave\n        `debug` commands enabled.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -789,7 +789,7 @@
       "name": "connectivity_test",
       "category": "simulation",
       "permission_tier": "read_only",
-      "description": "Run connectivity check via device CLI ping or offline topology path analysis.",
+      "description": "Run one or multiple (parallel) connectivity ping checks via live PT CLI or topology.\n\n        Pass `checks=[{\"source_device\": \"PC-A1\", \"destination_ip\": \"10.10.20.11\"}, ...]` to run\n        an entire ping verification matrix in parallel in a single round-trip.",
       "status": "stable",
       "read_only": true,
       "destructive": false

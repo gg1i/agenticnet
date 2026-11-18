@@ -77,6 +77,46 @@ class CableType(StrEnum):
     PHONE = "phone"
 
 
+_CABLE_TYPE_ALIASES: dict[str, CableType] = {
+    "auto": CableType.AUTO,
+    "automatic": CableType.AUTO,
+    "auto_choose": CableType.AUTO,
+    "straight": CableType.STRAIGHT_THROUGH,
+    "straight_through": CableType.STRAIGHT_THROUGH,
+    "copper_straight": CableType.STRAIGHT_THROUGH,
+    "copper_straight_through": CableType.STRAIGHT_THROUGH,
+    "straight_through_copper": CableType.STRAIGHT_THROUGH,
+    "cross": CableType.CROSSOVER,
+    "crossover": CableType.CROSSOVER,
+    "copper_cross": CableType.CROSSOVER,
+    "copper_crossover": CableType.CROSSOVER,
+    "crossover_copper": CableType.CROSSOVER,
+    "fiber": CableType.FIBER,
+    "fibre": CableType.FIBER,
+    "optical": CableType.FIBER,
+    "serial": CableType.SERIAL_DCE,
+    "serial_dce": CableType.SERIAL_DCE,
+    "dce": CableType.SERIAL_DCE,
+    "serial_dte": CableType.SERIAL_DTE,
+    "dte": CableType.SERIAL_DTE,
+    "console": CableType.CONSOLE,
+    "rollover": CableType.CONSOLE,
+    "coaxial": CableType.COAXIAL,
+    "coax": CableType.COAXIAL,
+    "phone": CableType.PHONE,
+}
+
+
+def parse_cable_type(value: CableType | str | None) -> CableType | None:
+    """Normalize common cable aliases (e.g. 'copper_straight', 'copper_cross') into CableType."""
+    if value is None or isinstance(value, CableType):
+        return value
+    norm = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if norm in _CABLE_TYPE_ALIASES:
+        return _CABLE_TYPE_ALIASES[norm]
+    return CableType(norm)
+
+
 class ConfigCapability(StrEnum):
     """Fine-grained device configuration and protocol capabilities."""
 

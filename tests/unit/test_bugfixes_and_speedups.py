@@ -501,3 +501,127 @@ def test_core_imports_without_optional_gui_deps() -> None:
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
+@pytest.mark.unit
+def test_cable_type_aliases_normalize_cleanly() -> None:
+    from agenticnet.adapters.script_bridge import resolve_connect_type
+    from agenticnet.core.enums import CableType, parse_cable_type
+    from agenticnet.core.exceptions import ValidationError
+
+    assert parse_cable_type("copper_straight") == CableType.STRAIGHT_THROUGH
+    assert parse_cable_type("copper-cross") == CableType.CROSSOVER
+    assert resolve_connect_type("copper_straight") == 8100
+    assert resolve_connect_type("copper_cross") == 8101
+
+    topo = TopologyEngine()
+    topo.add_device("R1", "2911")
+    topo.add_device("SW1", "2960-24TT")
+    link = topo.connect(
+        "R1", "GigabitEthernet0/0", "SW1", "GigabitEthernet0/1", cable_type="copper_straight"
+    )
+    assert link.cable_type == CableType.STRAIGHT_THROUGH
+
+    topo.add_device("SW2", "2960-24TT")
+    with pytest.raises(ValidationError):
+        topo.connect("SW1", "FastEthernet0/1", "SW2", "FastEthernet0/1", cable_type="quantum_cable")
+
+
+@pytest.mark.unit
+def test_pc_connectivity_test_uses_dash_n_and_ios_avoids_repeat() -> None:
+    from agenticnet.console.transport import SimulatedConsoleTransport
+    from agenticnet.simulation.engine import SimulationEngine
+
+    transport = SimulatedConsoleTransport()
+    transport.seed_device("R1", hostname="R1", mode="privileged_exec")
+    sent_log: list[tuple[str, str]] = []
+    orig_send = transport.send_line
+
+    def _recording_send(dev: str, line: str, *, timeout_s: float = 5.0) -> str:
+        sent_log.append((dev, line))
+        return orig_send(dev, line, timeout_s=timeout_s)
+
+    transport.send_line = _recording_send  # type: ignore[method-assign]
+    console = DeviceConsoleEngine(transport=transport)
+    sim = SimulationEngine(console_engine=console)
+
+    topo = TopologyEngine()
+    topo.add_device("PC-A1", "PC-PT")
+    topo.add_device("R1", "2911")
+
+    res_pc = sim.run_connectivity_check("PC-A1", "10.10.10.1", topology=topo, count=2)
+    assert res_pc["reachable"] is True
+    assert any(dev == "PC-A1" and line == "ping -n 2 10.10.10.1" for dev, line in sent_log)
+
+    res_ios = sim.run_connectivity_check("R1", "10.0.0.2", topology=topo, count=2)
+    assert res_ios["reachable"] is True
+    assert any(dev == "R1" and line == "ping 10.0.0.2" for dev, line in sent_log)
+    assert not any("repeat" in line for _, line in sent_log)
+
+
+@pytest.mark.unit
+def test_batch_connectivity_test_tool(tmp_path: Path) -> None:
+    from agenticnet.console.transport import SimulatedConsoleTransport
+
+    transport = SimulatedConsoleTransport()
+    transport.seed_device("R1", hostname="R1", mode="privileged_exec")
+    settings = AgenticNetSettings(data_dir=tmp_path / "data", tool_profile="advanced")
+    server, _ = create_mcp_server(settings, console_transport=transport)
+    _call_tool_sync(server, "project_create", {"name": "batch-ping-test"})
+    _call_tool_sync(server, "device_add", {"name": "PC-1", "model": "PC-PT"})
+    _call_tool_sync(server, "device_add", {"name": "R1", "model": "2911"})
+
+    res = _call_tool_sync(
+        server,
+        "connectivity_test",
+        {
+            "checks": [
+                {"source_device": "PC-1", "destination_ip": "10.10.10.1"},
+                {"source_device": "R1", "destination_ip": "10.0.0.2"},
+            ],
+            "count": 2,
+        },
+    )
+    assert res["success"] is True
+    assert res["data"]["total"] == 2
+    assert res["data"]["reachable_count"] == 2
+    assert res["data"]["all_reachable"] is True
+
+
+@pytest.mark.unit
+def test_split_batch_output_prevents_n_times_duplication() -> None:
+    from agenticnet.console.engine import _split_batch_output
+
+    raw = (
+        "show ip interface brief\n"
+        "Gi0/0 10.0.0.1 up up\n"
+        "R1#show ip route\n"
+        "C 10.0.0.0/30 is directly connected\n"
+        "R1#show ip ospf neighbor\n"
+        "2.2.2.2 FULL/DR\n"
+        "R1#"
+    )
+    slices = _split_batch_output(
+        raw, ["show ip interface brief", "show ip route", "show ip ospf neighbor"]
+    )
+    assert len(slices) == 3
+    assert "Gi0/0 10.0.0.1" in slices[0] and "2.2.2.2" not in slices[0]
+    assert "10.0.0.0/30" in slices[1] and "Gi0/0 10.0.0.1" not in slices[1]
+    assert "2.2.2.2 FULL/DR" in slices[2] and "10.0.0.0/30" not in slices[2]
+
+
+@pytest.mark.unit
+def test_bridge_js_ping_recovery_more_dedupe_and_dhcp_toggle() -> None:
+    js_path = (
+        Path(__file__).resolve().parents[2]
+        / "agenticnet"
+        / "adapters"
+        / "assets"
+        / "netforge_bridge.js"
+    )
+    js_text = js_path.read_text(encoding="utf-8")
+    assert "hasPingOrTraceFinished" in js_text
+    assert "advancePagerOnce" in js_text
+    assert "hPort.setDhcpClientFlag(false)" in js_text
+    assert "applied_ip" in js_text
+
+
+

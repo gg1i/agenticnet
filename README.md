@@ -1,6 +1,16 @@
+<div align="center">
+
 # AgenticNet
 
-*Agentic Networking Platform* — **"Networks. Understood. Engineered. Automated."**
+### *Agentic Networking Platform* — **"Networks. Understood. Engineered. Automated."**
+
+[![CI](https://github.com/gg1i/agenticnet/actions/workflows/ci.yml/badge.svg)](https://github.com/gg1i/agenticnet/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E.svg)](LICENSE)
+[![MCP Tools](https://img.shields.io/badge/MCP_Tools-94_(26_default)-6366F1)](docs/mcp-tools.md)
+[![PT Models](https://img.shields.io/badge/Packet_Tracer_8.2.2%2B-30_Models-0EA5E9)](docs/CAPABILITIES.md)
+
+</div>
 
 An open-source agentic networking platform (**current development focus: Cisco Packet Tracer `8.2.2+`**). AgenticNet connects AI assistants (Claude Desktop, Cursor, VS Code Copilot, Google Antigravity, and any MCP client) directly to **Cisco Packet Tracer `8.2.2+`** and a cross-platform network engineering engine so your AI can plan subnets, build topologies, push verified Cisco IOS configs, test live pings, grade `.pka` activities, and diagnose broken labs without overwriting your original `.pkt`/`.pka` files.
 
@@ -31,6 +41,7 @@ An open-source agentic networking platform (**current development focus: Cisco P
 ## Why AgenticNet?
 
 - **One-Command Live Lab Workflow (`lab_start` / `start_lab`):** Give your AI a `.pkt`/`.pka` file, PDF/Markdown lab brief, or plain-English description. AgenticNet drafts a concise plan for your confirmation first, builds and configures the lab live in Packet Tracer, narrates progress, and verifies every step.
+- **High-Speed Parallel & Batched Execution:** Deploy entire multi-device topologies in 1 round-trip via `topology_create(apply_live=True)` (`batch_ops`), push multi-device IOS configs in parallel via `console_execute(batch_configs=...)`, and verify full ping matrices concurrently via `connectivity_test(checks=[...])` with cached CORS preflights and clean per-command output slicing.
 - **Native Packet Tracer Script Bridge:** Uses an authenticated `127.0.0.1` HTTP bridge inside Packet Tracer (`com.netforge.bridge`, shipped as `netforge_bridge.pts`) for reliable `add_device`, `create_link`, `configure_host`, `batch_ops`, `HWIC-2T` module attachment, `7960` IP phone powering, IOS CLI execution, and `.pkt`/`.pka` open/save (desktop mouse/keyboard GUI automation stays fallback-only).
 - **Non-Destructive Copy-on-Write + Diffs:** Original `.pkt`/`.pka` files stay untouched by default (`*_agenticnet.pkt`), with before/after snapshots (`lab_snapshot`) and readable change summaries (`lab_diff`).
 - **Evidence-First Verification (`planned` vs. `executed` vs. `verified`):** Never claims success without proof — `verify_lab` and `lab_status` inspect real `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and live `ping` outputs.
@@ -96,6 +107,17 @@ agenticnet serve --transport streamable-http --host 127.0.0.1 --port 8765
 
 AgenticNet exposes **94 MCP tools (26 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **30 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
 
+```mermaid
+flowchart LR
+    AI["AI Assistant<br/>(Antigravity / Claude / Cursor / Copilot)"] -->|MCP stdio / HTTP| MCP["AgenticNet MCP Server<br/>94 tools (26 default)"]
+    MCP --> Guard["Permission Guard & Redactor<br/>5-tier safety + SQLite WAL audit"]
+    Guard --> Core["Engineering Core<br/>Topology · VLSM IPAM · IOS · Diagnostics"]
+    Guard --> Router["BackendRouter<br/>Parallel CLI & batch_ops"]
+    Router -->|Authenticated 127.0.0.1 HTTP| Bridge["PT Script Module<br/>com.netforge.bridge"]
+    Bridge --> PT["Cisco Packet Tracer 8.2.2+<br/>Live Devices, Links, CLI & Pings"]
+    Router -.->|Fallback only| GUI["Windows GUI Adapter"]
+```
+
 ```text
 agenticnet/
 ├── core/         # State separation (planned/executed/verified), OperationResult, settings
@@ -157,6 +179,16 @@ Only real **live** Cisco Packet Tracer (`8.2.2`) runs (`mode: "live_pt"`) are re
 | `01_static_routing` | `live_pt` | **8/8 (100%)** | Multi-router static routing, `HWIC-2T` serial link, end-to-end ping |
 | `02_vlan_dhcp` | `live_pt` | **5/5 (100%)** | 802.1Q trunking, router-on-a-stick, DHCP pools, PC lease & ping |
 | `03_small_voice` | `live_pt` | **5/5 (100%)** | Cisco CME (`telephony-service`), DHCP Option 150, `7960` phone `REGISTERED` |
+| `ccnp_enterprise_lab` | `live_pt` | **12/12 (100%)** | Multi-VLAN HSRP, OSPF, GRE Tunnel, NAT/PAT, DHCP Relay, extended ACLs (`PC-A1..BR-PC2` verified) |
+
+---
+
+## Roadmap
+
+- **Live Health Mermaid Map (`lab_map`)**: Auto-export live topologies with color-coded link health, OSPF/HSRP states, and ACL annotations.
+- **Packet Tracer 8.2.2 IOS Quirk Shield**: Real-time pre-flight warnings for PT-unsupported IOS commands and active console `debug` guards.
+- **Batch Host Provisioning (`host_configure`)**: Multi-host DHCP/static setup in a single `batch_ops` call.
+- **Multi-Simulator Backends**: Extend `ScriptBackend` / `ConsoleTransport` to GNS3, Containerlab, and EVE-NG over SSH/Telnet.
 
 ---
 

@@ -8,6 +8,8 @@ import networkx as nx
 
 from agenticnet.adapters.base import GuiBackend, SimulationBackend
 from agenticnet.console.engine import DeviceConsoleEngine
+from agenticnet.console.models import ConsoleInteractionKind
+from agenticnet.console.profiles import get_console_profile
 from agenticnet.core.enums import StateLevel
 from agenticnet.core.exceptions import AgenticNetError, DeviceNotFoundError, ValidationError
 from agenticnet.devices import DEFAULT_CATALOG, DeviceCatalog
@@ -169,13 +171,36 @@ class SimulationEngine(SimulationBackend):
             ),
         }
 
+    def _resolve_source_model(
+        self,
+        source: str,
+        topology: TopologyEngine | None = None,
+    ) -> str:
+        """Resolve Packet Tracer model for `source` from topology, console session, or name."""
+        if topology is not None and source in topology.model.devices:
+            return topology.model.devices[source].model
+        if self.console is not None:
+            sessions = getattr(self.console, "_sessions", None)
+            if isinstance(sessions, dict) and source in sessions:
+                sess_model = getattr(sessions[source], "model", "")
+                if sess_model:
+                    return str(sess_model)
+        low = source.strip().lower()
+        if any(tok in low for tok in ("laptop",)):
+            return "Laptop-PT"
+        if any(tok in low for tok in ("server", "srv")):
+            return "Server-PT"
+        if low.startswith("pc") or "-pc" in low or "_pc" in low or "host" in low:
+            return "PC-PT"
+        return "2911"
+
     def run_connectivity_check(
         self,
         source: str,
         destination_ip: str,
         *,
         topology: TopologyEngine | None = None,
-        count: int = 4,
+        count: int = 2,
         allow_offline_estimation: bool = True,
     ) -> dict[str, Any]:
         """Run an end-to-end connectivity test.
@@ -194,21 +219,18 @@ class SimulationEngine(SimulationBackend):
 
         if self.console and self.console.transport.is_available():
             try:
-                if count == 4:
-                    cmd = f"ping {clean_dest}"
+                resolved_model = self._resolve_source_model(source, topology=topology)
+                prof = get_console_profile(resolved_model, catalog=self.catalog)
+                if prof.interaction_kind == ConsoleInteractionKind.PT_DESKTOP_CMD:
+                    # Packet Tracer PC/Server/Laptop Command Prompt supports `ping -n <count> <ip>`.
+                    cmd = f"ping -n {count} {clean_dest}" if count != 4 else f"ping {clean_dest}"
                 else:
-                    profiles = getattr(self.console, "_profiles", {})
-                    prof = profiles.get(source) if isinstance(profiles, dict) else None
-                    if (
-                        prof is not None
-                        and getattr(prof, "interaction_kind", "") == "pt_desktop_cmd"
-                    ):
-                        cmd = f"ping -n {count} {clean_dest}"
-                    else:
-                        cmd = f"ping {clean_dest} repeat {count}"
+                    # PT IOS CLI rejects `ping <ip> repeat <count>`; always use `ping <ip>`.
+                    cmd = f"ping {clean_dest}"
                 res = self.console.execute_commands(
                     device_name=source,
                     commands=[cmd],
+                    model=resolved_model,
                     target_mode="preserve",
                 )
                 output_text = self._extract_command_output(res, cmd)

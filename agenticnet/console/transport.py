@@ -262,18 +262,29 @@ class SimulatedConsoleTransport(ConsoleTransport):
             out_lines.append(self._prompt_for(device_name))
         elif mode == "pc_prompt":
             if cmd.lower().startswith("ping "):
-                target = cmd.split()[1]
+                parts = cmd.split()
+                target = parts[-1] if len(parts) >= 2 else ""
+                sent_count = 4
+                for idx_p, tok in enumerate(parts):
+                    if (
+                        tok.lower() == "-n"
+                        and idx_p + 1 < len(parts)
+                        and parts[idx_p + 1].isdigit()
+                    ):
+                        sent_count = max(1, int(parts[idx_p + 1]))
+                        break
+                out_lines.append(f"Pinging {target} with 32 bytes of data:")
+                for _ in range(sent_count):
+                    out_lines.append(f"Reply from {target}: bytes=32 time=1ms TTL=128")
                 out_lines.extend(
                     [
-                        f"Pinging {target} with 32 bytes of data:",
-                        f"Reply from {target}: bytes=32 time=2ms TTL=128",
-                        f"Reply from {target}: bytes=32 time=1ms TTL=128",
-                        f"Reply from {target}: bytes=32 time=1ms TTL=128",
-                        f"Reply from {target}: bytes=32 time=2ms TTL=128",
                         f"Ping statistics for {target}:",
-                        "    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),",
+                        (
+                            f"    Packets: Sent = {sent_count}, "
+                            f"Received = {sent_count}, Lost = 0 (0% loss),"
+                        ),
                         "Approximate round trip times in milli-seconds:",
-                        "    Minimum = 1ms, Maximum = 2ms, Average = 1ms",
+                        "    Minimum = 1ms, Maximum = 1ms, Average = 1ms",
                     ]
                 )
             out_lines.append(self._prompt_for(device_name))

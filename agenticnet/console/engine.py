@@ -121,9 +121,46 @@ def _compute_batch_timeout(base_timeout_s: float, commands: list[str]) -> float:
     slow_cmds = sum(
         1
         for cmd in commands
-        if cmd.strip().lower().startswith(("ping ", "traceroute ", "ipconfig /renew"))
+        if cmd.strip().lower().startswith(("ping ", "traceroute ", "tracert ", "ipconfig /renew"))
     )
     return max(float(base_timeout_s), 20.0) + slow_cmds * 10.0 + len(commands) * 0.4
+
+
+def _split_batch_output(cleaned_out: str, commands: list[str]) -> list[str]:
+    """Best-effort per-command output splitter when bridge omits `command_outputs`."""
+    if not commands:
+        return []
+    if len(commands) == 1 or not cleaned_out.strip():
+        return [cleaned_out] + [""] * (len(commands) - 1)
+
+    lines = cleaned_out.splitlines()
+    starts: list[int | None] = [None] * len(commands)
+    cursor = 0
+    for cmd_idx, cmd in enumerate(commands):
+        want = cmd.strip().lower()
+        if not want:
+            continue
+        for line_idx in range(cursor, len(lines)):
+            low = lines[line_idx].strip().lower()
+            if low == want or low.endswith(f"#{want}") or low.endswith(f">{want}"):
+                starts[cmd_idx] = line_idx
+                cursor = line_idx + 1
+                break
+
+    found_positions = [(idx, pos) for idx, pos in enumerate(starts) if pos is not None]
+    if len(found_positions) < 2:
+        # Couldn't cleanly locate multiple command boundaries; put full output on last
+        # command rather than duplicating the entire transcript N times.
+        out = [""] * len(commands)
+        out[-1] = cleaned_out
+        return out
+
+    slices = [""] * len(commands)
+    for k, (cmd_idx, pos) in enumerate(found_positions):
+        end_pos = found_positions[k + 1][1] if k + 1 < len(found_positions) else len(lines)
+        start_pos = 0 if k == 0 else pos
+        slices[cmd_idx] = "\n".join(lines[start_pos:end_pos]).strip()
+    return slices
 
 
 class DeviceConsoleEngine(ConsoleBackend):
@@ -453,6 +490,11 @@ class DeviceConsoleEngine(ConsoleBackend):
                     and next(c.strip().lower() for c in commands if c.strip()).startswith("show")
                 )
 
+                fallback_slices = (
+                    _split_batch_output(cleaned_out, [c for c, _ in cleaned_lines])
+                    if not (isinstance(raw_cmd_outputs, list) and len(raw_cmd_outputs) > 0)
+                    else None
+                )
                 per_cmd_ms = round(batch_elapsed / len(cleaned_lines), 2) if cleaned_lines else 0.0
                 for idx, (cmd, is_prep) in enumerate(cleaned_lines):
                     redacted_cmd = redact_cli_text(cmd)
@@ -530,9 +572,11 @@ class DeviceConsoleEngine(ConsoleBackend):
                                 else (user_slice or cleaned_out)
                             )
                         else:
-                            transcript_out = slice_clean if slice_clean else cleaned_out
+                            transcript_out = slice_clean
+                    elif fallback_slices is not None and idx < len(fallback_slices):
+                        transcript_out = fallback_slices[idx]
                     else:
-                        transcript_out = cleaned_out
+                        transcript_out = cleaned_out if idx == len(cleaned_lines) - 1 else ""
 
                     transcripts.append(
                         CommandTranscript(

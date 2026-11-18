@@ -98,19 +98,28 @@ PT_DEVICE_TYPES: dict[str, int] = {
 PT_CONNECT_TYPES: dict[str, int] = {
     "straight_through": 8100,
     "straight": 8100,
+    "copper_straight": 8100,
+    "copper_straight_through": 8100,
+    "straight_through_copper": 8100,
     "crossover": 8101,
     "cross": 8101,
+    "copper_cross": 8101,
+    "copper_crossover": 8101,
+    "crossover_copper": 8101,
     "rollover": 8102,
     "fiber": 8103,
+    "fibre": 8103,
     "phone": 8104,
     "cable": 8105,
     "serial": 8106,
     "serial_dce": 8106,
     "serial_dte": 8106,
     "auto": 8107,
+    "automatic": 8107,
     "console": 8108,
     "wireless": 8109,
     "coaxial": 8110,
+    "coax": 8110,
     "octal": 8111,
     "usb": 8113,
 }
@@ -302,6 +311,7 @@ class HttpScriptBridgeServer:
                     "Content-Type, X-AgenticNet-Token, X-NetForge-Token",
                 )
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Max-Age", "86400")
                 return True
 
             def _send_json(self, status: int, body: dict[str, Any] | None = None) -> None:

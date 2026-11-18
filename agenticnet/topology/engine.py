@@ -9,7 +9,13 @@ from uuid import uuid4
 import networkx as nx
 import yaml
 
-from agenticnet.core.enums import CableType, DeviceCategory, PortMedia, StateLevel
+from agenticnet.core.enums import (
+    CableType,
+    DeviceCategory,
+    PortMedia,
+    StateLevel,
+    parse_cable_type,
+)
 from agenticnet.core.exceptions import (
     DeviceNotFoundError,
     InterfaceError,
@@ -365,7 +371,17 @@ class TopologyEngine:
                 remediation="Choose a free interface or remove the existing connection first.",
             )
 
-        parsed_cable = CableType(cable_type) if isinstance(cable_type, str) else cable_type
+        try:
+            parsed_cable = parse_cable_type(cable_type)
+        except ValueError as exc:
+            raise ValidationError(
+                f"Invalid cable_type {cable_type!r}.",
+                details={"supported_cable_types": [c.value for c in CableType]},
+                remediation=(
+                    "Use 'auto', 'straight_through' (or 'copper_straight'), "
+                    "'crossover' (or 'copper_cross'), 'fiber', 'serial_dce', or 'serial_dte'."
+                ),
+            ) from exc
         resolved_cable = self._select_cable_type(
             src_dev, src_iface, dst_dev, dst_iface, parsed_cable
         )
