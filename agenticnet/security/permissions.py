@@ -32,7 +32,9 @@ class PermissionPolicy(BaseModel):
         require_destructive_confirmation: bool = True,
     ) -> PermissionPolicy:
         """Instantiate a named permission policy preset."""
-        normalized = profile_name.strip().lower()
+        normalized = profile_name.strip().lower().replace("_", "-")
+        if normalized == "full":
+            normalized = "standard"
         presets: dict[str, set[PermissionTier]] = {
             "read-only": {PermissionTier.READ_ONLY},
             "planning": {PermissionTier.READ_ONLY, PermissionTier.PLANNING},
@@ -56,7 +58,7 @@ class PermissionPolicy(BaseModel):
             )
         return cls(
             profile_name=normalized,
-            allowed_tiers=presets[normalized],
+            allowed_tiers=set(presets[normalized]),
             require_destructive_confirmation=require_destructive_confirmation,
         )
 

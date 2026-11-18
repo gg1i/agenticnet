@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from agenticnet.adapters.base import GuiBackend, ScriptBackend
+from agenticnet.adapters.discovery import is_packet_tracer_running
 from agenticnet.adapters.script_bridge import (
     ScriptBridgeError,
     resolve_connect_type,
@@ -28,7 +30,7 @@ def transport_to_execution_backend(transport_name: str) -> ExecutionBackend:
     """Map a ConsoleTransport identifier to a canonical OperationResult provenance tag."""
     if transport_name == "script_bridge":
         return "script_backend"
-    if transport_name == "windows_gui":
+    if transport_name in {"windows_gui", "windows_pt_gui_clipboard"}:
         return "gui_backend"
     return "offline_model"
 
@@ -90,7 +92,7 @@ class RoutedConsoleTransport(ConsoleTransport):
                 with self.router._state_lock:
                     self._last_output[device_name] = text
                     self.last_execution_backend = "script_backend"
-                    cleaned_line = line.strip()
+                    cleaned_line = redact_cli_text(line.strip())
                     if cleaned_line:
                         self.router.executed_cli_log.setdefault(pt_name, []).append(cleaned_line)
                 return text
@@ -112,6 +114,7 @@ class RoutedConsoleTransport(ConsoleTransport):
         device_name: str,
         lines: list[str],
         *,
+        stop_on_error: bool = True,
         timeout_s: float = 25.0,
     ) -> dict[str, Any]:
         """Execute all CLI lines in one live ScriptBackend round-trip."""
@@ -119,20 +122,21 @@ class RoutedConsoleTransport(ConsoleTransport):
             return {"ok": True, "raw_output": "", "prompt": "", "command_statuses": []}
         if self.router.ensure_live_script() and self.router.script_backend is not None:
             pt_name = self.router.resolve_pt_device_name(device_name)
-            res = dict(
-                self.router.script_backend.execute_cli(
-                    pt_name,
-                    lines,
-                    timeout_seconds=max(timeout_s, 20.0),
-                )
-            )
+            exec_fn = self.router.script_backend.execute_cli
+            kwargs: dict[str, Any] = {"timeout_seconds": max(timeout_s, 20.0)}
+            try:
+                if "stop_on_error" in inspect.signature(exec_fn).parameters:
+                    kwargs["stop_on_error"] = bool(stop_on_error)
+            except (TypeError, ValueError):
+                pass
+            res = dict(exec_fn(pt_name, lines, **kwargs))
             text = str(res.get("raw_output") or res.get("prompt") or "")
             with self.router._state_lock:
                 self._last_output[device_name] = text
                 self.last_execution_backend = "script_backend"
                 log = self.router.executed_cli_log.setdefault(pt_name, [])
                 for line in lines:
-                    cleaned_line = str(line).strip()
+                    cleaned_line = redact_cli_text(str(line).strip())
                     if cleaned_line:
                         log.append(cleaned_line)
             return res
@@ -235,10 +239,17 @@ class BackendRouter:
         return self.script_backend is not None and self.script_backend.is_connected()
 
     def ensure_live_script(self) -> bool:
-        """Return True if ScriptBackend is live, auto-launching Packet Tracer when configured."""
+        """Return True if ScriptBackend is live, reconnecting or launching PT when configured."""
         if self.has_live_script():
             return True
         if self.script_backend is not None:
+            wait_fn = getattr(self.script_backend, "wait_for_connection", None)
+            srv = getattr(self.script_backend, "server", None)
+            srv_started = srv is None or getattr(srv, "_httpd", None) is not None
+            if callable(wait_fn) and srv_started and is_packet_tracer_running():
+                wait_fn(timeout_seconds=6.0)
+                if self.has_live_script():
+                    return True
             ensure_fn = getattr(self.script_backend, "ensure_connected", None)
             if callable(ensure_fn):
                 ensure_fn()
@@ -246,7 +257,10 @@ class BackendRouter:
 
     def has_live_gui(self) -> bool:
         """Return True when a live GuiBackend is available."""
-        return self.gui_backend is not None and self.gui_backend.is_available()
+        if self.gui_backend is None:
+            return False
+        avail_fn = getattr(self.gui_backend, "is_available", None)
+        return bool(callable(avail_fn) and avail_fn())
 
     def resolve_pt_device_name(self, device_name: str) -> str:
         """Translate a topology device name to Packet Tracer's live device name if mapped."""
@@ -278,16 +292,51 @@ class BackendRouter:
         model_key = model.strip().lower()
         if model_key in {"7960", "ip_phone", "cisco ip phone"}:
             cat_str = "ip_phone"
+        elif model_key.startswith("3650"):
+            cat_str = "switch_3650"
         elif model_key.startswith("laptop"):
             cat_str = "laptop"
+        elif model_key.startswith("tablet"):
+            cat_str = "tablet_pc"
+        elif model_key.startswith("smartphone"):
+            cat_str = "smartphone"
+        elif model_key.startswith(("home-voip", "home_voip", "home voip")):
+            cat_str = "home_voip"
+        elif model_key.startswith(("analog-phone", "analog_phone", "analog phone")):
+            cat_str = "analog_phone"
+        elif model_key.startswith(("homegateway", "home-gateway", "home_gateway", "home gateway")):
+            cat_str = "home_gateway"
         elif model_key.startswith("server"):
             cat_str = "server"
         elif model_key.startswith("printer"):
             cat_str = "printer"
+        elif model_key in {"lap-pt", "lap", "3702i", "lightweight_ap"}:
+            cat_str = "lightweight_ap"
+        elif model_key in {
+            "5505",
+            "asa 5505",
+            "asa5505",
+            "5506",
+            "5506-x",
+            "asa 5506",
+            "asa5506",
+            "asa 5506-x",
+        }:
+            cat_str = "asa"
+        elif model_key.startswith("wlc"):
+            cat_str = "wlc"
+        elif model_key.startswith("cloud"):
+            cat_str = "cloud"
         try:
             dev_type = resolve_device_type(cat_str)
         except Exception:
             dev_type = 0
+        add_fn = self.script_backend.add_device
+        supports_display_name = False
+        try:
+            supports_display_name = "display_name" in inspect.signature(add_fn).parameters
+        except (TypeError, ValueError):
+            supports_display_name = False
         delays = (0.0, *self.add_device_retry_delays)
         attempts = 0
         last_res: dict[str, Any] = {}
@@ -296,7 +345,10 @@ class BackendRouter:
                 self._sleep(delay_s)
             attempts = attempt_idx
             try:
-                res = self.script_backend.add_device(model, device_type=dev_type, x=x, y=y)
+                if supports_display_name:
+                    res = add_fn(model, device_type=dev_type, x=x, y=y, display_name=name)  # type: ignore[call-arg]
+                else:
+                    res = add_fn(model, device_type=dev_type, x=x, y=y)
             except ScriptBridgeError as exc:
                 msg_low = str(exc).lower()
                 if "empty name" in msg_low or "adddevice" in msg_low:
@@ -366,6 +418,11 @@ class BackendRouter:
 
         pt_d1 = self.resolve_pt_device_name(source_device)
         pt_d2 = self.resolve_pt_device_name(target_device)
+        src_if = source_interface
+        dst_if = target_interface
+        cable_norm = cable_type.strip().lower().replace("-", "_").replace(" ", "_")
+        if cable_norm == "serial_dte":
+            pt_d1, src_if, pt_d2, dst_if = pt_d2, dst_if, pt_d1, src_if
         try:
             conn_code = resolve_connect_type(cable_type)
         except Exception:
@@ -373,9 +430,9 @@ class BackendRouter:
         try:
             res = self.script_backend.create_link(
                 pt_d1,
-                source_interface,
+                src_if,
                 pt_d2,
-                target_interface,
+                dst_if,
                 conn_type=conn_code,
             )
         except ScriptBridgeError as exc:
@@ -386,8 +443,8 @@ class BackendRouter:
                     {"ok": False, "error": err_msg},
                     [],
                     [
-                        f"Packet Tracer rejected link {pt_d1}:{source_interface} <-> "
-                        f"{pt_d2}:{target_interface}: {err_msg}"
+                        f"Packet Tracer rejected link {pt_d1}:{src_if} <-> "
+                        f"{pt_d2}:{dst_if}: {err_msg}"
                     ],
                 )
             return (
@@ -409,21 +466,241 @@ class BackendRouter:
                 {**res, "ok": False},
                 [],
                 [
-                    f"Packet Tracer rejected link {pt_d1}:{source_interface} <-> "
-                    f"{pt_d2}:{target_interface}."
+                    f"Packet Tracer rejected link {pt_d1}:{src_if} <-> "
+                    f"{pt_d2}:{dst_if}."
                 ],
             )
         evidence = [
-            f"Linked {pt_d1}:{source_interface} <-> {pt_d2}:{target_interface} "
+            f"Linked {pt_d1}:{src_if} <-> {pt_d2}:{dst_if} "
             "in Packet Tracer via ScriptBackend.",
         ]
         if self.watch_mode:
             self.record_watch_action(
                 "create_link",
-                f"Connected {pt_d1}:{source_interface} <-> {pt_d2}:{target_interface}.",
+                f"Connected {pt_d1}:{src_if} <-> {pt_d2}:{dst_if}.",
                 data=res,
                 evidence=evidence,
             )
+        return ("script_backend", res, evidence, [])
+
+    def remove_device(
+        self,
+        name: str,
+        *,
+        dry_run: bool = False,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Remove a device from live Packet Tracer when connected, else fall back offline."""
+        if dry_run:
+            return (
+                "offline_model",
+                {},
+                [f"Dry-run: planned removal of device '{name}'."],
+                [],
+            )
+        pt_name = self.resolve_pt_device_name(name)
+        with self._state_lock:
+            self.device_aliases.pop(name, None)
+            self.paging_disabled_devices.discard(name)
+            self.paging_disabled_devices.discard(pt_name)
+            self.console_transport._last_output.pop(name, None)
+            self.console_transport._last_output.pop(pt_name, None)
+
+        if not self.ensure_live_script() or self.script_backend is None:
+            return ("offline_model", {}, [], [])
+        rem_fn = getattr(self.script_backend, "remove_device", None)
+        if not callable(rem_fn):
+            return ("offline_model", {}, [], [])
+        try:
+            res = dict(rem_fn(pt_name))
+        except ScriptBridgeError as exc:
+            if "unsupported opcode" in str(exc).lower():
+                return (
+                    "offline_model",
+                    {},
+                    [],
+                    [f"ScriptBackend remove_device unsupported ({exc}); removed offline only."],
+                )
+            return (
+                "script_backend",
+                {"ok": False, "error": str(exc)},
+                [],
+                [f"Packet Tracer rejected remove_device('{pt_name}'): {exc}"],
+            )
+        except AdapterUnavailableError as exc:
+            return (
+                "offline_model",
+                {},
+                [],
+                [f"ScriptBackend remove_device unavailable ({exc}); removed offline only."],
+            )
+        evidence = [f"Removed '{pt_name}' from Packet Tracer via ScriptBackend."]
+        if self.watch_mode:
+            self.record_watch_action(
+                "remove_device",
+                f"Removed '{pt_name}' from Packet Tracer.",
+                data=res,
+                evidence=evidence,
+            )
+        return ("script_backend", res, evidence, [])
+
+    def move_device(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        *,
+        dry_run: bool = False,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Move a device on Packet Tracer's canvas when connected, else fall back offline."""
+        if dry_run:
+            return (
+                "offline_model",
+                {},
+                [f"Dry-run: planned move of '{name}' to ({x:.0f}, {y:.0f})."],
+                [],
+            )
+        if not self.ensure_live_script() or self.script_backend is None:
+            return ("offline_model", {}, [], [])
+        pt_name = self.resolve_pt_device_name(name)
+        mov_fn = getattr(self.script_backend, "move_device", None)
+        if not callable(mov_fn):
+            return ("offline_model", {}, [], [])
+        try:
+            res = dict(mov_fn(pt_name, x, y))
+        except ScriptBridgeError as exc:
+            if "unsupported opcode" in str(exc).lower():
+                return (
+                    "offline_model",
+                    {},
+                    [],
+                    [f"ScriptBackend move_device unsupported ({exc}); updated offline only."],
+                )
+            return (
+                "script_backend",
+                {"ok": False, "error": str(exc)},
+                [],
+                [f"Packet Tracer rejected move_device('{pt_name}'): {exc}"],
+            )
+        except AdapterUnavailableError as exc:
+            return (
+                "offline_model",
+                {},
+                [],
+                [f"ScriptBackend move_device unavailable ({exc}); updated offline only."],
+            )
+        evidence = [f"Moved '{pt_name}' to ({x:.0f}, {y:.0f}) in Packet Tracer via ScriptBackend."]
+        if self.watch_mode:
+            self.record_watch_action(
+                "move_device",
+                f"Moved '{pt_name}' to ({x:.0f}, {y:.0f}).",
+                data=res,
+                evidence=evidence,
+            )
+        return ("script_backend", res, evidence, [])
+
+    def delete_link(
+        self,
+        source_device: str,
+        source_interface: str,
+        target_device: str | None = None,
+        target_interface: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Delete a link in Packet Tracer when connected, else fall back offline."""
+        _ = (target_device, target_interface)
+        if dry_run:
+            return (
+                "offline_model",
+                {},
+                [f"Dry-run: planned link deletion on '{source_device}:{source_interface}'."],
+                [],
+            )
+        if not self.ensure_live_script() or self.script_backend is None:
+            return ("offline_model", {}, [], [])
+        pt_d1 = self.resolve_pt_device_name(source_device)
+        del_fn = getattr(self.script_backend, "delete_link", None)
+        if not callable(del_fn):
+            return ("offline_model", {}, [], [])
+        try:
+            res = dict(del_fn(pt_d1, source_interface))
+        except ScriptBridgeError as exc:
+            if "unsupported opcode" in str(exc).lower():
+                return (
+                    "offline_model",
+                    {},
+                    [],
+                    [f"ScriptBackend delete_link unsupported ({exc}); removed offline only."],
+                )
+            return (
+                "script_backend",
+                {"ok": False, "error": str(exc)},
+                [],
+                [f"Packet Tracer rejected delete_link('{pt_d1}:{source_interface}'): {exc}"],
+            )
+        except AdapterUnavailableError as exc:
+            return (
+                "offline_model",
+                {},
+                [],
+                [f"ScriptBackend delete_link unavailable ({exc}); removed offline only."],
+            )
+        evidence = [
+            f"Deleted link on '{pt_d1}:{source_interface}' in Packet Tracer via ScriptBackend."
+        ]
+        if self.watch_mode:
+            self.record_watch_action(
+                "delete_link",
+                f"Disconnected '{pt_d1}:{source_interface}'.",
+                data=res,
+                evidence=evidence,
+            )
+        return ("script_backend", res, evidence, [])
+
+    def add_module(
+        self,
+        device_name: str,
+        slot: str | int,
+        module_name: str,
+        *,
+        module_type: int | None = None,
+        power_cycle: bool = True,
+        dry_run: bool = False,
+    ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+        """Insert a hardware module into a Packet Tracer device slot when connected."""
+        if dry_run:
+            return (
+                "offline_model",
+                {},
+                [f"Dry-run: planned module '{module_name}' in '{device_name}' slot {slot}."],
+                [],
+            )
+        if not self.ensure_live_script() or self.script_backend is None:
+            return ("offline_model", {}, [], [])
+        pt_name = self.resolve_pt_device_name(device_name)
+        mod_fn = getattr(self.script_backend, "add_module", None)
+        if not callable(mod_fn):
+            return ("offline_model", {}, [], [])
+        try:
+            res = dict(
+                mod_fn(
+                    pt_name,
+                    slot,
+                    module_name,
+                    module_type=module_type,
+                    power_cycle=power_cycle,
+                )
+            )
+        except (ScriptBridgeError, AdapterUnavailableError) as exc:
+            return (
+                "offline_model",
+                {},
+                [],
+                [f"ScriptBackend add_module unavailable ({exc}); kept offline topology only."],
+            )
+        evidence = [
+            f"Inserted module '{module_name}' into '{pt_name}' (slot {slot}) via ScriptBackend."
+        ]
         return ("script_backend", res, evidence, [])
 
     def configure_host(
@@ -435,6 +712,7 @@ class BackendRouter:
         ip: str | None = None,
         subnet_mask: str | None = None,
         default_gateway: str | None = None,
+        dns_server: str | None = None,
         console_engine: DeviceConsoleEngine | None = None,
         dry_run: bool = False,
     ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
@@ -442,7 +720,13 @@ class BackendRouter:
         if dry_run:
             return (
                 "offline_model",
-                {"device_name": device_name, "dhcp": dhcp, "ip": ip, "subnet_mask": subnet_mask},
+                {
+                    "device_name": device_name,
+                    "dhcp": dhcp,
+                    "ip": ip,
+                    "subnet_mask": subnet_mask,
+                    "dns_server": dns_server,
+                },
                 [f"Dry-run: planned host configuration for '{device_name}'."],
                 [],
             )
@@ -453,16 +737,20 @@ class BackendRouter:
         cfg_fn = getattr(self.script_backend, "configure_host", None)
         if callable(cfg_fn):
             try:
-                res = dict(
-                    cfg_fn(
-                        pt_name,
-                        port=port,
-                        dhcp=dhcp,
-                        ip=ip,
-                        subnet_mask=subnet_mask,
-                        default_gateway=default_gateway,
-                    )
-                )
+                cfg_kwargs: dict[str, Any] = {
+                    "port": port,
+                    "dhcp": dhcp,
+                    "ip": ip,
+                    "subnet_mask": subnet_mask,
+                    "default_gateway": default_gateway,
+                }
+                if dns_server is not None:
+                    try:
+                        if "dns_server" in inspect.signature(cfg_fn).parameters:
+                            cfg_kwargs["dns_server"] = dns_server
+                    except (TypeError, ValueError):
+                        pass
+                res = dict(cfg_fn(pt_name, **cfg_kwargs))
                 desc = "DHCP" if dhcp else f"{ip}/{subnet_mask}"
                 ev = [f"Configured host '{pt_name}' ({port}) via ScriptBackend ({desc})."]
                 if self.watch_mode:
@@ -740,32 +1028,57 @@ class BackendRouter:
         self,
         device_name: str,
         *,
+        canvas_x: float = 500.0,
+        canvas_y: float = 180.0,
+        dry_run: bool = False,
         timeout_seconds: float = 25.0,
     ) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
-        """Attach AC power adapter onto a 7960 IP Phone via live ScriptBackend."""
-        if self.ensure_live_script() and self.script_backend is not None:
-            pt_name = self.resolve_pt_device_name(device_name)
-            data = dict(
-                self.script_backend.attach_ip_phone_power(
-                    pt_name,
-                    timeout_seconds=timeout_seconds,
+        """Attach AC power adapter onto a 7960 IP Phone via ScriptBackend or GUI fallback."""
+        pt_name = self.resolve_pt_device_name(device_name)
+        if not dry_run and self.ensure_live_script() and self.script_backend is not None:
+            try:
+                data = dict(
+                    self.script_backend.attach_ip_phone_power(
+                        pt_name,
+                        timeout_seconds=timeout_seconds,
+                    )
                 )
-            )
-            powered = bool(data.get("powered", False))
-            method = str(data.get("method_used") or "script_bridge")
-            evidence = [
-                f"Attached 7960 power adapter on '{pt_name}' via {method} (powered={powered})."
-            ]
-            if self.watch_mode:
-                self.record_watch_action(
-                    "attach_ip_phone_power",
-                    f"Powered 7960 IP Phone '{pt_name}' (powered={powered}).",
-                    data=data,
-                    evidence=evidence,
+                powered = bool(data.get("powered", False))
+                method = str(data.get("method_used") or "script_bridge")
+                evidence = [
+                    f"Attached 7960 power adapter on '{pt_name}' via {method} (powered={powered})."
+                ]
+                if self.watch_mode:
+                    self.record_watch_action(
+                        "attach_ip_phone_power",
+                        f"Powered 7960 IP Phone '{pt_name}' (powered={powered}).",
+                        data=data,
+                        evidence=evidence,
+                    )
+                return ("script_backend", data, evidence, [])
+            except (AdapterUnavailableError, NotImplementedError):
+                if not self.has_live_gui():
+                    raise
+
+        if self.gui_backend is not None and self.has_live_gui():
+            gui_fn = getattr(self.gui_backend, "attach_ip_phone_power", None)
+            if callable(gui_fn):
+                gui_data = dict(
+                    gui_fn(
+                        device_name=device_name,
+                        pt_device_title=pt_name,
+                        canvas_x=canvas_x,
+                        canvas_y=canvas_y,
+                        dry_run=dry_run,
+                    )
                 )
-            return ("script_backend", data, evidence, [])
+                evidence = [
+                    f"Attached 7960 power adapter on '{pt_name}' via gui_backend fallback."
+                ]
+                return ("gui_backend", gui_data, evidence, [])
+
         raise AdapterUnavailableError(
             f"Cannot attach 7960 power adapter on '{device_name}': "
-            "no live ScriptBackend connected.",
+            "no live ScriptBackend or GuiBackend connected.",
             remediation="Ensure Packet Tracer is running with netforge_bridge.pts connected.",
         )

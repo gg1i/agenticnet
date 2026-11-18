@@ -8,10 +8,17 @@ from pydantic import BaseModel, Field
 
 from agenticnet import __schema_version__
 from agenticnet.core.exceptions import StorageError
-from agenticnet.core.models import DiagnosticRecord, ProjectMetadata
+from agenticnet.core.models import DiagnosticRecord
+from agenticnet.core.models import ProjectMetadata as _CoreProjectMetadata
 from agenticnet.ios.models import ConfigSnapshot
 from agenticnet.ipam.models import IPAMState
 from agenticnet.topology.models import TopologyModel
+
+
+class ProjectMetadata(_CoreProjectMetadata):
+    """Project metadata extended with target execution mode isolation."""
+
+    target_mode: str = "packet_tracer"
 
 
 class ProjectBundle(BaseModel):
@@ -50,4 +57,5 @@ def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("diagnostics", [])
     if "metadata" in migrated and isinstance(migrated["metadata"], dict):
         migrated["metadata"].setdefault("schema_version", __schema_version__)
+        migrated["metadata"].setdefault("target_mode", "packet_tracer")
     return migrated

@@ -153,12 +153,41 @@ def _sync_readme(readme_path: Path, manifest: dict[str, Any], solve_lab_count: i
     model_count = len(manifest["supported_device_models"])
 
     updated = re.sub(
-        r"\d+ MCP tools(?: \([^)]*\))?, \d+ resources, \d+ prompts",
-        (
-            f"{tool_count} MCP tools ({solve_lab_count} in default `solve_lab` profile), "
-            f"{resource_count} resources, {prompt_count} prompts"
+        r"(\*\*)?\d+ MCP tools(?: \([^)]*\))?(\*\*)?,\s*(\*\*)?\d+ resources,\s*\d+ prompts(\*\*)?",
+        lambda m: (
+            f"{m.group(1) or ''}{tool_count} MCP tools "
+            f"({solve_lab_count} in default `solve_lab` profile){m.group(2) or ''}, "
+            f"{m.group(3) or ''}{resource_count} resources, "
+            f"{prompt_count} prompts{m.group(4) or ''}"
         ),
         text,
+    )
+    updated = re.sub(
+        r"verified device profiles across \*\*\d+ models\*\*",
+        f"verified device profiles across **{model_count} models**",
+        updated,
+    )
+    updated = re.sub(
+        r"Exposes \*\*\d+\*\* focused tools in the default `solve_lab` profile "
+        r"\(reducing prompt clutter for agents\) or all \*\*\d+\*\*",
+        (
+            f"Exposes **{solve_lab_count}** focused tools in the default `solve_lab` profile "
+            f"(reducing prompt clutter for agents) or all **{tool_count}**"
+        ),
+        updated,
+    )
+    updated = re.sub(
+        r"enable all \*\*\d+\*\* tools",
+        f"enable all **{tool_count}** tools",
+        updated,
+    )
+    updated = re.sub(
+        r"`solve_lab` \(`\d+` focused lab tools\) or `advanced` \(all `\d+` tools\)",
+        (
+            f"`solve_lab` (`{solve_lab_count}` focused lab tools) or "
+            f"`advanced` (all `{tool_count}` tools)"
+        ),
+        updated,
     )
     updated = re.sub(
         r"Official Python MCP SDK server, \d+ tools(?: \([^)]*\))?, "
@@ -211,10 +240,90 @@ def _sync_architecture(arch_path: Path, manifest: dict[str, Any], solve_lab_coun
             f"\n{banner}\n\n---\n",
             1,
         )
+    updated = re.sub(
+        r"(# Verified Packet Tracer device catalog & "
+        r"(?:port|interface) normalization \()\d+( models\))",
+        rf"\g<1>{model_count}\g<2>",
+        updated,
+    )
+    updated = re.sub(
+        r"(Official Python MCP SDK server, )\d+ tools \(\d+ default\), "
+        r"\d+ resources, \d+ prompts",
+        (
+            rf"\g<1>{tool_count} tools ({solve_lab_count} default), "
+            rf"{resource_count} resources, {prompt_count} prompts"
+        ),
+        updated,
+    )
     if updated != text:
         arch_path.write_text(updated, encoding="utf-8")
         return True
     return False
+
+
+def _sync_skills_and_setup(repo_root: Path, manifest: dict[str, Any], solve_lab_count: int) -> None:
+    tool_count = int(manifest["tool_count"])
+    model_count = len(manifest["supported_device_models"])
+
+    win_setup = repo_root / "docs" / "windows-setup.md"
+    if win_setup.is_file():
+        ws_txt = win_setup.read_text(encoding="utf-8")
+        ws_new = re.sub(r"all \*\*\d+\*\* tools", f"all **{tool_count}** tools", ws_txt)
+        if ws_new != ws_txt:
+            win_setup.write_text(ws_new, encoding="utf-8")
+
+    skills_readme = repo_root / "skills" / "README.md"
+    if skills_readme.is_file():
+        sr_txt = skills_readme.read_text(encoding="utf-8")
+        sr_new = re.sub(
+            r"across all \d+ verified models",
+            f"across all {model_count} verified models",
+            sr_txt,
+        )
+        sr_new = re.sub(
+            r"Default `solve_lab` profile exposes \*\*\d+\*\* focused tools",
+            f"Default `solve_lab` profile exposes **{solve_lab_count}** focused tools",
+            sr_new,
+        )
+        sr_new = re.sub(
+            r"unlocks all \*\*\d+\*\* tools",
+            f"unlocks all **{tool_count}** tools",
+            sr_new,
+        )
+        if sr_new != sr_txt:
+            skills_readme.write_text(sr_new, encoding="utf-8")
+
+    pt_skill = repo_root / "skills" / "packet-tracer-lab-engineer" / "SKILL.md"
+    if pt_skill.is_file():
+        ps_txt = pt_skill.read_text(encoding="utf-8")
+        ps_new = re.sub(
+            r"\b\d+-model catalog quirks",
+            f"{model_count}-model catalog quirks",
+            ps_txt,
+        )
+        ps_new = re.sub(
+            r"Device Catalog \(\d+ Models\)",
+            f"Device Catalog ({model_count} Models)",
+            ps_new,
+        )
+        if ps_new != ps_txt:
+            pt_skill.write_text(ps_new, encoding="utf-8")
+
+    sr_eng_skill = repo_root / "skills" / "senior-network-engineer" / "SKILL.md"
+    if sr_eng_skill.is_file():
+        se_txt = sr_eng_skill.read_text(encoding="utf-8")
+        se_new = re.sub(
+            r"\*\*Default `solve_lab` \(`\d+` tools\):\*\*",
+            f"**Default `solve_lab` (`{solve_lab_count}` tools):**",
+            se_txt,
+        )
+        se_new = re.sub(
+            r"\*\*Full `advanced` \(`\d+` tools\):\*\*",
+            f"**Full `advanced` (`{tool_count}` tools):**",
+            se_new,
+        )
+        if se_new != se_txt:
+            sr_eng_skill.write_text(se_new, encoding="utf-8")
 
 
 def main() -> int:
@@ -241,6 +350,7 @@ def main() -> int:
             print("Synced README.md counts")
         if _sync_architecture(REPO_ROOT / "docs" / "ARCHITECTURE.md", manifest, solve_lab_count):
             print("Synced docs/ARCHITECTURE.md counts")
+        _sync_skills_and_setup(REPO_ROOT, manifest, solve_lab_count)
     return 0
 
 

@@ -94,3 +94,42 @@ def test_topology_analysis_stp_cycles_layout_and_roundtrip() -> None:
     mermaid = topo.to_mermaid()
     assert "flowchart LR" in mermaid
     assert "SW1" in mermaid
+
+
+@pytest.mark.unit
+def test_topology_trunk_sync_site_zone_merge_and_diff() -> None:
+    base = TopologyEngine()
+    r1 = base.add_device("R1", "2911", site_zone="Core")
+    sw1 = base.add_device("SW1", "2960-24TT", site_zone="Access")
+    assert r1.site_zone == "Core"
+
+    # vlan_mode="trunk" and is_trunk synchronize automatically on InterfaceState
+    sw1_gi = sw1.interfaces["GigabitEthernet0/1"]
+    sw1_gi_synced = sw1_gi.model_validate({**sw1_gi.model_dump(), "vlan_mode": "trunk"})
+    assert sw1_gi_synced.is_trunk is True
+    sw1.interfaces["GigabitEthernet0/1"] = sw1_gi_synced
+    r1.interfaces["GigabitEthernet0/0"].ipv6_address = "2001:db8:1::1/64"
+
+    base.connect("R1", "Gi0/0", "SW1", "Gi0/1")
+
+    branch = TopologyEngine()
+    branch.add_device("R1", "2911")
+    branch.add_device("PC1", "PC-PT", site_zone="Access")
+    branch.connect("R1", "Gi0/1", "PC1", "Fa0")
+
+    diff_before = base.diff_topology(branch)
+    assert diff_before["identical"] is False
+    assert diff_before["has_changes"] is True
+    assert diff_before["devices_added"] == ["PC1"]
+    assert diff_before["devices_removed"] == ["SW1"]
+
+    merged = base.merge_topology(branch)
+    assert merged["devices_added"] == ["PC1"]
+    assert "PC1" in base.model.devices
+    assert len(base.model.connections) == 2
+
+    # target_mode mismatch rejected unless allow_mode_mismatch=True
+    gns_topo = TopologyEngine()
+    gns_topo.model.target_mode = "gns3"
+    with pytest.raises(TopologyConflictError):
+        base.merge_topology(gns_topo)

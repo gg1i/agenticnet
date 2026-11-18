@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from agenticnet.core.enums import PermissionTier, StateLevel
+from agenticnet.core.exceptions import ValidationError
 from agenticnet.core.models import OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
+from agenticnet.security.validation import safe_output_path
 
 
 def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
@@ -68,7 +71,7 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
             )
 
         return runtime.execute(
-            "project_open", PermissionTier.READ_ONLY, {"project_id": project_id}, _run
+            "project_open", PermissionTier.PLANNING, {"project_id": project_id}, _run
         )
 
     def project_save(
@@ -130,7 +133,21 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
         params = {"fmt": fmt, "output_path": output_path}
 
         def _run() -> OperationResult:
-            exported = runtime.manager.export_project(fmt=fmt, output_path=output_path)
+            safe_target: str | None = None
+            if output_path is not None:
+                raw_out = Path(output_path).expanduser()
+                target_in = (
+                    (runtime.settings.data_dir / "exports" / raw_out)
+                    if not raw_out.is_absolute()
+                    else raw_out
+                )
+                resolved = safe_output_path(
+                    target_in,
+                    default_base_dir=runtime.settings.data_dir,
+                    allow_outside_base=False,
+                )
+                safe_target = str(resolved)
+            exported = runtime.manager.export_project(fmt=fmt, output_path=safe_target)
             return OperationResult.ok(
                 "project_export",
                 f"Exported project '{exported['project_id']}' as {exported['format'].upper()}.",
@@ -139,7 +156,8 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
                 evidence=[f"Serialized versioned ProjectBundle ({exported['format']})."],
             )
 
-        return runtime.execute("project_export", PermissionTier.READ_ONLY, params, _run)
+        tier = PermissionTier.PLANNING if output_path else PermissionTier.READ_ONLY
+        return runtime.execute("project_export", tier, params, _run)
 
     def project_import(
         content: str | None = None,
@@ -193,6 +211,19 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
 
         def _run() -> OperationResult:
             summary = runtime.manager.status_summary()
+            has_gui = False
+            try:
+                has_gui = runtime.router.has_live_gui()
+            except AttributeError:
+                is_avail = getattr(runtime.gui, "is_available", None)
+                has_gui = bool(is_avail()) if callable(is_avail) else False
+            if runtime.router.has_live_script():
+                live_backend = "script_backend"
+            elif has_gui:
+                live_backend = "gui_backend"
+            else:
+                live_backend = "offline_planning"
+            summary["packet_tracer_backend"] = live_backend
             active = summary.get("active_project")
             msg = (
                 f"Active project '{active['project_id']}' ({summary['counts']['devices']} devices)."
@@ -211,6 +242,53 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
 
         return runtime.execute("project_status", PermissionTier.READ_ONLY, {}, _run)
 
+    def workspace_preferences(
+        action: Literal["get", "set", "list"] = "list",
+        key: str | None = None,
+        value: Any = None,
+        default: Any = None,
+    ) -> dict[str, Any]:
+        """Get, set, or list persistent standing workspace preferences in SQLite."""
+        params = {"action": action, "key": key, "value": value}
+        tier = PermissionTier.READ_ONLY if action in {"get", "list"} else PermissionTier.PLANNING
+
+        def _run() -> OperationResult:
+            if action == "list":
+                prefs = runtime.manager.store.list_preferences()
+                return OperationResult.ok(
+                    "workspace_preferences",
+                    f"Listed {len(prefs)} workspace preference(s).",
+                    data={"preferences": prefs, "count": len(prefs)},
+                    state_level=StateLevel.PLANNED,
+                    evidence=["Read workspace_preferences table from SQLite."],
+                )
+            cleaned_key = str(key or "").strip()
+            if not cleaned_key:
+                raise ValidationError(
+                    f"workspace_preferences action='{action}' requires a non-empty 'key'."
+                )
+            if action == "get":
+                all_prefs = runtime.manager.store.list_preferences()
+                found = cleaned_key in all_prefs
+                val = runtime.manager.store.get_preference(cleaned_key, default=default)
+                return OperationResult.ok(
+                    "workspace_preferences",
+                    f"Read preference '{cleaned_key}' (found={found}).",
+                    data={"key": cleaned_key, "value": val, "found": found},
+                    state_level=StateLevel.PLANNED,
+                    evidence=[f"Queried preference '{cleaned_key}' from SQLite."],
+                )
+            saved = runtime.manager.store.set_preference(cleaned_key, value)
+            return OperationResult.ok(
+                "workspace_preferences",
+                f"Stored workspace preference '{cleaned_key}'.",
+                data=saved,
+                state_level=StateLevel.PLANNED,
+                evidence=[f"Persisted preference '{cleaned_key}' in SQLite."],
+            )
+
+        return runtime.execute("workspace_preferences", tier, params, _run)
+
     specs = [
         (
             "project_create",
@@ -222,10 +300,10 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
         ),
         (
             "project_open",
-            PermissionTier.READ_ONLY,
+            PermissionTier.PLANNING,
             project_open.__doc__ or "",
             project_open,
-            True,
+            False,
             False,
         ),
         (
@@ -249,7 +327,7 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
             PermissionTier.READ_ONLY,
             project_export.__doc__ or "",
             project_export,
-            True,
+            False,
             False,
         ),
         (
@@ -266,6 +344,14 @@ def register_project_tools(server: MCPServer, runtime: AgenticNetRuntime) -> Non
             project_status.__doc__ or "",
             project_status,
             True,
+            False,
+        ),
+        (
+            "workspace_preferences",
+            PermissionTier.PLANNING,
+            workspace_preferences.__doc__ or "",
+            workspace_preferences,
+            False,
             False,
         ),
     ]

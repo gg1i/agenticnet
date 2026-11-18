@@ -2,14 +2,46 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from agenticnet.core.enums import DeviceCategory, PermissionTier, StateLevel
 from agenticnet.core.exceptions import ValidationError
-from agenticnet.core.models import OperationResult
+from agenticnet.core.models import ExecutionBackend, OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
+
+
+def _resolve_topo_device_name(runtime: AgenticNetRuntime, name: str) -> str:
+    """Resolve a device name or IOS hostname alias against the active TopologyEngine."""
+    _, topo, _, _ = runtime.manager.require_active()
+    if name in topo.model.devices:
+        return name
+    mapped = runtime.router.resolve_pt_device_name(name)
+    if mapped in topo.model.devices:
+        return mapped
+    for cand_name, node in topo.model.devices.items():
+        if node.metadata.get("hostname") == name or node.role == name:
+            return cand_name
+    return name
+
+
+def _dispatch_router_optional(
+    fn: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+    if not callable(fn):
+        return ("offline_model", {}, [], [])
+    sig = inspect.signature(fn)
+    accepted_kw = {
+        k: v
+        for k, v in kwargs.items()
+        if k in sig.parameters
+        or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    }
+    return fn(*args, **accepted_kw)
 
 
 def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
@@ -83,15 +115,29 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
 
         def _run() -> OperationResult:
             _, topo, ipam, _ = runtime.manager.require_active()
-            removed = topo.remove_device(name)
-            removed_ips = ipam.remove_device_allocations(name)
+            resolved_name = _resolve_topo_device_name(runtime, name)
+            removed = topo.remove_device(resolved_name)
+            removed_ips = ipam.remove_device_allocations(resolved_name)
+            rm_fn = getattr(runtime.router, "remove_device", None)
+            backend, live_res, live_ev, warnings = _dispatch_router_optional(
+                rm_fn, resolved_name
+            )
+            payload: dict[str, Any] = {**removed, "removed_ip_allocations": removed_ips}
+            if live_res:
+                payload["live_backend"] = live_res
+            lvl = StateLevel.EXECUTED if backend == "script_backend" else StateLevel.PLANNED
             return OperationResult.ok(
                 "device_remove",
-                f"Removed device '{name}', {len(removed['removed_connections'])} link(s), "
+                f"Removed device '{resolved_name}', {len(removed['removed_connections'])} link(s), "
                 f"and {removed_ips} IP allocation(s).",
-                data={**removed, "removed_ip_allocations": removed_ips},
-                state_level=StateLevel.PLANNED,
-                evidence=[f"Removed '{name}' from TopologyEngine and IPAMEngine."],
+                data=payload,
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=[
+                    f"Removed '{resolved_name}' from TopologyEngine and IPAMEngine.",
+                    *live_ev,
+                ],
             )
 
         return runtime.execute(
@@ -111,7 +157,8 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
 
         def _run() -> OperationResult:
             _, topo, ipam, history = runtime.manager.require_active()
-            node = topo.get_device(name)
+            resolved_name = _resolve_topo_device_name(runtime, name)
+            node = topo.get_device(resolved_name)
             cap = runtime.catalog.capability_report(node.model)
             ips = [
                 a.model_dump(mode="json")
@@ -170,13 +217,24 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                 raise ValidationError(
                     "Provide either (name, x, y) to move one device or auto_layout_strategy."
                 )
-            node = topo.move_device(name, x, y)
+            resolved_name = _resolve_topo_device_name(runtime, name)
+            node = topo.move_device(resolved_name, x, y)
+            mv_fn = getattr(runtime.router, "move_device", None)
+            backend, live_res, live_ev, warnings = _dispatch_router_optional(
+                mv_fn, node.name, x=node.position.x, y=node.position.y
+            )
+            payload: dict[str, Any] = {"name": node.name, "position": node.position.model_dump()}
+            if live_res:
+                payload["live_backend"] = live_res
+            lvl = StateLevel.EXECUTED if backend == "script_backend" else StateLevel.PLANNED
             return OperationResult.ok(
                 "device_move",
                 f"Moved '{node.name}' to ({node.position.x}, {node.position.y}).",
-                data={"name": node.name, "position": node.position.model_dump()},
-                state_level=StateLevel.PLANNED,
-                evidence=[f"Updated coordinates of '{node.name}'."],
+                data=payload,
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=[f"Updated coordinates of '{node.name}'.", *live_ev],
             )
 
         return runtime.execute("device_move", PermissionTier.PLANNING, params, _run)
@@ -252,8 +310,9 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         subnet_mask: str | None = None,
         default_gateway: str | None = None,
         dry_run: bool = False,
+        dns_server: str | None = None,
     ) -> dict[str, Any]:
-        """Configure DHCP or static IPv4/mask/gateway on a PC/Laptop/Server in PT & topology."""
+        """Configure DHCP or static IPv4/mask/gateway/DNS on a host in PT and topology."""
         params = {
             "device_name": device_name,
             "port": port,
@@ -262,6 +321,7 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
             "subnet_mask": subnet_mask,
             "default_gateway": default_gateway,
             "dry_run": dry_run,
+            "dns_server": dns_server,
         }
 
         def _run() -> OperationResult:
@@ -270,15 +330,18 @@ def register_device_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                     "Provide dhcp=True, or both ip_address and subnet_mask for static host setup."
                 )
             _, topo, ipam, _ = runtime.manager.require_active()
-            dev = topo.get_device(device_name)
+            resolved_name = _resolve_topo_device_name(runtime, device_name)
+            dev = topo.get_device(resolved_name)
             canon_port = runtime.catalog.normalize_interface_name(dev.model, port)
-            backend, live_res, ev, warnings = runtime.router.configure_host(
+            backend, live_res, ev, warnings = _dispatch_router_optional(
+                runtime.router.configure_host,
                 dev.name,
                 port=canon_port,
                 dhcp=dhcp,
                 ip=ip_address,
                 subnet_mask=subnet_mask,
                 default_gateway=default_gateway,
+                dns_server=dns_server,
                 console_engine=runtime.console,
                 dry_run=dry_run,
             )

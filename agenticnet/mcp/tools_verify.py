@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import re
+from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import ValidationError as PydanticValidationError
 
-from agenticnet.core.enums import PermissionTier, StateLevel
-from agenticnet.core.exceptions import ValidationError
+from agenticnet.adapters.discovery import validate_lab_file_path
+from agenticnet.core.enums import PermissionTier, PortMedia, StateLevel
+from agenticnet.core.exceptions import (
+    ApprovalRequiredError,
+    DeviceModelError,
+    ProjectNotOpenError,
+    ValidationError,
+)
 from agenticnet.core.models import OperationResult
 from agenticnet.diagnostics.grader import grade_open_activity
 from agenticnet.diagnostics.lab_runner import (
@@ -19,11 +28,249 @@ from agenticnet.diagnostics.lab_runner import (
     derive_working_copy_path,
     evaluate_lab_status,
     paths_refer_to_same_file,
+    run_failure_drill,
     start_lab_session,
 )
 from agenticnet.diagnostics.verifier import LabVerifier
 from agenticnet.diagnostics.verify_schema import get_verify_requirements_schema
+from agenticnet.ipam.engine import IPAMEngine
 from agenticnet.mcp.registry import AgenticNetRuntime
+from agenticnet.topology.engine import TopologyEngine
+from agenticnet.topology.models import InterfaceState
+
+_FALLBACK_MODEL_BY_TYPE: dict[str, str] = {
+    "router": "2911",
+    "switch": "2960-24TT",
+    "l2_switch": "2960-24TT",
+    "multilayer_switch": "3560-24PS",
+    "switch_3650": "3650-24PS",
+    "l3_switch": "3560-24PS",
+    "pc": "PC-PT",
+    "laptop": "Laptop-PT",
+    "server": "Server-PT",
+    "printer": "Printer-PT",
+    "ip_phone": "7960",
+    "home_voip": "Home-VOIP-PT",
+    "wireless_router": "WRT300N",
+    "home_gateway": "WRT300N",
+    "access_point": "AccessPoint-PT",
+    "lightweight_ap": "LAP-PT",
+    "lap": "LAP-PT",
+    "wlc": "WLC-2504",
+    "asa": "5505",
+    "firewall": "5505",
+    "cloud": "Cloud-PT",
+}
+
+
+def _infer_port_media(port_name: str) -> PortMedia:
+    low = port_name.lower()
+    if low.startswith(("serial", "se")):
+        return PortMedia.SERIAL
+    if low.startswith(("tengigabit", "te")):
+        return PortMedia.TEN_GIGABIT_ETHERNET
+    if low.startswith(("gigabit", "gi")):
+        return PortMedia.GIGABIT_ETHERNET
+    if low.startswith(("wireless", "wlan", "dot11")):
+        return PortMedia.WIRELESS
+    if low.startswith("vlan"):
+        return PortMedia.SVI
+    if low.startswith("loopback"):
+        return PortMedia.LOOPBACK
+    return PortMedia.FAST_ETHERNET
+
+
+def _sanitize_topo_device_name(raw_name: str, existing: set[str]) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_name.strip()).strip("_")
+    if not cleaned or not cleaned[0].isalpha():
+        cleaned = f"D_{cleaned or 'dev'}"
+    base = cleaned[:58]
+    candidate = base
+    idx = 1
+    while candidate in existing:
+        candidate = f"{base}_{idx}"
+        idx += 1
+    return candidate
+
+
+def _ensure_hydrated_interface(
+    runtime: AgenticNetRuntime,
+    dev_node: Any,
+    raw_port_name: str,
+) -> str:
+    cleaned = raw_port_name.strip()
+    if not cleaned:
+        return ""
+    try:
+        canon = runtime.catalog.normalize_interface_name(
+            dev_node.model, cleaned, allow_logical=True
+        )
+    except Exception:
+        canon = cleaned
+    if canon not in dev_node.interfaces:
+        media = _infer_port_media(canon)
+        speed = (
+            1000
+            if media == PortMedia.GIGABIT_ETHERNET
+            else (10000 if media == PortMedia.TEN_GIGABIT_ETHERNET else 100)
+        )
+        dev_node.interfaces[canon] = InterfaceState(
+            name=canon,
+            short_name=canon,
+            media=media,
+            speed_mbps=speed,
+            admin_up=True,
+            state_level=StateLevel.VERIFIED,
+        )
+    return canon
+
+
+def _hydrate_topology_from_live_snapshot(
+    runtime: AgenticNetRuntime,
+    snap_data: dict[str, Any],
+    lab_path: str,
+) -> dict[str, Any] | None:
+    """Populate active ProjectManager TopologyEngine, IPAMEngine, and aliases from PT snapshot."""
+    raw_devs = list(snap_data.get("devices") or [])
+    if not raw_devs:
+        return None
+
+    try:
+        meta, topo, ipam, _ = runtime.manager.require_active()
+    except ProjectNotOpenError:
+        stem = re.sub(r"[^a-z0-9]+", "-", Path(lab_path).stem.lower()).strip("-")
+        if len(stem) < 2:
+            stem = f"lab-{stem or 'open'}"
+        runtime.manager.create_project(
+            Path(lab_path).stem or "Opened Lab",
+            project_id=stem[:60],
+            packet_tracer_file=lab_path,
+        )
+        meta, topo, ipam, _ = runtime.manager.require_active()
+
+    staged_topo = TopologyEngine(catalog=runtime.catalog)
+    staged_ipam = IPAMEngine()
+
+    raw_pt_names = {str(d.get("name") or "").strip() for d in raw_devs if d.get("name")}
+    hostname_counts: dict[str, int] = {}
+    for d in raw_devs:
+        h = str(d.get("hostname") or "").strip()
+        if h:
+            hostname_counts[h] = hostname_counts.get(h, 0) + 1
+
+    pt_to_topo: dict[str, str] = {}
+    used_names: set[str] = set()
+
+    for d in raw_devs:
+        pt_name = str(d.get("name") or "").strip()
+        if not pt_name:
+            continue
+        topo_name = _sanitize_topo_device_name(pt_name, used_names)
+        used_names.add(topo_name)
+
+        raw_model = str(d.get("model") or "").strip()
+        type_str = str(d.get("type") or "").strip().lower()
+        try:
+            resolved_model = runtime.catalog.resolve_model_name(raw_model)
+        except (DeviceModelError, Exception):
+            fallback_cand = _FALLBACK_MODEL_BY_TYPE.get(type_str, "PC-PT")
+            resolved_model = runtime.catalog.resolve_model_name(fallback_cand)
+
+        raw_x = d.get("x")
+        raw_y = d.get("y")
+        pos_x = float(raw_x) if isinstance(raw_x, (int, float)) and float(raw_x) >= 0 else None
+        pos_y = float(raw_y) if isinstance(raw_y, (int, float)) and float(raw_y) >= 0 else None
+        hostname = str(d.get("hostname") or "").strip()
+
+        node = staged_topo.add_device(
+            topo_name,
+            resolved_model,
+            x=pos_x,
+            y=pos_y,
+            role=hostname if hostname and hostname != topo_name else "",
+            metadata={"pt_name": pt_name, "hostname": hostname, "raw_model": raw_model},
+        )
+        node.state_level = StateLevel.VERIFIED
+        pt_to_topo[pt_name] = node.name
+
+        if node.name != pt_name:
+            runtime.router.device_aliases[node.name] = pt_name
+        if (
+            hostname
+            and hostname != pt_name
+            and hostname not in raw_pt_names
+            and hostname_counts.get(hostname, 0) == 1
+        ):
+            runtime.router.device_aliases[hostname] = pt_name
+
+        dev_gw = str(d.get("default_gateway") or d.get("gateway") or "").strip()
+        if dev_gw in {"0.0.0.0", "unassigned"}:
+            dev_gw = ""
+
+        for p in d.get("ports") or []:
+            canon_p = _ensure_hydrated_interface(runtime, node, str(p.get("name") or ""))
+            if not canon_p:
+                continue
+            iface = node.interfaces[canon_p]
+            iface.state_level = StateLevel.VERIFIED
+            ip_val = str(p.get("ip_address") or "").strip()
+            mask_val = str(p.get("subnet_mask") or "").strip()
+            gw_val = str(p.get("default_gateway") or p.get("gateway") or dev_gw).strip()
+
+            if ip_val and ip_val.lower() not in {"0.0.0.0", "unassigned"}:
+                iface.ip_address = ip_val
+            if mask_val and mask_val.lower() not in {"0.0.0.0", "unassigned"}:
+                iface.subnet_mask = mask_val
+            if gw_val and gw_val.lower() not in {"0.0.0.0", "unassigned"}:
+                iface.default_gateway = gw_val
+
+            if p.get("admin_down") is True:
+                iface.admin_up = False
+            elif "port_up" in p and (iface.ip_address or p.get("has_link")):
+                iface.admin_up = bool(p.get("port_up"))
+
+            if iface.ip_address and iface.subnet_mask:
+                alloc_kind = (
+                    "svi"
+                    if canon_p.startswith("Vlan")
+                    else ("loopback" if canon_p.startswith("Loopback") else "static")
+                )
+                with suppress(Exception):
+                    staged_ipam.allocate_address(
+                        node.name,
+                        canon_p,
+                        iface.ip_address,
+                        subnet_mask=iface.subnet_mask,
+                        gateway=iface.default_gateway,
+                        allocation_type=alloc_kind,
+                    )
+
+    for lnk in snap_data.get("links") or []:
+        d1_pt = str(lnk.get("device1") or "").strip()
+        d2_pt = str(lnk.get("device2") or "").strip()
+        p1_raw = str(lnk.get("port1") or "").strip()
+        p2_raw = str(lnk.get("port2") or "").strip()
+        src_name = pt_to_topo.get(d1_pt)
+        dst_name = pt_to_topo.get(d2_pt)
+        if not src_name or not dst_name or not p1_raw or not p2_raw:
+            continue
+        src_node = staged_topo.model.devices[src_name]
+        dst_node = staged_topo.model.devices[dst_name]
+        c_p1 = _ensure_hydrated_interface(runtime, src_node, p1_raw)
+        c_p2 = _ensure_hydrated_interface(runtime, dst_node, p2_raw)
+        with suppress(Exception):
+            edge = staged_topo.connect(src_name, c_p1, dst_name, c_p2, cable_type="auto")
+            edge.state_level = StateLevel.VERIFIED
+
+    meta.packet_tracer_file = lab_path
+    topo.model = staged_topo.model
+    topo._rebuild_graph()
+    ipam.state = staged_ipam.state
+    return {
+        "project_id": meta.project_id,
+        "hydrated_devices": len(topo.model.devices),
+        "hydrated_connections": len(topo.model.connections),
+    }
 
 
 def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
@@ -282,6 +529,9 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
             cleaned = str(path or "").strip()
             if not cleaned:
                 raise ValidationError("Lab file path must not be empty.")
+            validate_lab_file_path(cleaned, must_exist=False)
+            if working_copy_path is not None and str(working_copy_path).strip():
+                validate_lab_file_path(str(working_copy_path).strip(), must_exist=False)
             if dry_run:
                 work_preview = (
                     derive_working_copy_path(cleaned, working_copy_path)
@@ -346,6 +596,16 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                     "links": snap["links"],
                 }
                 ev = [*ev, *snap_ev]
+                hydration = _hydrate_topology_from_live_snapshot(
+                    runtime, snap_data, cleaned
+                )
+                if hydration is not None:
+                    data["topology_hydration"] = hydration
+                    ev.append(
+                        f"Hydrated active project '{hydration['project_id']}' with "
+                        f"{hydration['hydrated_devices']} device(s) and "
+                        f"{hydration['hydrated_connections']} link(s)."
+                    )
             except Exception:
                 pass
             return OperationResult.ok(
@@ -376,6 +636,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         overwrite: bool = True,
         overwrite_original: bool = False,
         confirm_overwrite_original: bool = False,
+        confirm: bool = False,
         timeout_seconds: float = 30.0,
         include_diff: bool = True,
         dry_run: bool = False,
@@ -389,6 +650,8 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
             effective_path = (
                 cleaned if cleaned is not None else runtime.router.active_working_path
             )
+            if effective_path is not None:
+                validate_lab_file_path(effective_path, must_exist=False)
             method = "fileSaveAsNoPrompt" if effective_path else "fileSave"
             if dry_run:
                 return OperationResult.ok(
@@ -407,6 +670,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                 )
             backup_path: str | None = None
             orig_path = runtime.router.active_original_path
+            work_path = runtime.router.active_working_path
             if (
                 orig_path
                 and effective_path
@@ -418,7 +682,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                         "request (overwrite_original=True, confirm_overwrite_original=True).",
                         details={
                             "original_path": orig_path,
-                            "working_copy_path": runtime.router.active_working_path,
+                            "working_copy_path": work_path,
                         },
                         remediation=(
                             "Save to the working copy (path=None or *_agenticnet.pkt), or pass "
@@ -427,6 +691,27 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                     )
                 backup_path = create_original_backup(orig_path)
                 runtime.router.active_backup_path = backup_path
+            elif (
+                effective_path
+                and not (work_path and paths_refer_to_same_file(effective_path, work_path))
+                and Path(effective_path).expanduser().is_file()
+            ):
+                if not overwrite:
+                    raise ValidationError(
+                        f"Destination lab file '{effective_path}' already exists "
+                        "and overwrite=False.",
+                        details={"path": effective_path},
+                        remediation="Choose a new path or pass overwrite=True and confirm=True.",
+                    )
+                if not confirm:
+                    raise ApprovalRequiredError(
+                        f"Overwriting existing lab file '{effective_path}' requires confirm=True.",
+                        details={"path": effective_path},
+                        remediation=(
+                            "Pass confirm=True to overwrite the existing lab file, "
+                            "or save to a new path."
+                        ),
+                    )
 
             backend, data, ev, warnings = runtime.router.save_file(
                 effective_path,
@@ -468,11 +753,13 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
                 "path": path,
                 "overwrite": overwrite,
                 "overwrite_original": overwrite_original,
+                "confirm": confirm,
                 "timeout_seconds": timeout_seconds,
                 "include_diff": include_diff,
                 "dry_run": dry_run,
             },
             _run,
+            confirm=confirm,
         )
 
     def lab_status(
@@ -660,6 +947,74 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
             _run,
         )
 
+    def lab_failure_drill(
+        requirements: dict[str, Any] | list[dict[str, Any]] | None = None,
+        break_step: dict[str, Any] | None = None,
+        fix_step: dict[str, Any] | None = None,
+        lab_spec: dict[str, Any] | None = None,
+        task_ids: list[str] | None = None,
+        dry_run: bool = False,
+        require_healthy_baseline: bool = True,
+        settle_scale: float = 1.0,
+        timeout_seconds: float = 25.0,
+        poll_wait_seconds: float | None = 0.0,
+        recovery_poll_wait_seconds: float | None = 0.0,
+    ) -> dict[str, Any]:
+        """Run a reversible fault-injection and convergence recovery drill on a live lab."""
+        params = {
+            "has_requirements": requirements is not None,
+            "has_break_step": break_step is not None,
+            "has_fix_step": fix_step is not None,
+            "has_lab_spec": lab_spec is not None,
+            "dry_run": dry_run,
+            "require_healthy_baseline": require_healthy_baseline,
+        }
+
+        def _run() -> OperationResult:
+            drill = run_failure_drill(
+                runtime.router,
+                lab_spec,
+                requirements=requirements,
+                break_step=break_step,
+                fix_step=fix_step,
+                task_ids=task_ids,
+                dry_run=dry_run,
+                require_healthy_baseline=require_healthy_baseline,
+                settle_scale=settle_scale,
+                timeout_seconds=timeout_seconds,
+                poll_wait_seconds=poll_wait_seconds,
+                recovery_poll_wait_seconds=recovery_poll_wait_seconds,
+            )
+            lvl = StateLevel(drill.get("state_level", StateLevel.PLANNED.value))
+            backend = drill.get("execution_backend", "offline_model")
+            if dry_run:
+                summary = "Planned reversible failure drill (dry_run=True)."
+            elif drill.get("drill_passed"):
+                summary = (
+                    "Failure drill passed: baseline healthy, outage verified, "
+                    "and recovery restored."
+                )
+            else:
+                summary = (
+                    "Failure drill completed with unmet assertions "
+                    f"(reversible_restored={drill.get('reversible_restored')})."
+                )
+            return OperationResult.ok(
+                "lab_failure_drill",
+                summary,
+                data=drill,
+                state_level=lvl,
+                execution_backend=backend,
+                evidence=[summary],
+            )
+
+        return runtime.execute(
+            "lab_failure_drill",
+            PermissionTier.CONFIGURATION,
+            params,
+            _run,
+        )
+
     specs = [
         ("verify_requirements_schema", verify_requirements_schema, PermissionTier.READ_ONLY, True),
         ("verify_lab", verify_lab, PermissionTier.READ_ONLY, True),
@@ -671,6 +1026,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         ("list_devices", list_devices, PermissionTier.READ_ONLY, True),
         ("lab_snapshot", lab_snapshot, PermissionTier.READ_ONLY, True),
         ("lab_diff", lab_diff, PermissionTier.READ_ONLY, True),
+        ("lab_failure_drill", lab_failure_drill, PermissionTier.CONFIGURATION, False),
     ]
     for name, fn, tier, ro in specs:
         runtime.registry.register_tool(

@@ -16,21 +16,34 @@ def _utc_now() -> datetime:
 
 
 class CLIPromptMode(StrEnum):
-    """Recognized Cisco IOS and Packet Tracer host prompt states."""
+    """Recognized Cisco IOS, ASA, and Packet Tracer host prompt states."""
 
     UNKNOWN = "unknown"
     PRESS_RETURN = "press_return"
     INITIAL_SETUP_DIALOG = "initial_setup_dialog"
+    PASSWORD_PROMPT = "password_prompt"
+    CONFIRM_PROMPT = "confirm_prompt"
     USER_EXEC = "user_exec"
     PRIVILEGED_EXEC = "privileged_exec"
     GLOBAL_CONFIG = "global_config"
+    CONFIG_SUBMODE = "config_submode"
     INTERFACE_CONFIG = "interface_config"
+    INTERFACE_RANGE_CONFIG = "interface_range_config"
     SUBINTERFACE_CONFIG = "subinterface_config"
     ROUTER_CONFIG = "router_config"
     DHCP_CONFIG = "dhcp_config"
     LINE_CONFIG = "line_config"
     VLAN_CONFIG = "vlan_config"
     ACL_CONFIG = "acl_config"
+    CRYPTO_ISAKMP_CONFIG = "crypto_isakmp_config"
+    CRYPTO_MAP_CONFIG = "crypto_map_config"
+    ZONE_CONFIG = "zone_config"
+    ZONE_PAIR_CONFIG = "zone_pair_config"
+    POLICY_MAP_CONFIG = "policy_map_config"
+    CLASS_MAP_CONFIG = "class_map_config"
+    TELEPHONY_CONFIG = "telephony_config"
+    EPHONE_CONFIG = "ephone_config"
+    EPHONE_DN_CONFIG = "ephone_dn_config"
     PAGING_MORE = "paging_more"
     PC_PROMPT = "pc_prompt"
 
@@ -39,6 +52,7 @@ class ConsoleInteractionKind(StrEnum):
     """How a device exposes interactive command execution in Packet Tracer."""
 
     IOS_CLI = "ios_cli"
+    ASA_CLI = "asa_cli"
     PT_DESKTOP_CMD = "pt_desktop_cmd"
     GUI_ONLY = "gui_only"
 
@@ -65,6 +79,8 @@ class ParsedPrompt(BaseModel):
     raw_prompt: str = ""
     has_paging: bool = False
     in_setup_dialog: bool = False
+    in_password_prompt: bool = False
+    in_confirm_prompt: bool = False
 
 
 class ConsoleSessionState(BaseModel):

@@ -9,9 +9,10 @@ import networkx as nx
 from agenticnet.adapters.base import GuiBackend, SimulationBackend
 from agenticnet.console.engine import DeviceConsoleEngine
 from agenticnet.core.enums import StateLevel
-from agenticnet.core.exceptions import AgenticNetError, DeviceNotFoundError
+from agenticnet.core.exceptions import AgenticNetError, DeviceNotFoundError, ValidationError
 from agenticnet.devices import DEFAULT_CATALOG, DeviceCatalog
 from agenticnet.gui.windows_backend import WindowsGuiBackend
+from agenticnet.security.validation import validate_ping_target
 from agenticnet.simulation.models import (
     ConnectivityCheckReport,
     ParsedArpEntry,
@@ -105,6 +106,21 @@ class SimulationEngine(SimulationBackend):
             "state_level": res["state_level"],
         }
 
+    def _extract_command_output(self, res: dict[str, Any], expected_command: str) -> str:
+        """Extract raw_output for the matching command transcript rather than transcripts[0]."""
+        transcripts = res.get("transcripts", [])
+        if not isinstance(transcripts, list) or not transcripts:
+            return ""
+        want = expected_command.strip().lower()
+        for tr in transcripts:
+            if isinstance(tr, dict) and want in str(tr.get("command", "")).strip().lower():
+                return str(tr.get("raw_output", ""))
+        for tr in reversed(transcripts):
+            if isinstance(tr, dict) and str(tr.get("raw_output", "")).strip():
+                return str(tr.get("raw_output", ""))
+        last = transcripts[-1]
+        return str(last.get("raw_output", "")) if isinstance(last, dict) else ""
+
     def create_packet(
         self,
         source_device: str,
@@ -115,10 +131,11 @@ class SimulationEngine(SimulationBackend):
         destination_port: int | None = None,
     ) -> dict[str, Any]:
         """Create and register a test PDU packet specification."""
+        clean_dest = validate_ping_target(destination_ip)
         proto = PDUProtocol(protocol.upper())
         spec = TestPacketSpec(
             source_device=source_device,
-            destination_ip=destination_ip,
+            destination_ip=clean_dest,
             protocol=proto,
             source_ip=source_ip,
             destination_port=destination_port,
@@ -166,26 +183,36 @@ class SimulationEngine(SimulationBackend):
         Executes via device CLI if available; falls back to graph reachability estimation
         only when offline and allowed, clearly tagging the evidence source.
         """
+        clean_dest = validate_ping_target(destination_ip)
+        if count < 1 or count > 100:
+            raise ValidationError(
+                f"Invalid ping count {count!r}: expected an integer between 1 and 100.",
+                details={"count": count},
+            )
         evidence: list[str] = []
         warnings: list[str] = []
 
         if self.console and self.console.transport.is_available():
             try:
-                cmd = f"ping {destination_ip}"
+                if count == 4:
+                    cmd = f"ping {clean_dest}"
+                else:
+                    profiles = getattr(self.console, "_profiles", {})
+                    prof = profiles.get(source) if isinstance(profiles, dict) else None
+                    if (
+                        prof is not None
+                        and getattr(prof, "interaction_kind", "") == "pt_desktop_cmd"
+                    ):
+                        cmd = f"ping -n {count} {clean_dest}"
+                    else:
+                        cmd = f"ping {clean_dest} repeat {count}"
                 res = self.console.execute_commands(
                     device_name=source,
                     commands=[cmd],
                     target_mode="preserve",
                 )
-                output_text = ""
-                for tr in res.get("transcripts", []):
-                    if cmd in tr.get("command", ""):
-                        output_text = tr.get("raw_output", "")
-                        break
-                if not output_text and res.get("transcripts"):
-                    output_text = res["transcripts"][-1].get("raw_output", "")
-
-                summary = parse_ping_output(output_text, target_ip=destination_ip)
+                output_text = self._extract_command_output(res, cmd)
+                summary = parse_ping_output(output_text, target_ip=clean_dest)
                 evidence.append(
                     f"Executed '{cmd}' on live console of {source}: "
                     f"received={summary.received}/{summary.transmitted}, "
@@ -193,7 +220,7 @@ class SimulationEngine(SimulationBackend):
                 )
                 report = ConnectivityCheckReport(
                     source_device=source,
-                    destination_ip=destination_ip,
+                    destination_ip=clean_dest,
                     protocol=PDUProtocol.ICMP,
                     simulation_source=SimulationSource.PACKET_TRACER_CLI,
                     verified_in_pt=True,
@@ -216,7 +243,7 @@ class SimulationEngine(SimulationBackend):
             target_device_name: str | None = None
             for d_name, dev in topology.model.devices.items():
                 for iface in dev.interfaces.values():
-                    if iface.ipv4_address == destination_ip:
+                    if iface.ipv4_address == clean_dest:
                         target_device_name = d_name
                         break
                 if target_device_name:
@@ -234,11 +261,11 @@ class SimulationEngine(SimulationBackend):
                     reachable = False
                 evidence.append(
                     f"Analyzed topology graph reachability from {source} to "
-                    f"{target_device_name} ({destination_ip}): hops={hops}."
+                    f"{target_device_name} ({clean_dest}): hops={hops}."
                 )
             else:
                 warnings.append(
-                    f"Destination IP {destination_ip} is not assigned to any known topology device."
+                    f"Destination IP {clean_dest} is not assigned to any known topology device."
                 )
 
             warnings.append(
@@ -247,7 +274,7 @@ class SimulationEngine(SimulationBackend):
             )
             report = ConnectivityCheckReport(
                 source_device=source,
-                destination_ip=destination_ip,
+                destination_ip=clean_dest,
                 protocol=PDUProtocol.ICMP,
                 simulation_source=SimulationSource.OFFLINE_TOPOLOGY_CHECK,
                 verified_in_pt=False,
@@ -260,7 +287,7 @@ class SimulationEngine(SimulationBackend):
             return report.model_dump(mode="json")
 
         raise AgenticNetError(
-            f"Cannot run connectivity check from '{source}' to {destination_ip}: "
+            f"Cannot run connectivity check from '{source}' to {clean_dest}: "
             "no live console attached and topology estimation disabled.",
             error_code="CONNECTIVITY_CHECK_UNAVAILABLE",
             remediation="Attach a live console transport or provide active topology model.",
@@ -282,11 +309,7 @@ class SimulationEngine(SimulationBackend):
             commands=["show ip route"],
             target_mode="privileged_exec",
         )
-        raw = ""
-        for tr in res.get("transcripts", []):
-            if "show ip route" in tr.get("command", ""):
-                raw = tr.get("raw_output", "")
-                break
+        raw = self._extract_command_output(res, "show ip route")
         parsed = parse_show_ip_route(raw)
         routes: list[ParsedRouteEntry] = parsed.get("routes", [])  # type: ignore[assignment]
         return {
@@ -311,7 +334,7 @@ class SimulationEngine(SimulationBackend):
             commands=["show arp"],
             target_mode="privileged_exec",
         )
-        raw = res["transcripts"][0]["raw_output"] if res.get("transcripts") else ""
+        raw = self._extract_command_output(res, "show arp")
         entries: list[ParsedArpEntry] = parse_show_arp(raw)
         return {
             "device_name": device_name,
@@ -334,7 +357,7 @@ class SimulationEngine(SimulationBackend):
             commands=["show ip interface brief"],
             target_mode="privileged_exec",
         )
-        raw = res["transcripts"][0]["raw_output"] if res.get("transcripts") else ""
+        raw = self._extract_command_output(res, "show ip interface brief")
         rows: list[ParsedInterfaceBrief] = parse_show_ip_int_brief(raw)
         return {
             "device_name": device_name,
@@ -357,7 +380,7 @@ class SimulationEngine(SimulationBackend):
             commands=["show vlan brief"],
             target_mode="privileged_exec",
         )
-        raw = res["transcripts"][0]["raw_output"] if res.get("transcripts") else ""
+        raw = self._extract_command_output(res, "show vlan brief")
         vlans: list[ParsedVlanEntry] = parse_show_vlan_brief(raw)
         return {
             "device_name": device_name,
@@ -380,7 +403,7 @@ class SimulationEngine(SimulationBackend):
             commands=["show ip ospf neighbor"],
             target_mode="privileged_exec",
         )
-        raw = res["transcripts"][0]["raw_output"] if res.get("transcripts") else ""
+        raw = self._extract_command_output(res, "show ip ospf neighbor")
         nbrs: list[ParsedOspfNeighbor] = parse_show_ip_ospf_neighbor(raw)
         return {
             "device_name": device_name,

@@ -37,19 +37,78 @@
     "solve_lab",
     "advanced"
   ],
-  "tool_count": 82,
+  "tool_count": 94,
   "categories": {
-    "project": 7,
-    "topology": 6,
+    "project": 8,
+    "topology": 8,
     "devices": 7,
     "connections": 5,
     "ipam": 5,
-    "configuration": 14,
+    "configuration": 22,
     "cli": 5,
     "gui": 10,
     "simulation": 6,
-    "diagnostics": 17
+    "diagnostics": 18
   },
+  "platform_core": {
+    "architecture": "modular_adapter_core",
+    "default_target_mode": "packet_tracer",
+    "supported_target_modes": [
+      "packet_tracer"
+    ],
+    "state_levels": [
+      "planned",
+      "executed",
+      "verified"
+    ],
+    "execution_backends": [
+      "offline_model",
+      "script_backend",
+      "gui_backend",
+      "hybrid"
+    ],
+    "subsystems": [
+      "capability_registry",
+      "topology_and_ipam_engine",
+      "config_lifecycle_and_pre_apply_validator",
+      "execution_and_console_engine",
+      "diagnostics_and_verification_engine",
+      "sqlite_state_and_preferences_store"
+    ]
+  },
+  "adapters": [
+    {
+      "adapter_id": "cisco_packet_tracer",
+      "display_name": "Cisco Packet Tracer Adapter",
+      "status": "active",
+      "tested_simulator_version": "8.2.2",
+      "supported_modes": [
+        "packet_tracer"
+      ],
+      "verified_model_count": 30,
+      "connection_requirements": {
+        "primary_bridge": "Packet Tracer 8.2.2+ with Script Module 'netforge_bridge.pts' enabled On Startup over authenticated localhost HTTP IPC.",
+        "gui_fallback": "Unlocked Windows 10/11 desktop session (optional; required only for Physical-tab or GUI-only dialogs).",
+        "offline_mode": "Cross-platform (Windows, Linux, macOS) with zero external simulator process required for planning, validation, and SQLite."
+      },
+      "capabilities": [
+        "device_add_remove_move",
+        "link_create_delete_and_mdi_mdix_validation",
+        "ios_and_asa_cli_execution_with_paging_and_submodes",
+        "host_ipv4_dhcp_static_gateway_dns_configuration",
+        "copy_on_write_pkt_pka_lifecycle_and_live_hydration",
+        "live_cli_root_cause_diagnostics_and_self_repair",
+        "closed_loop_verify_lab_grade_lab_and_reversible_failure_drills"
+      ],
+      "limitations": [
+        "PT IOS-XE (4321/ISR4331) omits route-map, ip prefix-list, and PBR.",
+        "PT 3560-24PS omits NAT/PAT; 2960-24TT is Layer-2 only.",
+        "PT ASA (5505/5506-X) omits dynamic routing, HA failover, and IKEv2.",
+        "Server-PT services, WLC Web GUI, and Laptop NIC swaps require GUI mode.",
+        "Locked .pka assessments fail closed in grade_lab and use verify_lab."
+      ]
+    }
+  ],
   "tools": [
     {
       "name": "project_create",
@@ -63,10 +122,10 @@
     {
       "name": "project_open",
       "category": "project",
-      "permission_tier": "read_only",
+      "permission_tier": "planning",
       "description": "Open an existing AgenticNet project from SQLite and make it active.",
       "status": "stable",
-      "read_only": true,
+      "read_only": false,
       "destructive": false
     },
     {
@@ -93,7 +152,7 @@
       "permission_tier": "read_only",
       "description": "Export the active project (topology, IPAM, snapshots, metadata) to JSON or YAML.",
       "status": "stable",
-      "read_only": true,
+      "read_only": false,
       "destructive": false
     },
     {
@@ -115,12 +174,39 @@
       "destructive": false
     },
     {
+      "name": "workspace_preferences",
+      "category": "project",
+      "permission_tier": "planning",
+      "description": "Get, set, or list persistent standing workspace preferences in SQLite.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
       "name": "topology_create",
       "category": "topology",
       "permission_tier": "planning",
       "description": "Build a multi-device topology atomically from device and connection lists.",
       "status": "stable",
       "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "topology_merge",
+      "category": "topology",
+      "permission_tier": "planning",
+      "description": "Incrementally merge devices, interfaces, and links into the active topology.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "topology_diff",
+      "category": "topology",
+      "permission_tier": "read_only",
+      "description": "Compute structural device, interface, and link differences against another topology.",
+      "status": "stable",
+      "read_only": true,
       "destructive": false
     },
     {
@@ -181,7 +267,7 @@
       "name": "host_configure",
       "category": "devices",
       "permission_tier": "configuration",
-      "description": "Configure DHCP or static IPv4/mask/gateway on a PC/Laptop/Server in PT & topology.",
+      "description": "Configure DHCP or static IPv4/mask/gateway/DNS on a host in PT and topology.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -430,6 +516,78 @@
       "destructive": false
     },
     {
+      "name": "configure_hsrp",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated HSRP v1/v2 first-hop redundancy configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_bgp",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate validated BGP-4 eBGP/iBGP autonomous system configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_dhcp_snooping",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Layer 2 DHCP Snooping global, VLAN, trust, and rate-limit configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_dai",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Layer 2 Dynamic ARP Inspection (DAI) configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_services",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate NTP, Syslog, SNMP, and AAA RADIUS/TACACS+ management plane configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_voip_cme",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Cisco CallManager Express (CME) SCCP telephony configuration.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "configure_asa",
+      "category": "configuration",
+      "permission_tier": "configuration",
+      "description": "Generate Cisco ASA 5505 (VLAN SVI) or ASA 5506-X (routed port) firewall config.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
+      "name": "stored_config_manage",
+      "category": "configuration",
+      "permission_tier": "planning",
+      "description": "Manage stored per-device design configs (upsert/read/merge/delete) & pre-apply checks.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
+    },
+    {
       "name": "configuration_backup",
       "category": "configuration",
       "permission_tier": "configuration",
@@ -516,7 +674,7 @@
       "permission_tier": "read_only",
       "description": "Capture a screenshot of Packet Tracer or a dialog offscreen and inspect layout.",
       "status": "stable",
-      "read_only": true,
+      "read_only": false,
       "destructive": false
     },
     {
@@ -578,7 +736,7 @@
       "category": "gui",
       "permission_tier": "gui_control",
       "description": "Attach AC power adapter onto a 7960 IP Phone in Packet Tracer's Physical tab.\n\n        Status: experimental: not yet validated by the 5-attempt live protocol.",
-      "status": "stable",
+      "status": "experimental",
       "read_only": false,
       "destructive": false
     },
@@ -788,6 +946,15 @@
       "status": "stable",
       "read_only": true,
       "destructive": false
+    },
+    {
+      "name": "lab_failure_drill",
+      "category": "diagnostics",
+      "permission_tier": "configuration",
+      "description": "Run a reversible fault-injection and convergence recovery drill on a live lab.",
+      "status": "stable",
+      "read_only": false,
+      "destructive": false
     }
   ],
   "resources": [
@@ -809,9 +976,39 @@
   ],
   "supported_device_models": [
     {
+      "model": "3702i",
+      "display_name": "Cisco Aironet 3702i Lightweight AP",
+      "category": "access_point",
+      "supports_ios_cli": false
+    },
+    {
       "model": "AccessPoint-PT",
       "display_name": "Generic Wireless Access Point",
       "category": "access_point",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "LAP-PT",
+      "display_name": "Cisco Lightweight Access Point",
+      "category": "access_point",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "Cloud-PT",
+      "display_name": "Packet Tracer WAN Cloud",
+      "category": "cloud",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "5505",
+      "display_name": "Cisco ASA 5505 Adaptive Security Appliance",
+      "category": "firewall",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "5506-X",
+      "display_name": "Cisco ASA 5506-X Adaptive Security Appliance",
+      "category": "firewall",
       "supports_ios_cli": false
     },
     {
@@ -851,6 +1048,12 @@
       "supports_ios_cli": false
     },
     {
+      "model": "Analog-Phone-PT",
+      "display_name": "Packet Tracer Analog Phone",
+      "category": "pc",
+      "supports_ios_cli": false
+    },
+    {
       "model": "Home-VOIP-PT",
       "display_name": "Home VoIP ATA Adapter",
       "category": "pc",
@@ -859,6 +1062,18 @@
     {
       "model": "PC-PT",
       "display_name": "Packet Tracer PC",
+      "category": "pc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "Smartphone-PT",
+      "display_name": "Packet Tracer Smartphone",
+      "category": "pc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "TabletPC-PT",
+      "display_name": "Packet Tracer Tablet PC",
       "category": "pc",
       "supports_ios_cli": false
     },
@@ -893,6 +1108,12 @@
       "supports_ios_cli": true
     },
     {
+      "model": "ISR4331",
+      "display_name": "Cisco ISR 4331 Router",
+      "category": "router",
+      "supports_ios_cli": true
+    },
+    {
       "model": "Router-PT",
       "display_name": "Generic Packet Tracer Router",
       "category": "router",
@@ -905,9 +1126,33 @@
       "supports_ios_cli": false
     },
     {
+      "model": "HomeGateway-PT",
+      "display_name": "Cisco IoT Home Gateway",
+      "category": "wireless_router",
+      "supports_ios_cli": false
+    },
+    {
       "model": "WRT300N",
       "display_name": "Linksys WRT300N Wireless Router",
       "category": "wireless_router",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "WLC-2504",
+      "display_name": "Cisco 2504 Wireless LAN Controller",
+      "category": "wlc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "WLC-3504",
+      "display_name": "Cisco 3504 Wireless LAN Controller",
+      "category": "wlc",
+      "supports_ios_cli": false
+    },
+    {
+      "model": "WLC-PT",
+      "display_name": "Packet Tracer Generic WLC",
+      "category": "wlc",
       "supports_ios_cli": false
     }
   ]

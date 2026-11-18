@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 
 from agenticnet.core.enums import ConfigCapability, DeviceCategory
 from agenticnet.diagnostics.models import (
@@ -13,6 +14,14 @@ from agenticnet.diagnostics.models import (
     RepairProposal,
 )
 from agenticnet.ipam.engine import IPAMEngine
+from agenticnet.simulation.parsers import (
+    canonicalize_interface_name,
+    parse_running_config_sections,
+    parse_show_access_lists,
+    parse_show_interfaces_trunk,
+    parse_show_ip_int_brief,
+    parse_show_ip_ospf_neighbor,
+)
 from agenticnet.topology.engine import TopologyEngine
 
 
@@ -149,9 +158,7 @@ def check_missing_default_gateways(
                             command_sequence=[
                                 f"ipconfig {iface.ipv4_address} {host_mask} {gw_suggestion}"
                             ],
-                            description=(
-                                f"Configure default gateway {gw_suggestion} on {d_name}."
-                            ),
+                            description=(f"Configure default gateway {gw_suggestion} on {d_name}."),
                             is_disruptive=False,
                         )
                     ],
@@ -175,9 +182,7 @@ def check_missing_default_gateways(
             if not is_invalid_gw:
                 continue
 
-            gw_suggestion = _suggest_gateway_for_host(
-                iface.ipv4_address, iface.subnet_mask, ipam
-            )
+            gw_suggestion = _suggest_gateway_for_host(iface.ipv4_address, iface.subnet_mask, ipam)
             finding = DiagnosticFinding(
                 category=DiagnosticCategory.ADDRESSING_IPAM,
                 severity=DiagnosticSeverity.ERROR,
@@ -213,9 +218,7 @@ def check_missing_default_gateways(
                         command_sequence=[
                             f"ipconfig {iface.ipv4_address} {host_mask} {gw_suggestion}"
                         ],
-                        description=(
-                            f"Set default gateway {gw_suggestion} matching subnet {net}."
-                        ),
+                        description=(f"Set default gateway {gw_suggestion} matching subnet {net}."),
                         is_disruptive=True,
                     )
                 ],
@@ -321,8 +324,8 @@ def check_vlan_trunk_native_mismatch(
             continue
 
         if if_a.is_trunk and if_b.is_trunk:
-            vlan_a = if_a.vlan_id or 1
-            vlan_b = if_b.vlan_id or 1
+            vlan_a = if_a.native_vlan if if_a.native_vlan != 1 else (if_a.vlan_id or 1)
+            vlan_b = if_b.native_vlan if if_b.native_vlan != 1 else (if_b.vlan_id or 1)
             if vlan_a != vlan_b:
                 finding = DiagnosticFinding(
                     category=DiagnosticCategory.VLAN_TRUNKING,
@@ -443,4 +446,653 @@ def check_trunk_mode_mismatch(
             approval_reason="Switching an interface to trunk mode disrupts current port traffic.",
         )
         results.append((finding, repair))
+    return results
+
+
+def _wildcard_matches_ip(ip_str: str, net_str: str, wildcard_str: str) -> bool:
+    """Return True if `ip_str` matches Cisco IOS `network <net_str> <wildcard_str>`."""
+    try:
+        ip_int = int(ipaddress.IPv4Address(ip_str))
+        net_int = int(ipaddress.IPv4Address(net_str))
+        wc_int = int(ipaddress.IPv4Address(wildcard_str))
+    except ValueError:
+        return False
+    mask_int = (~wc_int) & 0xFFFFFFFF
+    return (ip_int & mask_int) == (net_int & mask_int)
+
+
+def _extract_ospf_config(running_cfg: str) -> dict[str, object] | None:
+    """Extract OSPF process_id, `(net, wc, area, raw)` statements, and passive interfaces."""
+    sections = parse_running_config_sections(running_cfg, section="router ospf")
+    if not sections:
+        return None
+    sec = sections[0]
+    m_pid = re.match(r"^router\s+ospf\s+(\d+)", sec.header, re.IGNORECASE)
+    pid = int(m_pid.group(1)) if m_pid else 1
+    networks: list[tuple[str, str, int, str]] = []
+    passive_ifs: set[str] = set()
+    passive_default = False
+    no_passive_ifs: set[str] = set()
+
+    _net_re = re.compile(
+        r"^network\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\d{1,3}(?:\.\d{1,3}){3})\s+area\s+(\d+)$",
+        re.IGNORECASE,
+    )
+    for line in sec.lines:
+        stripped = " ".join(line.strip().split())
+        nm = _net_re.match(stripped)
+        if nm:
+            networks.append((nm.group(1), nm.group(2), int(nm.group(3)), stripped))
+            continue
+        low = stripped.lower()
+        if low == "passive-interface default":
+            passive_default = True
+        elif low.startswith("no passive-interface "):
+            no_passive_ifs.add(canonicalize_interface_name(stripped[21:]))
+        elif low.startswith("passive-interface "):
+            passive_ifs.add(canonicalize_interface_name(stripped[18:]))
+
+    return {
+        "process_id": pid,
+        "networks": networks,
+        "passive_default": passive_default,
+        "passive_ifs": passive_ifs,
+        "no_passive_ifs": no_passive_ifs,
+    }
+
+
+def evaluate_live_cli_diagnostics(
+    topology: TopologyEngine,
+    live_snapshots: dict[str, dict[str, str]],
+    *,
+    categories: set[DiagnosticCategory] | None = None,
+) -> list[tuple[DiagnosticFinding, RepairProposal]]:
+    """Diagnose live root causes from captured IOS `show` outputs, quoting CLI evidence."""
+    results: list[tuple[DiagnosticFinding, RepairProposal]] = []
+
+    def _want(cat: DiagnosticCategory) -> bool:
+        return categories is None or cat in categories
+
+    int_brief_by_dev: dict[str, dict[str, object]] = {}
+    ospf_cfg_by_dev: dict[str, dict[str, object]] = {}
+    ospf_nbrs_by_dev: dict[str, list[object]] = {}
+    trunks_by_dev: dict[str, dict[str, object]] = {}
+
+    connected_ports: set[tuple[str, str]] = set()
+    for conn in topology.model.connections.values():
+        connected_ports.add((conn.device_a, canonicalize_interface_name(conn.interface_a)))
+        connected_ports.add((conn.device_b, canonicalize_interface_name(conn.interface_b)))
+
+    for d_name, snaps in live_snapshots.items():
+        dev = topology.model.devices.get(d_name)
+        brief_raw = snaps.get("show ip interface brief", "")
+        run_raw = snaps.get("show running-config", "")
+        trunk_raw = snaps.get("show interfaces trunk", "")
+        ospf_raw = snaps.get("show ip ospf neighbor", "")
+        acl_raw = snaps.get("show access-lists", "")
+
+        brief_rows = parse_show_ip_int_brief(brief_raw) if brief_raw else []
+        brief_map = {canonicalize_interface_name(r.interface): r for r in brief_rows}
+        int_brief_by_dev[d_name] = brief_map
+
+        if ospf_raw:
+            ospf_nbrs_by_dev[d_name] = list(parse_show_ip_ospf_neighbor(ospf_raw))
+        if trunk_raw:
+            trunks_by_dev[d_name] = {
+                canonicalize_interface_name(t.port): t
+                for t in parse_show_interfaces_trunk(trunk_raw)
+            }
+        if run_raw:
+            ospf_info = _extract_ospf_config(run_raw)
+            if ospf_info is not None:
+                ospf_cfg_by_dev[d_name] = ospf_info
+
+        # 1. Live interface admin-down / protocol-down checks
+        if _want(DiagnosticCategory.INTERFACE_PHYSICAL):
+            for row in brief_rows:
+                canon_if = canonicalize_interface_name(row.interface)
+                has_ip = row.ip_address.lower() != "unassigned"
+                is_linked = (d_name, canon_if) in connected_ports
+                if not (has_ip or is_linked):
+                    continue
+                quoted = (
+                    f"{d_name}# show ip interface brief -> "
+                    f"{row.interface} {row.ip_address} {row.status}/{row.protocol}"
+                )
+                if row.status == "administratively down":
+                    finding = DiagnosticFinding(
+                        category=DiagnosticCategory.INTERFACE_PHYSICAL,
+                        severity=DiagnosticSeverity.ERROR,
+                        code="LIVE_INTERFACE_ADMIN_DOWN",
+                        target_device=d_name,
+                        target_interface=row.interface,
+                        summary=(
+                            f"Live interface {d_name} {row.interface} ({row.ip_address}) "
+                            "is administratively down."
+                        ),
+                        evidence=[quoted],
+                        probable_causes=["Interface remains shutdown in live running-config."],
+                        recommended_fix=f"Configure 'no shutdown' on {d_name} {row.interface}.",
+                    )
+                    repair = RepairProposal(
+                        finding_id=finding.finding_id,
+                        target_device=d_name,
+                        summary=f"Enable {row.interface} on {d_name} ('no shutdown').",
+                        actions=[
+                            RepairAction(
+                                target_device=d_name,
+                                target_interface=row.interface,
+                                command_sequence=[
+                                    f"interface {row.interface}",
+                                    "no shutdown",
+                                    "exit",
+                                ],
+                                description=f"Bring up {row.interface} on {d_name}.",
+                                is_disruptive=False,
+                                verification_commands=["show ip interface brief"],
+                            )
+                        ],
+                    )
+                    results.append((finding, repair))
+                elif row.status == "up" and row.protocol == "down":
+                    finding = DiagnosticFinding(
+                        category=DiagnosticCategory.INTERFACE_PHYSICAL,
+                        severity=DiagnosticSeverity.ERROR,
+                        code="LIVE_INTERFACE_PROTOCOL_DOWN",
+                        target_device=d_name,
+                        target_interface=row.interface,
+                        summary=(
+                            f"Live interface {d_name} {row.interface} is up/down "
+                            "(Layer 1 up, Layer 2 line protocol down)."
+                        ),
+                        evidence=[quoted],
+                        probable_causes=[
+                            "Peer interface is shutdown or disconnected.",
+                            "Missing Serial DCE 'clock rate' or mismatched L2 encapsulation.",
+                        ],
+                        recommended_fix=(
+                            f"Verify peer interface state, cabling, and encap on {row.interface}."
+                        ),
+                    )
+                    repair = RepairProposal(
+                        finding_id=finding.finding_id,
+                        target_device=d_name,
+                        summary=f"Bounce/enable {row.interface} on {d_name} and verify peer.",
+                        actions=[
+                            RepairAction(
+                                target_device=d_name,
+                                target_interface=row.interface,
+                                command_sequence=[
+                                    f"interface {row.interface}",
+                                    "no shutdown",
+                                    "exit",
+                                ],
+                                description=f"Ensure {row.interface} is administratively up.",
+                                is_disruptive=False,
+                                verification_commands=["show ip interface brief"],
+                            )
+                        ],
+                    )
+                    results.append((finding, repair))
+
+        # 2. Live L3 switch missing `ip routing`
+        if (
+            _want(DiagnosticCategory.ROUTING)
+            and dev is not None
+            and dev.category == DeviceCategory.L3_SWITCH
+            and run_raw
+        ):
+            global_secs = parse_running_config_sections(run_raw, section="global")
+            global_lines = [ln.strip().lower() for sec in global_secs for ln in sec.lines]
+            has_ip_routing = "ip routing" in global_lines and "no ip routing" not in global_lines
+            routed_ifaces = [r for r in brief_rows if r.ip_address.lower() != "unassigned"]
+            has_routing_intent = (
+                len(routed_ifaces) >= 2
+                or any(ln.startswith("ip route ") for ln in global_lines)
+                or d_name in ospf_cfg_by_dev
+                or bool(parse_running_config_sections(run_raw, section="router "))
+            )
+            if has_routing_intent and not has_ip_routing:
+                ev_line = (
+                    f"{d_name}# show running-config -> 'no ip routing' present"
+                    if "no ip routing" in global_lines
+                    else f"{d_name}# show running-config -> global 'ip routing' missing"
+                )
+                svi_summary = ", ".join(f"{r.interface}={r.ip_address}" for r in routed_ifaces[:4])
+                finding = DiagnosticFinding(
+                    category=DiagnosticCategory.ROUTING,
+                    severity=DiagnosticSeverity.CRITICAL,
+                    code="LIVE_L3_SWITCH_MISSING_IP_ROUTING",
+                    target_device=d_name,
+                    summary=(
+                        f"Layer 3 switch {d_name} has L3 interfaces/routes ({svi_summary}) "
+                        "but global 'ip routing' is disabled."
+                    ),
+                    evidence=[ev_line, f"Configured L3 interfaces: {svi_summary}"],
+                    probable_causes=[
+                        "Catalyst 3560/3650 defaults to L2 switching until 'ip routing' is enabled."
+                    ],
+                    recommended_fix=f"Enable 'ip routing' in global configuration on {d_name}.",
+                )
+                repair = RepairProposal(
+                    finding_id=finding.finding_id,
+                    target_device=d_name,
+                    summary=f"Enable 'ip routing' on Layer 3 switch {d_name}.",
+                    actions=[
+                        RepairAction(
+                            target_device=d_name,
+                            command_sequence=["ip routing"],
+                            description=f"Enable IPv4 inter-VLAN/L3 routing on {d_name}.",
+                            is_disruptive=False,
+                            verification_commands=["show ip route"],
+                        )
+                    ],
+                )
+                results.append((finding, repair))
+
+        # 3. Live ACL deny drops / shadowed permits
+        if _want(DiagnosticCategory.ACL_SECURITY) and acl_raw:
+            acl_entries = parse_show_access_lists(acl_raw)
+            by_acl: dict[str, list[object]] = {}
+            for ace in acl_entries:
+                by_acl.setdefault(ace.acl_name, []).append(ace)
+            for acl_name, aces in by_acl.items():
+                saw_deny_all = False
+                for ace in aces:
+                    if ace.action == "deny" and ace.matches > 0:
+                        finding = DiagnosticFinding(
+                            category=DiagnosticCategory.ACL_SECURITY,
+                            severity=DiagnosticSeverity.WARNING,
+                            code="LIVE_ACL_DENY_DROPS",
+                            target_device=d_name,
+                            summary=(
+                                f"ACL '{acl_name}' on {d_name} has {ace.matches} packet drop(s) "
+                                f"on 'deny {ace.rule_text}'."
+                            ),
+                            evidence=[
+                                f"{d_name}# show access-lists -> {acl_name}: "
+                                f"{ace.sequence or ''} deny {ace.rule_text} "
+                                f"({ace.matches} matches)".strip()
+                            ],
+                            probable_causes=[
+                                "Explicit ACL deny rule is actively dropping traffic."
+                            ],
+                            recommended_fix=(
+                                f"Review ACL '{acl_name}' rule order and permit required flows."
+                            ),
+                        )
+                        repair = RepairProposal(
+                            finding_id=finding.finding_id,
+                            target_device=d_name,
+                            summary=f"Inspect/adjust ACL '{acl_name}' on {d_name}.",
+                            actions=[],
+                            requires_approval=True,
+                            approval_reason="Modifying security ACLs requires operator review.",
+                        )
+                        results.append((finding, repair))
+                    if ace.action == "deny" and ace.rule_text.lower() in {"any", "ip any any"}:
+                        saw_deny_all = True
+                    elif saw_deny_all and ace.action == "permit":
+                        finding = DiagnosticFinding(
+                            category=DiagnosticCategory.ACL_SECURITY,
+                            severity=DiagnosticSeverity.ERROR,
+                            code="LIVE_ACL_SHADOWED_PERMIT",
+                            target_device=d_name,
+                            summary=(
+                                f"ACL '{acl_name}' on {d_name} has unreachable "
+                                f"'permit {ace.rule_text}' after an earlier 'deny any'."
+                            ),
+                            evidence=[
+                                f"{d_name}# show access-lists -> '{acl_name}' permit "
+                                f"{ace.rule_text} shadowed by prior deny-all"
+                            ],
+                            probable_causes=["ACE sequence numbers placed permit after deny any."],
+                            recommended_fix=(
+                                f"Resequence ACL '{acl_name}' so permit precedes deny any."
+                            ),
+                        )
+                        repair = RepairProposal(
+                            finding_id=finding.finding_id,
+                            target_device=d_name,
+                            summary=f"Reorder shadowed permit in ACL '{acl_name}' on {d_name}.",
+                            actions=[],
+                            requires_approval=True,
+                            approval_reason="Reordering security ACLs requires operator approval.",
+                        )
+                        results.append((finding, repair))
+
+    # 4. Cross-device live OSPF root-cause checks & live trunk checks
+    l3_categories = {DeviceCategory.ROUTER, DeviceCategory.L3_SWITCH}
+    sw_categories = {DeviceCategory.L2_SWITCH, DeviceCategory.L3_SWITCH}
+
+    for conn in topology.model.connections.values():
+        dev_a = topology.model.devices.get(conn.device_a)
+        dev_b = topology.model.devices.get(conn.device_b)
+        if not dev_a or not dev_b:
+            continue
+        canon_a = canonicalize_interface_name(conn.interface_a)
+        canon_b = canonicalize_interface_name(conn.interface_b)
+
+        # Live trunk checks across connected switches
+        if (
+            _want(DiagnosticCategory.VLAN_TRUNKING)
+            and dev_a.category in sw_categories
+            and dev_b.category in sw_categories
+            and conn.device_a in trunks_by_dev
+            and conn.device_b in trunks_by_dev
+        ):
+            tr_a = trunks_by_dev[conn.device_a].get(canon_a)
+            tr_b = trunks_by_dev[conn.device_b].get(canon_b)
+            if tr_a is not None and tr_b is not None and tr_a.native_vlan != tr_b.native_vlan:
+                finding = DiagnosticFinding(
+                    category=DiagnosticCategory.VLAN_TRUNKING,
+                    severity=DiagnosticSeverity.ERROR,
+                    code="LIVE_TRUNK_NATIVE_VLAN_MISMATCH",
+                    target_device=conn.device_b,
+                    target_interface=conn.interface_b,
+                    summary=(
+                        f"Live trunk native VLAN mismatch: {conn.device_a}:{tr_a.port} "
+                        f"(VLAN {tr_a.native_vlan}) <-> {conn.device_b}:{tr_b.port} "
+                        f"(VLAN {tr_b.native_vlan})."
+                    ),
+                    evidence=[
+                        f"{conn.device_a}# show interfaces trunk -> "
+                        f"{tr_a.port} native vlan {tr_a.native_vlan}",
+                        f"{conn.device_b}# show interfaces trunk -> "
+                        f"{tr_b.port} native vlan {tr_b.native_vlan}",
+                    ],
+                    probable_causes=[
+                        "Mismatched 'switchport trunk native vlan' across peer switches."
+                    ],
+                    recommended_fix=(
+                        f"Set 'switchport trunk native vlan {tr_a.native_vlan}' on "
+                        f"{conn.device_b} {conn.interface_b}."
+                    ),
+                )
+                repair = RepairProposal(
+                    finding_id=finding.finding_id,
+                    target_device=conn.device_b,
+                    summary=(
+                        f"Align native VLAN to {tr_a.native_vlan} on "
+                        f"{conn.device_b}:{conn.interface_b}."
+                    ),
+                    actions=[
+                        RepairAction(
+                            target_device=conn.device_b,
+                            target_interface=conn.interface_b,
+                            command_sequence=[
+                                f"interface {conn.interface_b}",
+                                f"switchport trunk native vlan {tr_a.native_vlan}",
+                                "exit",
+                            ],
+                            description=f"Align trunk native VLAN to {tr_a.native_vlan}.",
+                            is_disruptive=False,
+                            verification_commands=["show interfaces trunk"],
+                        )
+                    ],
+                )
+                results.append((finding, repair))
+            elif (tr_a is None) != (tr_b is None):
+                trunk_side = (conn.device_a, tr_a) if tr_a is not None else (conn.device_b, tr_b)
+                missing_dev = dev_b if tr_a is not None else dev_a
+                missing_if = conn.interface_b if tr_a is not None else conn.interface_a
+                cmd_seq = [f"interface {missing_if}"]
+                try:
+                    prof = topology.catalog.get_profile(missing_dev.model)
+                    if prof.supports(ConfigCapability.TRUNK_ENCAP_DOT1Q):
+                        cmd_seq.append("switchport trunk encapsulation dot1q")
+                except Exception:
+                    pass
+                cmd_seq.extend(["switchport mode trunk", "exit"])
+                finding = DiagnosticFinding(
+                    category=DiagnosticCategory.VLAN_TRUNKING,
+                    severity=DiagnosticSeverity.ERROR,
+                    code="LIVE_TRUNK_MISSING_ON_PEER",
+                    target_device=missing_dev.name,
+                    target_interface=missing_if,
+                    summary=(
+                        f"Live switch link {trunk_side[0]}:{trunk_side[1].port} is trunking, "
+                        f"but peer {missing_dev.name}:{missing_if} is absent from "
+                        "`show interfaces trunk`."
+                    ),
+                    evidence=[
+                        f"{trunk_side[0]}# show interfaces trunk -> {trunk_side[1].port} trunking",
+                        f"{missing_dev.name}# show interfaces trunk -> {missing_if} absent",
+                    ],
+                    probable_causes=["Peer switch port left in access or dynamic auto mode."],
+                    recommended_fix=(
+                        f"Configure {missing_dev.name} {missing_if} as an 802.1Q trunk."
+                    ),
+                )
+                repair = RepairProposal(
+                    finding_id=finding.finding_id,
+                    target_device=missing_dev.name,
+                    summary=f"Configure 802.1Q trunk on {missing_dev.name}:{missing_if}.",
+                    actions=[
+                        RepairAction(
+                            target_device=missing_dev.name,
+                            target_interface=missing_if,
+                            command_sequence=cmd_seq,
+                            description=f"Enable trunking on {missing_dev.name} {missing_if}.",
+                            is_disruptive=True,
+                            verification_commands=["show interfaces trunk"],
+                        )
+                    ],
+                    requires_approval=True,
+                    approval_reason="Changing switchport mode on an active link is disruptive.",
+                )
+                results.append((finding, repair))
+
+        # Live OSPF root-cause checks across connected L3 peers
+        if (
+            _want(DiagnosticCategory.OSPF_ADJACENCY)
+            and dev_a.category in l3_categories
+            and dev_b.category in l3_categories
+            and (conn.device_a in ospf_cfg_by_dev or conn.device_b in ospf_cfg_by_dev)
+        ):
+            row_a = int_brief_by_dev.get(conn.device_a, {}).get(canon_a)
+            row_b = int_brief_by_dev.get(conn.device_b, {}).get(canon_b)
+            ip_a = (
+                row_a.ip_address
+                if (row_a and row_a.ip_address != "unassigned")
+                else (
+                    dev_a.interfaces.get(conn.interface_a).ipv4_address
+                    if conn.interface_a in dev_a.interfaces
+                    else None
+                )
+            )
+            ip_b = (
+                row_b.ip_address
+                if (row_b and row_b.ip_address != "unassigned")
+                else (
+                    dev_b.interfaces.get(conn.interface_b).ipv4_address
+                    if conn.interface_b in dev_b.interfaces
+                    else None
+                )
+            )
+
+            ospf_a = ospf_cfg_by_dev.get(conn.device_a)
+            ospf_b = ospf_cfg_by_dev.get(conn.device_b)
+
+            def _matched_area(
+                ospf_info: dict[str, object] | None, ip_val: str | None
+            ) -> tuple[int, str] | None:
+                if not ospf_info or not ip_val:
+                    return None
+                for net_s, wc_s, area_id, raw_stmt in ospf_info["networks"]:  # type: ignore[index]
+                    if _wildcard_matches_ip(ip_val, net_s, wc_s):
+                        return (area_id, raw_stmt)
+                return None
+
+            def _is_passive(ospf_info: dict[str, object] | None, canon_if: str) -> bool:
+                if not ospf_info:
+                    return False
+                if ospf_info["passive_default"]:
+                    return canon_if not in ospf_info["no_passive_ifs"]  # type: ignore[operator]
+                return canon_if in ospf_info["passive_ifs"]  # type: ignore[operator]
+
+            match_a = _matched_area(ospf_a, ip_a)
+            match_b = _matched_area(ospf_b, ip_b)
+
+            for side_name, side_if, side_canon, side_ospf, side_match in (
+                (conn.device_a, conn.interface_a, canon_a, ospf_a, match_a),
+                (conn.device_b, conn.interface_b, canon_b, ospf_b, match_b),
+            ):
+                if side_ospf and side_match and _is_passive(side_ospf, side_canon):
+                    pid = side_ospf["process_id"]
+                    finding = DiagnosticFinding(
+                        category=DiagnosticCategory.OSPF_ADJACENCY,
+                        severity=DiagnosticSeverity.ERROR,
+                        code="LIVE_OSPF_PASSIVE_INTERFACE_ON_TRANSIT",
+                        target_device=side_name,
+                        target_interface=side_if,
+                        summary=(
+                            f"OSPF transit interface {side_name} {side_if} is configured "
+                            "as passive-interface, blocking Hello packets."
+                        ),
+                        evidence=[
+                            f"{side_name}# show running-config -> router ospf {pid}: "
+                            f"passive-interface suppressing Hellos on {side_if} ({side_match[1]})"
+                        ],
+                        probable_causes=[
+                            "Transit router link mistakenly marked passive-interface."
+                        ],
+                        recommended_fix=(
+                            f"Configure 'no passive-interface {side_if}' under "
+                            f"router ospf {pid} on {side_name}."
+                        ),
+                    )
+                    repair = RepairProposal(
+                        finding_id=finding.finding_id,
+                        target_device=side_name,
+                        summary=(
+                            f"Remove passive-interface {side_if} under OSPF {pid} on {side_name}."
+                        ),
+                        actions=[
+                            RepairAction(
+                                target_device=side_name,
+                                target_interface=side_if,
+                                command_sequence=[
+                                    f"router ospf {pid}",
+                                    f"no passive-interface {side_if}",
+                                    "exit",
+                                ],
+                                description=f"Allow OSPF Hellos on transit link {side_if}.",
+                                is_disruptive=False,
+                                verification_commands=["show ip ospf neighbor"],
+                            )
+                        ],
+                    )
+                    results.append((finding, repair))
+
+            if match_a is not None and match_b is not None and match_a[0] != match_b[0]:
+                pid_b = ospf_b["process_id"] if ospf_b else 1
+                finding = DiagnosticFinding(
+                    category=DiagnosticCategory.OSPF_ADJACENCY,
+                    severity=DiagnosticSeverity.ERROR,
+                    code="LIVE_OSPF_AREA_MISMATCH",
+                    target_device=conn.device_b,
+                    target_interface=conn.interface_b,
+                    summary=(
+                        f"OSPF area mismatch on link {conn.device_a}:{conn.interface_a} "
+                        f"(area {match_a[0]}) <-> "
+                        f"{conn.device_b}:{conn.interface_b} (area {match_b[0]})."
+                    ),
+                    evidence=[
+                        f"{conn.device_a}# show running-config -> {match_a[1]}",
+                        f"{conn.device_b}# show running-config -> {match_b[1]}",
+                    ],
+                    probable_causes=[
+                        "Connected OSPF routers advertise shared link in different areas."
+                    ],
+                    recommended_fix=(
+                        f"Align OSPF network statement on {conn.device_b} to area {match_a[0]}."
+                    ),
+                )
+                new_stmt = re.sub(
+                    r"area\s+\d+$", f"area {match_a[0]}", match_b[1], flags=re.IGNORECASE
+                )
+                repair = RepairProposal(
+                    finding_id=finding.finding_id,
+                    target_device=conn.device_b,
+                    summary=f"Align OSPF area on {conn.device_b} to area {match_a[0]}.",
+                    actions=[
+                        RepairAction(
+                            target_device=conn.device_b,
+                            target_interface=conn.interface_b,
+                            command_sequence=[
+                                f"router ospf {pid_b}",
+                                f"no {match_b[1]}",
+                                new_stmt,
+                                "exit",
+                            ],
+                            description=(
+                                f"Move {conn.device_b} link network into area {match_a[0]}."
+                            ),
+                            is_disruptive=True,
+                            verification_commands=["show ip ospf neighbor"],
+                        )
+                    ],
+                    requires_approval=True,
+                    approval_reason="Changing an OSPF area resets existing neighbor adjacencies.",
+                )
+                results.append((finding, repair))
+            elif (
+                ospf_a is not None and ospf_b is not None and (match_a is None) != (match_b is None)
+            ):
+                active_match = match_a if match_a is not None else match_b
+                miss_name = conn.device_b if match_a is not None else conn.device_a
+                miss_if = conn.interface_b if match_a is not None else conn.interface_a
+                miss_ip = ip_b if match_a is not None else ip_a
+                miss_ospf = ospf_b if match_a is not None else ospf_a
+                if active_match is not None and miss_ip and miss_ospf:
+                    pid_m = miss_ospf["process_id"]
+                    finding = DiagnosticFinding(
+                        category=DiagnosticCategory.OSPF_ADJACENCY,
+                        severity=DiagnosticSeverity.ERROR,
+                        code="LIVE_OSPF_MISSING_NETWORK_STATEMENT",
+                        target_device=miss_name,
+                        target_interface=miss_if,
+                        summary=(
+                            f"Router {miss_name} runs OSPF {pid_m} but lacks a 'network' statement "
+                            f"matching {miss_if} ({miss_ip})."
+                        ),
+                        evidence=[
+                            f"{miss_name}# show running-config -> router ospf {pid_m} "
+                            f"has no network covering {miss_ip}",
+                            f"Peer OSPF link advertises area {active_match[0]} "
+                            f"({active_match[1]})",
+                        ],
+                        probable_causes=[
+                            "Missing or mistyped OSPF network/wildcard statement for transit link."
+                        ],
+                        recommended_fix=(
+                            f"Add 'network {miss_ip} 0.0.0.0 area {active_match[0]}' "
+                            f"under router ospf {pid_m}."
+                        ),
+                    )
+                    repair = RepairProposal(
+                        finding_id=finding.finding_id,
+                        target_device=miss_name,
+                        summary=(
+                            f"Advertise {miss_if} ({miss_ip}) in OSPF {pid_m} "
+                            f"area {active_match[0]} on {miss_name}."
+                        ),
+                        actions=[
+                            RepairAction(
+                                target_device=miss_name,
+                                target_interface=miss_if,
+                                command_sequence=[
+                                    f"router ospf {pid_m}",
+                                    f"network {miss_ip} 0.0.0.0 area {active_match[0]}",
+                                    "exit",
+                                ],
+                                description=f"Enable OSPF on {miss_name} {miss_if}.",
+                                is_disruptive=False,
+                                verification_commands=["show ip ospf neighbor"],
+                            )
+                        ],
+                    )
+                    results.append((finding, repair))
+
     return results

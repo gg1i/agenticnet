@@ -31,11 +31,14 @@ class DeviceProfile(BaseModel):
     interfaces: list[InterfaceTemplate] = Field(default_factory=list)
     capabilities: set[ConfigCapability] = Field(default_factory=set)
     restrictions: list[str] = Field(default_factory=list)
+    quirks: list[str] = Field(default_factory=list)
+    modules_supported: list[str] = Field(default_factory=list)
     max_vlans: int = 0
     supports_subinterfaces: bool = False
     supports_svi: bool = False
     supports_loopback: bool = False
     supports_port_channel: bool = False
+    target_mode: str = "packet_tracer"
     verified_in_pt: str = "8.2.2"
     cli_prompt_pattern: str | None = None
 
@@ -49,11 +52,14 @@ class DeviceCapabilityReport(BaseModel):
 
     model: str
     display_name: str
+    vendor: str = "Cisco"
     category: DeviceCategory
     packet_tracer_group: str
+    target_mode: str = "packet_tracer"
     physical_interfaces: list[str]
     capabilities: list[str]
     restrictions: list[str]
+    quirks: list[str] = Field(default_factory=list)
     supports_ios_cli: bool
     supports_routing: bool
     supports_vlans: bool

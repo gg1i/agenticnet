@@ -189,6 +189,150 @@ class ParsedConfigSection(BaseModel):
     text: str = ""
 
 
+class ParsedTracerouteHop(BaseModel):
+    """Single hop entry parsed from IOS `traceroute` or PT PC `tracert`."""
+
+    hop_number: int = Field(ge=1)
+    ip_address: str | None = None
+    rtt_ms: list[float] = Field(default_factory=list)
+    timed_out: bool = False
+    raw_line: str = ""
+
+
+class ParsedTracerouteSummary(BaseModel):
+    """Structured path trace summary parsed from IOS `traceroute` or PT PC `tracert`."""
+
+    parser_kind: str
+    target_ip: str | None = None
+    hops: list[ParsedTracerouteHop] = Field(default_factory=list)
+    completed: bool = False
+
+
+class ParsedHostIpconfig(BaseModel):
+    """Structured network adapter configuration parsed from PT PC `ipconfig` / `ipconfig /all`."""
+
+    adapter: str = "FastEthernet0"
+    ipv4_address: str | None = None
+    subnet_mask: str | None = None
+    default_gateway: str | None = None
+    dns_servers: list[str] = Field(default_factory=list)
+    dhcp_servers: list[str] = Field(default_factory=list)
+    mac_address: str | None = None
+    ipv6_address: str | None = None
+
+
+class ParsedTrunkInterface(BaseModel):
+    """Single 802.1Q trunk port summary parsed from `show interfaces trunk`."""
+
+    port: str
+    mode: str = ""
+    encapsulation: str = ""
+    status: str = "trunking"
+    native_vlan: int = 1
+    allowed_vlans_raw: str = ""
+    allowed_vlans: list[int] = Field(default_factory=list)
+    forwarding_vlans_raw: str = ""
+    forwarding_vlans: list[int] = Field(default_factory=list)
+
+
+class ParsedStpPortRole(BaseModel):
+    """Single STP interface role/state row parsed from `show spanning-tree`."""
+
+    interface: str
+    role: str
+    status: str
+    cost: int | None = None
+    port_id: str = ""
+
+
+class ParsedStpVlanInstance(BaseModel):
+    """Per-VLAN Spanning-Tree instance parsed from `show spanning-tree`."""
+
+    vlan_id: int
+    protocol: str = "ieee"
+    root_priority: int | None = None
+    root_mac: str | None = None
+    is_root_bridge: bool = False
+    bridge_priority: int | None = None
+    bridge_mac: str | None = None
+    ports: list[ParsedStpPortRole] = Field(default_factory=list)
+
+
+class ParsedEtherChannelMember(BaseModel):
+    """Member port and bundle flag parsed from `show etherchannel summary`."""
+
+    interface: str
+    flag: str
+
+
+class ParsedEtherChannelGroup(BaseModel):
+    """Single Port-channel bundle row parsed from `show etherchannel summary`."""
+
+    group_id: int
+    port_channel: str
+    layer: str = "L2"
+    in_use: bool = False
+    protocol: str = ""
+    members: list[ParsedEtherChannelMember] = Field(default_factory=list)
+
+
+class ParsedCdpNeighbor(BaseModel):
+    """Single CDP neighbor entry parsed from `show cdp neighbors`."""
+
+    device_id: str
+    local_interface: str
+    holdtime: int | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    platform: str = ""
+    port_id: str = ""
+
+
+class ParsedBgpNeighbor(BaseModel):
+    """Single BGP peer row parsed from `show ip bgp summary`."""
+
+    neighbor_ip: str
+    version: int = 4
+    remote_as: int
+    up_down: str = ""
+    state_or_prefixes: str
+    established: bool = False
+    prefixes_received: int | None = None
+
+
+class ParsedHsrpGroup(BaseModel):
+    """Single HSRP standby group row parsed from `show standby brief`."""
+
+    interface: str
+    group_id: int
+    priority: int
+    preempt: bool = False
+    state: str
+    active_router: str = ""
+    standby_router: str = ""
+    virtual_ip: str
+
+
+class ParsedAclEntry(BaseModel):
+    """Single ACL ACE rule parsed from `show access-lists`."""
+
+    acl_name: str
+    acl_type: str = "extended"
+    sequence: int | None = None
+    action: str
+    rule_text: str
+    matches: int = 0
+
+
+class ParsedNatTranslation(BaseModel):
+    """Single NAT/PAT table row parsed from `show ip nat translations`."""
+
+    protocol: str
+    inside_global: str
+    inside_local: str
+    outside_local: str
+    outside_global: str
+
+
 class ConnectivityCheckReport(BaseModel):
     """Comprehensive connectivity check report separating PT evidence from offline estimates."""
 

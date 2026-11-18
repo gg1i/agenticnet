@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
@@ -10,9 +12,80 @@ from mcp.server.mcpserver import MCPServer
 from agenticnet.adapters.router import transport_to_execution_backend
 from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend
 from agenticnet.core.enums import PermissionTier, StateLevel
-from agenticnet.core.exceptions import ValidationError
+from agenticnet.core.exceptions import ApprovalRequiredError, ValidationError
 from agenticnet.core.models import OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
+from agenticnet.security.redaction import redact_cli_text
+
+_DESTRUCTIVE_CLI_RE = re.compile(
+    r"^(?:"
+    r"(?:write|wr)\s+erase\b|"
+    r"erase\s+(?:startup-config|nvram:?|flash:?)\b|"
+    r"delete\s+(?:/force\b|/recursive\b|flash:?|nvram:?|vlan\.dat\b)|"
+    r"format\s+flash:?\b|"
+    r"reload\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _find_destructive_cli_commands(commands: list[str]) -> list[str]:
+    """Return redacted destructive IOS/ASA CLI commands requiring explicit confirmation."""
+    hits: list[str] = []
+    for raw in commands:
+        cleaned = str(raw).strip()
+        if cleaned and _DESTRUCTIVE_CLI_RE.search(cleaned):
+            hits.append(redact_cli_text(cleaned))
+    return hits
+
+
+def _capture_snapshot_outputs(
+    runtime: AgenticNetRuntime,
+    device_name: str,
+    model: str,
+    snap_commands: list[str],
+) -> dict[str, str]:
+    """Run read-only verification commands on `device_name` and return `{cmd: output}`."""
+    snapshots: dict[str, str] = {}
+    for scmd in snap_commands:
+        rep = runtime.console.execute_commands(
+            device_name,
+            [scmd],
+            model=model,
+            target_mode="privileged_exec",
+            stop_on_error=False,
+        )
+        transcripts = rep.get("transcripts", [])
+        out_text = str(transcripts[-1].get("raw_output", "")) if transcripts else ""
+        snapshots[scmd] = redact_cli_text(out_text)
+    return snapshots
+
+
+def _compute_snapshot_diff(
+    before: dict[str, str],
+    after: dict[str, str],
+) -> tuple[bool, dict[str, str]]:
+    """Compute unified line diffs per snapshot command between `before` and `after`."""
+    diffs: dict[str, str] = {}
+    changed = False
+    for cmd_key in after:
+        b_txt = before.get(cmd_key, "")
+        a_txt = after.get(cmd_key, "")
+        if b_txt != a_txt:
+            changed = True
+            diff_lines = list(
+                difflib.unified_diff(
+                    b_txt.splitlines(),
+                    a_txt.splitlines(),
+                    fromfile=f"before:{cmd_key}",
+                    tofile=f"after:{cmd_key}",
+                    lineterm="",
+                )
+            )
+            diffs[cmd_key] = "\n".join(diff_lines)
+        else:
+            diffs[cmd_key] = ""
+    return changed, diffs
 
 
 def _resolve_device_model(
@@ -75,6 +148,8 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         verification_commands: list[str] | None = None,
         stop_on_error: bool = True,
         dry_run: bool = False,
+        confirm: bool = False,
+        capture_before_after: bool = False,
         batch_configs: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         """Execute commands inside one or multiple device CLI consoles with prompt tracking."""
@@ -84,24 +159,63 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
             else {}
         )
         cmd_list = list(commands or [])
+        destructive_hits: list[str] = []
         if batch_configs is not None:
+            for dev, cmds in normalized_batch.items():
+                for hit in _find_destructive_cli_commands(cmds):
+                    destructive_hits.append(f"{dev}: {hit}")
             total_cmds = sum(len(v) for v in normalized_batch.values())
             exec_params: dict[str, Any] = {
                 "batch_devices": sorted(normalized_batch.keys()),
+                "commands_redacted": {
+                    dev: [redact_cli_text(str(c)) for c in cmds[:25]]
+                    for dev, cmds in normalized_batch.items()
+                },
                 "command_count": total_cmds,
                 "target_mode": target_mode,
                 "dry_run": dry_run,
+                "confirm": confirm,
+                "capture_before_after": capture_before_after,
             }
         else:
+            destructive_hits = _find_destructive_cli_commands(cmd_list)
             total_cmds = len(cmd_list)
             exec_params = {
                 "device_name": device_name,
+                "commands_redacted": [redact_cli_text(str(c)) for c in cmd_list[:25]],
                 "command_count": total_cmds,
                 "target_mode": target_mode,
                 "dry_run": dry_run,
+                "confirm": confirm,
+                "capture_before_after": capture_before_after,
             }
 
+        effective_tier = (
+            PermissionTier.DESTRUCTIVE
+            if (destructive_hits and not dry_run)
+            else PermissionTier.CONFIGURATION
+        )
+        destructive_reason = (
+            "Destructive CLI command(s) detected "
+            f"({', '.join(destructive_hits)}); pass confirm=True to authorize execution."
+            if destructive_hits
+            else None
+        )
+
         def _run() -> OperationResult:
+            if destructive_hits and not dry_run and not confirm:
+                raise ApprovalRequiredError(
+                    destructive_reason or "Destructive CLI command requires confirm=True.",
+                    details={"destructive_commands": destructive_hits},
+                    remediation="Re-invoke console_execute with confirm=True if intended.",
+                )
+
+            snap_cmds = (
+                list(verification_commands)
+                if verification_commands
+                else ["show ip interface brief"]
+            )
+
             if batch_configs is not None:
                 if not normalized_batch:
                     raise ValidationError("batch_configs must map at least one device to commands.")
@@ -110,7 +224,12 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 }
 
                 def _exec_one(dev: str, cmds: list[str]) -> dict[str, Any]:
-                    return runtime.console.execute_commands(
+                    before_snap: dict[str, str] = {}
+                    if capture_before_after and not dry_run:
+                        before_snap = _capture_snapshot_outputs(
+                            runtime, dev, resolved_models[dev], snap_cmds
+                        )
+                    rep = runtime.console.execute_commands(
                         dev,
                         cmds,
                         model=resolved_models[dev],
@@ -119,6 +238,20 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                         stop_on_error=stop_on_error,
                         dry_run=dry_run,
                     )
+                    if capture_before_after and not dry_run:
+                        after_snap = (
+                            dict(rep.get("verification_output", {}))
+                            if verification_commands and rep.get("verification_output")
+                            else _capture_snapshot_outputs(
+                                runtime, dev, resolved_models[dev], snap_cmds
+                            )
+                        )
+                        changed, diffs = _compute_snapshot_diff(before_snap, after_snap)
+                        rep["before_output"] = before_snap
+                        rep["after_output"] = after_snap
+                        rep["changed"] = changed
+                        rep["before_after_diff"] = diffs
+                    return rep
 
                 use_parallel = (
                     not dry_run
@@ -225,6 +358,11 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 raise ValidationError("Provide device_name and commands, or batch_configs.")
 
             resolved_model = _resolve_device_model(runtime, device_name, model)
+            before_snap: dict[str, str] = {}
+            if capture_before_after and not dry_run:
+                before_snap = _capture_snapshot_outputs(
+                    runtime, device_name, resolved_model, snap_cmds
+                )
             data = runtime.console.execute_commands(
                 device_name,
                 cmd_list,
@@ -244,6 +382,20 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                     evidence=["Validated device console profile without dispatching keystrokes."],
                 )
 
+            if capture_before_after:
+                after_snap = (
+                    dict(data.get("verification_output", {}))
+                    if verification_commands and data.get("verification_output")
+                    else _capture_snapshot_outputs(
+                        runtime, device_name, resolved_model, snap_cmds
+                    )
+                )
+                changed, diffs = _compute_snapshot_diff(before_snap, after_snap)
+                data["before_output"] = before_snap
+                data["after_output"] = after_snap
+                data["changed"] = changed
+                data["before_after_diff"] = diffs
+
             sess = data.get("session", {})
             backend = transport_to_execution_backend(str(sess.get("transport_name", "")))
             if not data.get("all_commands_succeeded", True):
@@ -258,8 +410,17 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                     execution_backend=backend,
                 )
 
-            lvl = StateLevel(data.get("state_level", StateLevel.EXECUTED.value))
+            lvl = (
+                StateLevel.VERIFIED
+                if capture_before_after
+                else StateLevel(data.get("state_level", StateLevel.EXECUTED.value))
+            )
             ev_list = list(data.get("evidence", []))
+            if capture_before_after:
+                ev_list.append(
+                    f"Captured before/after CLI state across {len(snap_cmds)} command(s) "
+                    f"(changed={data.get('changed')})."
+                )
             if runtime.router.watch_mode and backend == "script_backend":
                 runtime.router.record_watch_action(
                     "console_execute",
@@ -279,9 +440,11 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
 
         return runtime.execute(
             "console_execute",
-            PermissionTier.CONFIGURATION,
+            effective_tier,
             exec_params,
             _run,
+            confirm=confirm,
+            destructive_reason=destructive_reason,
         )
 
     def console_capture(device_name: str, model: str | None = None) -> dict[str, Any]:

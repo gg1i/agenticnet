@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agenticnet.core.enums import CableType, DeviceCategory, PortMedia, StateLevel
 
@@ -29,6 +29,7 @@ class InterfaceState(BaseModel):
     peer_interface: str | None = None
     ip_address: str | None = None
     subnet_mask: str | None = None
+    ipv6_address: str | None = None
     default_gateway: str | None = None
     description: str = ""
     vlan_mode: str | None = None
@@ -37,6 +38,14 @@ class InterfaceState(BaseModel):
     native_vlan: int | None = None
     is_trunk: bool = False
     state_level: StateLevel = StateLevel.PLANNED
+
+    @model_validator(mode="after")
+    def _sync_trunk_flags(self) -> InterfaceState:
+        if self.vlan_mode == "trunk":
+            self.is_trunk = True
+        elif self.is_trunk and self.vlan_mode is None:
+            self.vlan_mode = "trunk"
+        return self
 
     @property
     def ipv4_address(self) -> str | None:
@@ -67,6 +76,7 @@ class DeviceNode(BaseModel):
     model: str
     category: DeviceCategory
     role: str = ""
+    site_zone: str = ""
     position: Position2D = Field(default_factory=Position2D)
     interfaces: dict[str, InterfaceState] = Field(default_factory=dict)
     state_level: StateLevel = StateLevel.PLANNED
@@ -136,5 +146,6 @@ class TopologyAnalysis(BaseModel):
 class TopologyModel(BaseModel):
     """Serializable topology snapshot."""
 
+    target_mode: str = "packet_tracer"
     devices: dict[str, DeviceNode] = Field(default_factory=dict)
     connections: dict[str, LinkEdge] = Field(default_factory=dict)

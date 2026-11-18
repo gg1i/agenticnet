@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.mcp.profiles import SOLVE_LAB_TOOLS
 from agenticnet.mcp.server import create_mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -109,3 +110,14 @@ def test_skills_only_reference_real_mcp_tools() -> None:
     assert "lab_status" in all_cited
     assert "verify_lab" in all_cited
     assert "console_execute" in all_cited
+
+    manifest = runtime.build_manifest()
+    model_count = len(manifest["supported_device_models"])
+    solve_count = len(SOLVE_LAB_TOOLS)
+    readme_text = (SKILLS_DIR / "README.md").read_text(encoding="utf-8")
+    pt_skill_text = (SKILLS_DIR / "packet-tracer-lab-engineer" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"across all {model_count} verified models" in readme_text
+    assert f"**{solve_count}** focused tools" in readme_text
+    assert f"({model_count} Models)" in pt_skill_text

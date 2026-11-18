@@ -44,6 +44,9 @@ class DeviceCategory(StrEnum):
     PRINTER = "printer"
     WIRELESS_ROUTER = "wireless_router"
     ACCESS_POINT = "access_point"
+    FIREWALL = "firewall"
+    WLC = "wlc"
+    CLOUD = "cloud"
 
 
 class PortMedia(StrEnum):
@@ -104,3 +107,15 @@ class ConfigCapability(StrEnum):
     SSH = "ssh"
     DEFAULT_GATEWAY_L2 = "default_gateway_l2"
     WIRELESS_SSID = "wireless_ssid"
+    BGP = "bgp"
+    HSRP = "hsrp"
+    DHCP_SNOOPING = "dhcp_snooping"
+    DAI = "dai"
+    IPSEC_VPN = "ipsec_vpn"
+    ZONE_BASED_FIREWALL = "zone_based_firewall"
+    AAA = "aaa"
+    SYSLOG = "syslog"
+    NTP = "ntp"
+    SNMP = "snmp"
+    ASA_FIREWALL = "asa_firewall"
+    WLC_CAPWAP = "wlc_capwap"

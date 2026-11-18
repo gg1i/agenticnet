@@ -18,7 +18,7 @@ from agenticnet.adapters.discovery import (
 )
 from agenticnet.adapters.router import BackendRouter
 from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend, HttpScriptBridgeServer
-from agenticnet.core.settings import AgenticNetSettings
+from agenticnet.core.settings import AgenticNetSettings, canonical_pt_bridge_data_dir
 from agenticnet.diagnostics.lab_runner import evaluate_lab_status
 
 DEFAULT_REFERENCE_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "reference"
@@ -343,8 +343,10 @@ class _MockLabScriptBackend(ScriptBackend):
             if self.fixed
             else self._spec.get("mock_outputs_broken", {})
         )
-        text = outputs.get(f"{device_name}:{cmd}") or outputs.get(cmd) or _synthetic_output(
-            device_name, cmd, self._spec, self.fixed
+        text = (
+            outputs.get(f"{device_name}:{cmd}")
+            or outputs.get(cmd)
+            or _synthetic_output(device_name, cmd, self._spec, self.fixed)
         )
         return {
             "ok": True,
@@ -375,9 +377,7 @@ def _synthetic_output(device_name: str, cmd: str, spec: dict[str, Any], fixed: b
                 if r.get("device") == device_name and r.get("type") == "route_exists":
                     net = r["network"]
                     nh = r.get("next_hop", "10.0.0.2")
-                    proto = r.get("protocol_code") or (
-                        "O" if r.get("protocol") == "ospf" else "S"
-                    )
+                    proto = r.get("protocol_code") or ("O" if r.get("protocol") == "ospf" else "S")
                     lines.append(f"{proto}    {net} [110/2] via {nh}, 00:00:10, Gi0/0")
         return "\n".join(lines)
     if lower.startswith("show vlan brief"):
@@ -460,9 +460,7 @@ def evaluate_benchmark_with_reference(
     """Score a topology strictly against the hidden human-authored reference set."""
     ref_path, ref_spec = load_reference_spec(lab_id, reference_dir=reference_dir)
     ref_reqs = ref_spec.get("requirements", [])
-    ref_task_ids = ref_spec.get("task_ids") or [
-        str(r["id"]) for r in ref_reqs if r.get("id")
-    ]
+    ref_task_ids = ref_spec.get("task_ids") or [str(r["id"]) for r in ref_reqs if r.get("id")]
     ref_payload = {
         "lab_name": ref_spec.get("lab_name", lab_id),
         "task_ids": ref_task_ids,
@@ -521,9 +519,7 @@ def run_offline_mock_benchmark(
     spec = json.loads(lab_file.read_text(encoding="utf-8"))
     ref_path, ref_spec = load_reference_spec(lab_id, reference_dir=reference_dir)
     ref_reqs = ref_spec.get("requirements", [])
-    ref_task_ids = ref_spec.get("task_ids") or [
-        str(r["id"]) for r in ref_reqs if r.get("id")
-    ]
+    ref_task_ids = ref_spec.get("task_ids") or [str(r["id"]) for r in ref_reqs if r.get("id")]
     ref_payload = {
         "lab_name": ref_spec.get("lab_name", lab_id),
         "task_ids": ref_task_ids,
@@ -595,9 +591,7 @@ def run_live_pt_benchmark(
     spec = json.loads(lab_file.read_text(encoding="utf-8"))
     ref_path, ref_spec = load_reference_spec(lab_id, reference_dir=reference_dir)
     ref_reqs = ref_spec.get("requirements", [])
-    ref_task_ids = ref_spec.get("task_ids") or [
-        str(r["id"]) for r in ref_reqs if r.get("id")
-    ]
+    ref_task_ids = ref_spec.get("task_ids") or [str(r["id"]) for r in ref_reqs if r.get("id")]
     ref_payload = {
         "lab_name": ref_spec.get("lab_name", lab_id),
         "task_ids": ref_task_ids,
@@ -609,8 +603,16 @@ def run_live_pt_benchmark(
         rel_ref = f"benchmarks/reference/{ref_path.name}"
 
     settings = AgenticNetSettings.from_env()
+    primary_session = settings.data_dir / "bridge_session.json"
+    canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
+    mirrors = (
+        [canonical_session] if canonical_session.resolve() != primary_session.resolve() else []
+    )
     bridge = HttpScriptBridgeBackend(
-        HttpScriptBridgeServer(session_file=settings.data_dir / "bridge_session.json"),
+        HttpScriptBridgeServer(
+            session_file=primary_session,
+            mirror_session_files=mirrors,
+        ),
         default_timeout_seconds=30.0,
         auto_launch_pt=True,
         packet_tracer_path=settings.packet_tracer_path,
@@ -677,6 +679,7 @@ def run_live_pt_benchmark(
         history.append(build_iteration_record(1, time.monotonic() - t0, status_1))
 
         if max_iterations >= 2:
+
             def _apply_cli_config_with_retry(dev_name: str, cmds: list[str], phase: str) -> None:
                 pt_name = router.resolve_pt_device_name(dev_name)
                 res = bridge.execute_cli(pt_name, cmds, timeout_seconds=45.0)

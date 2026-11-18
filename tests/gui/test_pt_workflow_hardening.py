@@ -255,3 +255,15 @@ def test_calibration_load_profile_backfills_new_anchors(
     assert "pdu_complex" in loaded.anchors
     assert "mode_simulation" in loaded.verified_anchors
 
+
+@pytest.mark.unit
+def test_windows_backend_is_available_non_windows_returns_false(
+    isolated_settings: AgenticNetSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agenticnet.gui.windows_backend as wb
+
+    backend = WindowsGuiBackend(isolated_settings)
+    monkeypatch.setattr(wb.platform, "system", lambda: "Linux")
+    assert backend.is_available() is False
+

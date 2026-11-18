@@ -926,6 +926,16 @@ class WindowsGuiBackend(GuiBackend):
         except TypeError:
             return self.detect_application()
 
+    def is_available(self) -> bool:
+        """Return True when Packet Tracer is running with a visible main window on Windows."""
+        if platform.system() != "Windows":
+            return False
+        try:
+            det = self._detect_fast()
+        except Exception:
+            return False
+        return bool(isinstance(det, dict) and det.get("running") and det.get("window") is not None)
+
     def _resolve_background(self, background: bool | None) -> bool:
         if background is None:
             return bool(getattr(self.settings, "gui_background_mode", True))
@@ -940,6 +950,19 @@ class WindowsGuiBackend(GuiBackend):
         background: bool | None = None,
     ) -> dict[str, Any]:
         """Launch Cisco Packet Tracer cleanly and wait for its main window."""
+        if project_file is not None:
+            cleaned_proj = str(project_file).strip()
+            if not cleaned_proj:
+                raise ValidationError("project_file must not be empty when provided.")
+            ext = Path(cleaned_proj).suffix.lower()
+            if ext not in {".pkt", ".pka", ".pksz"}:
+                raise ValidationError(
+                    f"Unsupported Packet Tracer project file extension '{ext}'.",
+                    details={
+                        "project_file": cleaned_proj,
+                        "allowed_extensions": [".pkt", ".pka", ".pksz"],
+                    },
+                )
         self._require_windows()
         require_interactive_desktop_for_launch("WindowsGuiBackend.launch_application")
         self.safety.check_safe_to_act(live_input=False)
@@ -1802,14 +1825,17 @@ class WindowsGuiBackend(GuiBackend):
         """Select and copy text from a focused Packet Tracer CLI pane using Ctrl+A, Ctrl+C."""
         self.safety.check_safe_to_act(live_input=True)
         prev = _clipboard_read()
-        self._send_key_chord("ctrl+a")
-        time.sleep(0.08)
-        self._send_key_chord("ctrl+c")
-        time.sleep(0.12)
-        captured = _clipboard_read()
-        if not captured and prev:
-            _clipboard_write(prev)
-        return captured
+        try:
+            self._send_key_chord("ctrl+a")
+            time.sleep(0.08)
+            self._send_key_chord("ctrl+c")
+            time.sleep(0.12)
+            captured = _clipboard_read()
+            return captured
+        finally:
+            if prev:
+                with suppress(Exception):
+                    _clipboard_write(prev)
 
     def paste_lines_to_focused_window(self, lines: list[str], *, delay_s: float = 0.08) -> None:
         """Send command lines reliably into a focused Packet Tracer CLI pane."""

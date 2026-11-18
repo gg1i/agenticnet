@@ -17,12 +17,16 @@ from agenticnet.diagnostics.verify_schema import (
     ConfigContainsRequirement,
     DhcpBindingRequirement,
     EphoneRegisteredRequirement,
+    HostIpconfigRequirement,
     InterfaceUpRequirement,
     IpAssignedRequirement,
     LabRequirement,
     ReachableRequirement,
     RouteExistsRequirement,
+    StpRootRequirement,
     TelephonyServiceRequirement,
+    TracerouteHopsRequirement,
+    TrunkExistsRequirement,
     VerifyLabRequest,
     VlanExistsRequirement,
     normalize_requirements_payload,
@@ -31,14 +35,18 @@ from agenticnet.security.redaction import redact_cli_text
 from agenticnet.simulation.parsers import (
     canonicalize_interface_name,
     detect_cli_read_error,
+    parse_ipconfig_all,
     parse_ping_output,
     parse_running_config_sections,
     parse_show_ephone,
+    parse_show_interfaces_trunk,
     parse_show_ip_dhcp_binding,
     parse_show_ip_int_brief,
     parse_show_ip_route,
+    parse_show_spanning_tree,
     parse_show_telephony_service,
     parse_show_vlan_brief,
+    parse_traceroute_output,
 )
 
 
@@ -72,6 +80,14 @@ def _command_for_requirement(req: LabRequirement) -> tuple[str, str, bool]:
         return (req.device, "show telephony-service", True)
     if isinstance(req, EphoneRegisteredRequirement):
         return (req.device, "show ephone", True)
+    if isinstance(req, TracerouteHopsRequirement):
+        return (req.source, f"traceroute {req.target}", False)
+    if isinstance(req, TrunkExistsRequirement):
+        return (req.device, "show interfaces trunk", True)
+    if isinstance(req, StpRootRequirement):
+        return (req.device, "show spanning-tree", True)
+    if isinstance(req, HostIpconfigRequirement):
+        return (req.device, "ipconfig /all", True)
     raise TypeError(f"Unsupported requirement type: {type(req)!r}")
 
 
@@ -81,7 +97,11 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
         "id": req.id,
         "task_id": req.task_id,
         "type": req.type,
-        "device": req.source if isinstance(req, ReachableRequirement) else req.device,
+        "device": (
+            req.source
+            if isinstance(req, (ReachableRequirement, TracerouteHopsRequirement))
+            else req.device
+        ),
         "command": read.command,
         "evidence": read.raw_evidence,
     }
@@ -193,9 +213,8 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
                                 route_net = ipaddress.ip_network(r.network, strict=False)
                             except ValueError:
                                 continue
-                            if (
-                                isinstance(route_net, ipaddress.IPv4Network)
-                                and route_net.subnet_of(target_net)
+                            if isinstance(route_net, ipaddress.IPv4Network) and route_net.subnet_of(
+                                target_net
                             ):
                                 host_candidates.append(r)
                     candidates = host_candidates
@@ -207,9 +226,7 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
             **base,
             "status": "pass" if ok else "fail",
             "reason": (
-                None
-                if ok
-                else f"No matching route for '{req.network}' found in `show ip route`."
+                None if ok else f"No matching route for '{req.network}' found in `show ip route`."
             ),
             "parsed": {
                 "gateway_of_last_resort": parsed_table["gateway_of_last_resort"],
@@ -311,9 +328,7 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
                 "parsed": {"matched_sections": []},
             }
         haystack = (
-            "\n".join(s.text for s in sections)
-            if req.section is not None
-            else read.raw_evidence
+            "\n".join(s.text for s in sections) if req.section is not None else read.raw_evidence
         )
         missing = [pat for pat in req.contains if pat not in haystack]
         forbidden = [pat for pat in req.must_not_contain if pat in haystack]
@@ -369,9 +384,7 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
                 e for e in candidates if e.mac_address and want_mac in e.mac_address.lower()
             ]
         if req.number is not None:
-            candidates = [
-                e for e in candidates if any(b.number == req.number for b in e.buttons)
-            ]
+            candidates = [e for e in candidates if any(b.number == req.number for b in e.buttons)]
         if req.require_registered:
             candidates = [e for e in candidates if e.status.upper() == "REGISTERED"]
         ok = len(candidates) > 0
@@ -387,6 +400,123 @@ def _evaluate_requirement(req: LabRequirement, read: _CliReadOutcome) -> dict[st
                 "matched_ephones": [e.model_dump(mode="json") for e in candidates],
                 "total_ephones": len(ephones),
             },
+        }
+
+    if isinstance(req, TracerouteHopsRequirement):
+        trace = parse_traceroute_output(read.raw_evidence, target_ip=req.target)
+        reasons = []
+        if req.require_completed and not trace.completed:
+            reasons.append(f"Traceroute to '{req.target}' did not reach target.")
+        if req.max_hops is not None and len(trace.hops) > req.max_hops:
+            reasons.append(f"Hop count {len(trace.hops)} exceeded max_hops={req.max_hops}.")
+        if req.expected_hops:
+            observed_ips = [h.ip_address for h in trace.hops if h.ip_address]
+            cursor = 0
+            missing_hops: list[str] = []
+            for want_hop in req.expected_hops:
+                try:
+                    pos = observed_ips.index(want_hop.strip(), cursor)
+                    cursor = pos + 1
+                except ValueError:
+                    missing_hops.append(want_hop.strip())
+            if missing_hops:
+                reasons.append(f"Missing or out-of-order traceroute hop(s): {missing_hops}.")
+        ok = len(reasons) == 0
+        return {
+            **base,
+            "status": "pass" if ok else "fail",
+            "reason": " ".join(reasons) if reasons else None,
+            "parsed": trace.model_dump(mode="json"),
+        }
+
+    if isinstance(req, TrunkExistsRequirement):
+        trunks = parse_show_interfaces_trunk(read.raw_evidence)
+        want_canon = canonicalize_interface_name(req.interface)
+        matched = next(
+            (t for t in trunks if canonicalize_interface_name(t.port) == want_canon),
+            None,
+        )
+        if matched is None:
+            return {
+                **base,
+                "status": "fail",
+                "reason": (
+                    f"Interface '{req.interface}' is not trunking in `show interfaces trunk`."
+                ),
+                "parsed": {"trunks_seen": [t.port for t in trunks]},
+            }
+        reasons = []
+        if matched.status != "trunking":
+            reasons.append(f"Trunk status is '{matched.status}', expected 'trunking'.")
+        if req.native_vlan is not None and matched.native_vlan != req.native_vlan:
+            reasons.append(f"Native VLAN is {matched.native_vlan}, expected {req.native_vlan}.")
+        if req.allowed_vlans:
+            missing_vlans = [v for v in req.allowed_vlans if v not in matched.allowed_vlans]
+            if missing_vlans:
+                reasons.append(f"Missing allowed VLAN(s) on trunk: {missing_vlans}.")
+        ok = len(reasons) == 0
+        return {
+            **base,
+            "status": "pass" if ok else "fail",
+            "reason": " ".join(reasons) if reasons else None,
+            "parsed": matched.model_dump(mode="json"),
+        }
+
+    if isinstance(req, StpRootRequirement):
+        stp_instances = parse_show_spanning_tree(read.raw_evidence)
+        matched = next((s for s in stp_instances if s.vlan_id == req.vlan_id), None)
+        if matched is None:
+            return {
+                **base,
+                "status": "fail",
+                "reason": f"VLAN {req.vlan_id} not found in `show spanning-tree`.",
+                "parsed": {"vlans_seen": [s.vlan_id for s in stp_instances]},
+            }
+        ok = matched.is_root_bridge == req.expect_root
+        return {
+            **base,
+            "status": "pass" if ok else "fail",
+            "reason": (
+                None
+                if ok
+                else (
+                    f"Device root-bridge state for VLAN {req.vlan_id} is "
+                    f"{matched.is_root_bridge}, expected {req.expect_root}."
+                )
+            ),
+            "parsed": matched.model_dump(mode="json"),
+        }
+
+    if isinstance(req, HostIpconfigRequirement):
+        adapters = parse_ipconfig_all(read.raw_evidence)
+        if not adapters:
+            return {
+                **base,
+                "status": "fail",
+                "reason": "No adapter configuration parsed from `ipconfig /all`.",
+                "parsed": {"adapters": []},
+            }
+        reasons = []
+        candidates = list(adapters)
+        if req.ip:
+            want_ip = _strip_prefix(req.ip)
+            candidates = [a for a in candidates if a.ipv4_address == want_ip]
+            if not candidates:
+                reasons.append(f"Host IP '{want_ip}' not found in `ipconfig /all`.")
+        if candidates and req.default_gateway:
+            want_gw = req.default_gateway.strip()
+            if not any(a.default_gateway == want_gw for a in candidates):
+                reasons.append(f"Default gateway '{want_gw}' not matched in `ipconfig /all`.")
+        if candidates and req.dns_server:
+            want_dns = req.dns_server.strip()
+            if not any(want_dns in a.dns_servers for a in candidates):
+                reasons.append(f"DNS server '{want_dns}' not matched in `ipconfig /all`.")
+        ok = len(reasons) == 0
+        return {
+            **base,
+            "status": "pass" if ok else "fail",
+            "reason": " ".join(reasons) if reasons else None,
+            "parsed": {"adapters": [a.model_dump(mode="json") for a in adapters]},
         }
 
     raise TypeError(f"Unsupported requirement type: {type(req)!r}")
@@ -584,6 +714,7 @@ class LabVerifier:
             if (
                 (err_msg is not None or cmd_failed)
                 and not mode_normalized
+                and not prompt.lower().startswith("c:")
                 and (prompt.endswith(">") or ("(" in prompt and prompt.endswith("#")))
             ):
                 mode_normalized = True
@@ -658,9 +789,7 @@ class LabVerifier:
             prefetched_by_idx: dict[int, _CliReadOutcome] = {}
 
             if is_real_http_bridge and len(pending_indices) > 1:
-                tasks_by_device: dict[
-                    str, list[tuple[int, str, str, tuple[str, str], bool]]
-                ] = {}
+                tasks_by_device: dict[str, list[tuple[int, str, str, tuple[str, str], bool]]] = {}
                 seen_cache_keys: set[tuple[str, str]] = set()
                 for idx in pending_indices:
                     dev_name, command, cacheable = req_meta[idx]
@@ -675,6 +804,7 @@ class LabVerifier:
                     )
 
                 if len(tasks_by_device) > 1:
+
                     def _run_device_reads(
                         items: list[tuple[int, str, str, tuple[str, str], bool]],
                     ) -> list[tuple[int, tuple[str, str], bool, _CliReadOutcome]]:
@@ -750,9 +880,7 @@ class LabVerifier:
                                 "show telephony-service -> fallback: show running-config "
                                 "(telephony-service section)"
                             ),
-                            raw_evidence=(
-                                sec_text if sections else cfg_outcome.raw_evidence
-                            ),
+                            raw_evidence=(sec_text if sections else cfg_outcome.raw_evidence),
                         )
                         if cacheable:
                             cache[key] = outcome

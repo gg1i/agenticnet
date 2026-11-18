@@ -2,8 +2,8 @@
 name: packet-tracer-lab-engineer
 description: >-
   Operational runbook for Cisco Packet Tracer 8.2.2+ automation via AgenticNet's
-  Script Bridge, copy-on-write file lifecycle, 17-model catalog quirks, and
-  closed-loop .pkt/.pka verification.
+  Script Bridge, copy-on-write file lifecycle, 30-model catalog quirks, built-in
+  reference guides, and closed-loop .pkt/.pka verification.
 ---
 
 # Packet Tracer Lab Engineer
@@ -21,22 +21,25 @@ Execute and verify live Cisco Packet Tracer `8.2.2+` labs safely through Agentic
 3. **Closed-Loop Lab Solving (`solve_lab` / `start_lab`):**
    - Open lab (`lab_open` / `lab_start`) -> capture baseline (`lab_snapshot`) -> enumerate every task ID into `task_ids` -> author declarative requirements via `verify_requirements_schema` -> build/configure -> iterate `lab_status(requirements=..., task_ids=...)` -> inspect `lab_diff` -> persist via `lab_save`.
 
-## 2. Verified PT 8.2.2 Device Catalog (17 Models) & Quirks
+## 2. Verified PT 8.2.2 Device Catalog (30 Models) & Quirks
 
-Always call `device_capabilities(model=...)` before selecting interfaces. Key verified platform facts:
+Always call `device_capabilities(model=...)` and read `agenticnet://guides/{topic}` (`master`, `l2-l3`, `hosts`, `asa`, `wireless`, `iot`, `voip`) before selecting interfaces. Key verified platform facts:
 
 | Model(s) | Interfaces & Naming | Critical PT 8.2.2 Quirks |
 |---|---|---|
 | `2911`, `1941`, `2811` | `2911`: `Gi0/0..2`; `1941`: `Gi0/0..1`; `2811`: `Fa0/0..1`; all `Se0/0/0..1` | Cold boot takes ~10s (`###...`) + `[yes/no]` dialog (`handleCliExec` handles this). Bridge `add_device` auto-inserts up to two `HWIC-2T` serial cards. |
-| `4321` | `Gi0/0/0..1` (3-tuple) | No default serial ports unless module added; uses 3-tuple naming (`GigabitEthernet0/0/0`). |
+| `4321`, `ISR4331` | `4321`: `Gi0/0/0..1`; `ISR4331`: `Gi0/0/0..2`, `Se0/1/0..1` (3-tuple) | Uses 3-tuple naming (`GigabitEthernet0/0/0`) and `NIM-2T` serial bays; crypto/ZBFW features may require `securityk9` license activation. |
 | `Router-PT` | `Fa0/0`, `Fa1/0`, `Se2/0`, `Se3/0` | Slot-based numbering (`Serial2/0`, `Serial3/0`). |
 | `2960-24TT` | `Fa0/1..24`, `Gi0/1..2` | **L2 only**: rejects `ip routing` and **rejects `switchport trunk encapsulation dot1q`**. |
 | `Switch-PT` | `Fa0/1..4` | Minimal L2 switch; only 4 FastEthernet ports by default. |
 | `3560-24PS` | `Fa0/1..24`, `Gi0/1..2` | **Requires `switchport trunk encapsulation dot1q` BEFORE `switchport mode trunk`**. Needs `ip routing` for L3 SVIs/routing; `no switchport` for routed ports; **no NAT/PAT in PT**. |
-| `3650-24PS` | `Gi1/0/1..24`, `Gi1/1/1..4` (3-tuple) | **Requires power supply module in PT Physical tab before CLI boots.** |
-| `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT` | `FastEthernet0` (`Laptop-PT` also `Wireless0` after module swap) | **No Cisco IOS CLI.** Configure via `host_configure` (`dhcp=True` or static IP/mask/gateway). |
-| `7960` (IP Phone) | `Switch`, `PC` ports | Needs power adapter if connected to non-PoE switch (`add_device` auto-powers via bridge; otherwise call `gui_attach_ip_phone_power`). Registers via SCCP / DHCP Option 150. |
-| `Home-VOIP-PT`, `WRT300N`, `AccessPoint-PT` | `Home-VOIP-PT`: `Fa0`, `Phone`; `WRT300N`: `Internet`, `Ethernet1..4`, `Wireless`; `AP-PT`: `Port0`, `Port1` | Configured via Config/Web GUI rather than IOS CLI (`AccessPoint-PT` is L2 bridge-only). |
+| `3650-24PS` | `Gi1/0/1..24`, `Gi1/1/1..4` (3-tuple) | **Requires `AC-POWER-SUPPLY` module before CLI boots** (`netforge_bridge.js` auto-attaches it on `device_add`; use Physical tab if opened manually without PSU). |
+| `5505`, `5506-X` | `5505`: `Eth0/0..7` + `Vlan<id>`; `5506-X`: `Gi1/1..8` + `Management1/1` | `5505` uses switchports + VLAN SVIs (`nameif`/`security-level`); `5506-X` uses routed ports directly. Blank `Password:` on `enable`, `terminal pager 0`, no dynamic routing in PT. |
+| `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `Smartphone-PT`, `TabletPC-PT` | `FastEthernet0` (`Laptop-PT`/`Smartphone-PT`/`TabletPC-PT` also `Wireless0`) | **No Cisco IOS CLI.** Configure via `host_configure` (`dhcp=True` or static IP/mask/gateway/DNS); `Laptop-PT` wireless requires Physical-tab module swap. |
+| `7960` (IP Phone) | `Switch`, `PC` ports | Needs power adapter if connected to non-PoE switch (`device_add` auto-powers via bridge; otherwise call `gui_attach_ip_phone_power`). Registers via SCCP / DHCP Option 150. |
+| `Home-VOIP-PT`, `Analog-Phone-PT` | `Home-VOIP-PT`: `Fa0`, `Phone`; `Analog-Phone-PT`: `Phone` | Connect via RJ-11 `phone` cable (`Home-VOIP-PT:Phone` <-> `Analog-Phone-PT:Phone`). |
+| `WRT300N`, `AccessPoint-PT`, `HomeGateway-PT` | `WRT300N`/`HomeGateway`: `Internet`, `Eth1..4`, `Wireless`; `AP-PT`: `Port0`, `Port1` | Configured via Config/Web GUI rather than IOS CLI (`AccessPoint-PT` is L2 bridge-only; `HomeGateway-PT` hosts IoT SSID). |
+| `WLC-2504`, `WLC-3504`, `WLC-PT`, `LAP-PT`, `3702i`, `Cloud-PT` | `WLC`: `Gi1..4/5` + `management`; `LAP-PT`/`3702i`: `Gi0`, `Dot11Radio0`; `Cloud-PT`: `Eth6`, `Se0..3` | `LAP-PT`/`3702i` connect via `straight_through` to switchports and need PoE/power brick + CAPWAP WLC discovery (Option 43 / DNS); `WLC`/`Cloud-PT` use Web/Config GUI. |
 
 ## 3. Script Bridge Constraints & GUI Fallback Escalation
 

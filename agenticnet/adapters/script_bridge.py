@@ -34,7 +34,11 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
     {
         "ping",
         "add_device",
+        "remove_device",
+        "move_device",
         "create_link",
+        "delete_link",
+        "add_module",
         "cli_exec",
         "get_activity_status",
         "open_file",
@@ -46,7 +50,7 @@ ALLOWED_OPCODES: frozenset[str] = frozenset(
     }
 )
 
-# Verified verbatim from PT 8.2.2 IpcAPI (`class_logical_workspace.html`).
+# Verified verbatim from PT 8.2.2 IpcAPI (`class_device.html` DeviceTypes enum).
 PT_DEVICE_TYPES: dict[str, int] = {
     "router": 0,
     "l2_switch": 1,
@@ -55,17 +59,39 @@ PT_DEVICE_TYPES: dict[str, int] = {
     "bridge": 3,
     "hub": 4,
     "repeater": 5,
+    "coaxial_splitter": 6,
     "access_point": 7,
     "pc": 8,
     "server": 9,
     "printer": 10,
     "wireless_router": 11,
     "ip_phone": 12,
+    "dsl_modem": 13,
+    "cable_modem": 14,
+    "remote_network": 15,
     "l3_switch": 16,
     "multilayer_switch": 16,
-    "laptop": 17,
-    "home_voip": 23,
-    "analog_phone": 24,
+    "switch_3650": 17,
+    "3650": 17,
+    "laptop": 18,
+    "tablet": 19,
+    "tablet_pc": 19,
+    "pda": 20,
+    "smartphone": 21,
+    "wireless_end_device": 21,
+    "wired_end_device": 22,
+    "tv": 23,
+    "home_voip": 24,
+    "analog_phone": 25,
+    "multiuser": 26,
+    "firewall": 27,
+    "asa": 27,
+    "ioe": 28,
+    "home_gateway": 29,
+    "cisco_access_point": 33,
+    "wlc": 41,
+    "lap": 44,
+    "lightweight_ap": 44,
 }
 
 # Verified verbatim from PT 8.2.2 IpcAPI (`class_logical_workspace.html`).
@@ -248,12 +274,21 @@ class HttpScriptBridgeServer:
 
         class _BridgeHandler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            timeout = 5.0
 
             def log_message(self, format: str, *args: object) -> None:  # noqa: A002
                 return
 
             def _origin_header(self) -> str:
                 return str(self.headers.get("Origin", "")).strip()
+
+            def _should_close_connection(self, status: int) -> bool:
+                if status >= 400 or bridge._stopped:
+                    return True
+                conn_hdr = str(self.headers.get("Connection", "")).strip().lower()
+                if "close" in conn_hdr:
+                    return True
+                return bool(self.request_version == "HTTP/1.0" and "keep-alive" not in conn_hdr)
 
             def _write_cors_headers(self) -> bool:
                 origin = self._origin_header()
@@ -271,6 +306,8 @@ class HttpScriptBridgeServer:
 
             def _send_json(self, status: int, body: dict[str, Any] | None = None) -> None:
                 raw = json.dumps(body).encode("utf-8") if body is not None else b""
+                should_close = self._should_close_connection(status)
+                conn_val = "close" if should_close else "keep-alive"
                 try:
                     self.send_response(status)
                     if not self._write_cors_headers():
@@ -281,16 +318,19 @@ class HttpScriptBridgeServer:
                         self.end_headers()
                         return
                     if status == 204:
-                        self.send_header("Connection", "keep-alive")
+                        self.send_header("Connection", conn_val)
+                        self.close_connection = should_close
                         self.end_headers()
                         return
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(raw)))
-                    self.send_header("Connection", "keep-alive")
+                    self.send_header("Connection", conn_val)
+                    self.close_connection = should_close
                     self.end_headers()
                     if raw:
                         self.wfile.write(raw)
                 except (BrokenPipeError, ConnectionResetError, OSError):
+                    self.close_connection = True
                     return
 
             def _authorize(self) -> bool:
@@ -312,10 +352,16 @@ class HttpScriptBridgeServer:
                 origin = self._origin_header()
                 if not is_allowed_bridge_origin(origin):
                     self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
                     self.end_headers()
                     return
+                should_close = self._should_close_connection(204)
                 self.send_response(204)
                 self._write_cors_headers()
+                self.send_header("Connection", "close" if should_close else "keep-alive")
+                self.close_connection = should_close
                 self.end_headers()
 
             def do_GET(self) -> None:  # noqa: N802
@@ -399,10 +445,37 @@ class HttpScriptBridgeServer:
             allow_reuse_address = True
             daemon_threads = True
 
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self._active_sockets_lock = threading.Lock()
+                self._active_sockets: set[socket.socket] = set()
+
+            def process_request_thread(self, request: Any, client_address: Any) -> None:
+                if isinstance(request, socket.socket):
+                    with self._active_sockets_lock:
+                        self._active_sockets.add(request)
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    if isinstance(request, socket.socket):
+                        with self._active_sockets_lock:
+                            self._active_sockets.discard(request)
+
             def finish_request(self, request: Any, client_address: Any) -> None:
                 with suppress(OSError):
                     request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 super().finish_request(request, client_address)
+
+            def server_close(self) -> None:
+                with self._active_sockets_lock:
+                    lingering = list(self._active_sockets)
+                    self._active_sockets.clear()
+                for sock in lingering:
+                    with suppress(OSError):
+                        sock.shutdown(socket.SHUT_RDWR)
+                    with suppress(OSError):
+                        sock.close()
+                super().server_close()
 
         self._httpd = _NoDelayHTTPServer((self.host, self._requested_port), _BridgeHandler)
         self._thread = threading.Thread(
@@ -661,6 +734,19 @@ class HttpScriptBridgeBackend(ScriptBackend):
         """Return True if a live Packet Tracer extension client is connected."""
         return self.server.is_connected()
 
+    def wait_for_connection(self, *, timeout_seconds: float = 15.0) -> bool:
+        """Poll until an already-running Packet Tracer bridge attaches without spawning PT."""
+        if self.is_connected():
+            return True
+        if self.server._httpd is None:
+            return False
+        deadline = time.monotonic() + max(timeout_seconds, 0.2)
+        while time.monotonic() < deadline:
+            if self.is_connected():
+                return True
+            time.sleep(0.15)
+        return self.is_connected()
+
     def ensure_connected(self, *, timeout_seconds: float = 40.0) -> bool:
         """Auto-launch Packet Tracer if needed and wait until the Script Module connects."""
         if self.is_connected():
@@ -700,19 +786,23 @@ class HttpScriptBridgeBackend(ScriptBackend):
         device_type: int | str = 0,
         x: float = 100.0,
         y: float = 100.0,
+        display_name: str | None = None,
     ) -> dict[str, Any]:
         """Create a device on the active Packet Tracer logical workspace."""
         cleaned_model = _require_non_empty(model, "model")
         resolved_type = resolve_device_type(device_type)
         self.safety.check_safe_to_act(live_input=False, count_action=True)
+        payload: dict[str, Any] = {
+            "device_type": resolved_type,
+            "model": cleaned_model,
+            "x": float(x),
+            "y": float(y),
+        }
+        if display_name is not None and str(display_name).strip():
+            payload["display_name"] = str(display_name).strip()
         data = self.server.enqueue_command(
             "add_device",
-            {
-                "device_type": resolved_type,
-                "model": cleaned_model,
-                "x": float(x),
-                "y": float(y),
-            },
+            payload,
             timeout_seconds=self.default_timeout_seconds,
         )
         out: dict[str, Any] = {
@@ -745,6 +835,12 @@ class HttpScriptBridgeBackend(ScriptBackend):
         d2 = _require_non_empty(device2, "device2")
         p2 = _require_non_empty(port2, "port2")
         resolved_conn = resolve_connect_type(conn_type)
+        swap_dce = (
+            isinstance(conn_type, str)
+            and conn_type.strip().lower().replace("-", "_").replace(" ", "_") == "serial_dte"
+        )
+        if swap_dce:
+            d1, p1, d2, p2 = d2, p2, d1, p1
         self.safety.check_safe_to_act(live_input=False, count_action=True)
         data = self.server.enqueue_command(
             "create_link",
@@ -773,6 +869,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
         commands: list[str],
         *,
         wait_for_prompt: bool = True,
+        stop_on_error: bool = False,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Run IOS CLI commands via PT TerminalLine and return captured raw output."""
@@ -786,14 +883,17 @@ class HttpScriptBridgeBackend(ScriptBackend):
             else max(float(self.default_timeout_seconds), 25.0)
         )
         self.safety.check_safe_to_act(live_input=False, count_action=True)
+        cli_params: dict[str, Any] = {
+            "device_name": dev,
+            "commands": normalized_cmds,
+            "wait_for_prompt": bool(wait_for_prompt),
+            "timeout_ms": int(max(effective_timeout, 1.0) * 1000),
+        }
+        if stop_on_error:
+            cli_params["stop_on_error"] = True
         data = self.server.enqueue_command(
             "cli_exec",
-            {
-                "device_name": dev,
-                "commands": normalized_cmds,
-                "wait_for_prompt": bool(wait_for_prompt),
-                "timeout_ms": int(max(effective_timeout, 1.0) * 1000),
-            },
+            cli_params,
             timeout_seconds=effective_timeout + 2.0,
         )
         statuses = list(data.get("command_statuses", []))
@@ -804,9 +904,12 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 for entry in statuses
                 if isinstance(entry, dict)
                 and entry.get("status", 0) != 0
-                and str(entry.get("command", "")).strip().lower().startswith("terminal length 0")
+                and str(entry.get("command", ""))
+                .strip()
+                .lower()
+                .startswith(("terminal length 0", "terminal pager 0"))
             ]
-        return {
+        out_res: dict[str, Any] = {
             "ok": True,
             "backend": "script_http",
             "device_name": dev,
@@ -819,6 +922,11 @@ class HttpScriptBridgeBackend(ScriptBackend):
             "more_pages_advanced": int(data.get("more_pages_advanced", 0)),
             "timed_out": bool(data.get("timed_out", False)),
         }
+        if "command_outputs" in data and isinstance(data["command_outputs"], list):
+            out_res["command_outputs"] = [str(x) for x in data["command_outputs"]]
+        if "stopped_on_error" in data:
+            out_res["stopped_on_error"] = bool(data["stopped_on_error"])
+        return out_res
 
     def read_activity_status(self) -> dict[str, Any]:
         """Read `.pka` score and comparator tree without bypassing locks/passwords."""
@@ -952,10 +1060,11 @@ class HttpScriptBridgeBackend(ScriptBackend):
         ip: str | None = None,
         subnet_mask: str | None = None,
         default_gateway: str | None = None,
+        dns_server: str | None = None,
         display_name: str | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Configure DHCP or static IPv4/mask/gateway on a PT host via Script Module IPC."""
+        """Configure DHCP or static IPv4/mask/gateway/DNS on a PT host via Script Module IPC."""
         dev = _require_non_empty(device_name, "device_name")
         self.safety.check_safe_to_act(live_input=False, count_action=True)
         payload: dict[str, Any] = {
@@ -969,6 +1078,8 @@ class HttpScriptBridgeBackend(ScriptBackend):
             payload["subnet_mask"] = str(subnet_mask)
         if default_gateway:
             payload["default_gateway"] = str(default_gateway)
+        if dns_server:
+            payload["dns_server"] = str(dns_server)
         if display_name:
             payload["display_name"] = str(display_name)
         data = self.server.enqueue_command(
@@ -979,6 +1090,115 @@ class HttpScriptBridgeBackend(ScriptBackend):
         return {
             "ok": True,
             "backend": "script_http",
+            **data,
+        }
+
+    def remove_device(
+        self,
+        device_name: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Remove a device from Packet Tracer's logical workspace (`lw.removeDevice`)."""
+        dev = _require_non_empty(device_name, "device_name")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "remove_device",
+            {"device_name": dev},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": bool(data.get("removed", True)),
+            "backend": "script_http",
+            "device_name": dev,
+            **data,
+        }
+
+    def move_device(
+        self,
+        device_name: str,
+        x: float,
+        y: float,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Move a device on Packet Tracer's logical workspace (`dev.moveToLocation`)."""
+        dev = _require_non_empty(device_name, "device_name")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "move_device",
+            {"device_name": dev, "x": float(x), "y": float(y)},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": bool(data.get("moved", True)),
+            "backend": "script_http",
+            "device_name": dev,
+            "x": float(x),
+            "y": float(y),
+            **data,
+        }
+
+    def delete_link(
+        self,
+        device_name: str,
+        port_name: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Delete the link attached to `device_name:port_name` (`lw.deleteLink`)."""
+        dev = _require_non_empty(device_name, "device_name")
+        port = _require_non_empty(port_name, "port_name")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        data = self.server.enqueue_command(
+            "delete_link",
+            {"device_name": dev, "port_name": port},
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": bool(data.get("deleted", True)),
+            "backend": "script_http",
+            "device_name": dev,
+            "port_name": port,
+            **data,
+        }
+
+    def add_module(
+        self,
+        device_name: str,
+        slot: str | int,
+        module_name: str,
+        *,
+        module_type: int | None = None,
+        power_cycle: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Insert a hardware module into a Packet Tracer device slot."""
+        dev = _require_non_empty(device_name, "device_name")
+        mod = _require_non_empty(module_name, "module_name")
+        slot_str = str(slot).strip()
+        if not slot_str:
+            raise ValidationError("slot must not be empty.")
+        self.safety.check_safe_to_act(live_input=False, count_action=True)
+        payload: dict[str, Any] = {
+            "device_name": dev,
+            "slot": slot,
+            "module_name": mod,
+            "power_cycle": bool(power_cycle),
+        }
+        if module_type is not None:
+            payload["module_type"] = int(module_type)
+        data = self.server.enqueue_command(
+            "add_module",
+            payload,
+            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+        )
+        return {
+            "ok": bool(data.get("module_added", True)),
+            "backend": "script_http",
+            "device_name": dev,
+            "slot": slot_str,
+            "module_name": mod,
             **data,
         }
 
@@ -1017,7 +1237,11 @@ class HttpScriptBridgeBackend(ScriptBackend):
             capabilities=[
                 "ping",
                 "add_device",
+                "remove_device",
+                "move_device",
                 "create_link",
+                "delete_link",
+                "add_module",
                 "cli_exec",
                 "get_activity_status",
                 "open_file",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -15,7 +16,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from agenticnet.core.exceptions import AdapterUnavailableError
+from agenticnet.core.exceptions import AdapterUnavailableError, ValidationError
 
 _UOI_NAME = 2
 _WM_CLOSE = 0x0010
@@ -302,16 +303,67 @@ def gracefully_close_packet_tracer(
 
 def _version_sort_key(path: Path) -> tuple[tuple[int, ...], str]:
     """Extract numeric version tuple from folder/app name so newer PT versions sort first."""
-    import re
-
     nums = tuple(int(tok) for tok in re.findall(r"\d+", path.parent.parent.name or path.name))
     return (nums, str(path).lower())
 
 
+_PT_BINARY_NAME_RE = re.compile(
+    r"^(?:packettracer(?:\d+)?(?:\.exe)?|cisco packet tracer[^/\\]*\.app)$",
+    re.IGNORECASE,
+)
+_ALLOWED_LAB_SUFFIXES: frozenset[str] = frozenset({".pkt", ".pka", ".pksz"})
+
+
+def validate_packet_tracer_binary_path(path: str | Path) -> Path:
+    """Validate that an explicit Packet Tracer executable path names a PacketTracer binary."""
+    raw = str(path).strip()
+    if not raw or "\x00" in raw:
+        raise ValidationError(
+            "Packet Tracer executable path must be a non-empty valid path.",
+            details={"executable_path": str(path)},
+        )
+    candidate = Path(raw).expanduser()
+    if not _PT_BINARY_NAME_RE.match(candidate.name):
+        raise ValidationError(
+            f"Refusing non-Packet-Tracer executable path {str(path)!r}.",
+            details={"executable_path": str(path), "basename": candidate.name},
+            remediation="Provide the path to PacketTracer.exe (Windows) or packettracer (POSIX).",
+        )
+    return candidate
+
+
+def validate_lab_file_path(path: str | Path, *, must_exist: bool = False) -> Path:
+    """Validate that a lab file path targets a `.pkt`/`.pka`/`.pksz` file without null bytes."""
+    raw = str(path).strip()
+    if not raw or "\x00" in raw:
+        raise ValidationError(
+            "Lab file path must be a non-empty valid path.",
+            details={"path": str(path)},
+        )
+    candidate = Path(raw).expanduser().resolve()
+    if candidate.suffix.lower() not in _ALLOWED_LAB_SUFFIXES:
+        raise ValidationError(
+            f"Unsupported Packet Tracer lab file extension {candidate.suffix!r}.",
+            details={"path": str(candidate), "allowed_extensions": sorted(_ALLOWED_LAB_SUFFIXES)},
+            remediation="Provide a .pkt, .pka, or .pksz Packet Tracer lab file.",
+        )
+    if must_exist and not candidate.is_file():
+        raise ValidationError(
+            f"Packet Tracer lab file does not exist: {candidate}",
+            details={"path": str(candidate)},
+        )
+    return candidate
+
+
 def detect_packet_tracer_binary(explicit_path: str | None = None) -> str | None:
     """Locate Cisco Packet Tracer executable across versions without altering system state."""
-    if explicit_path and Path(explicit_path).exists():
-        return str(Path(explicit_path))
+    if explicit_path is not None:
+        cleaned_explicit = str(explicit_path).strip()
+        if cleaned_explicit:
+            validated = validate_packet_tracer_binary_path(cleaned_explicit)
+            if validated.exists():
+                return str(validated)
+            return None
 
     candidates: list[Path] = []
     if platform.system() == "Windows":

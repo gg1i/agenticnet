@@ -16,6 +16,19 @@ def get_console_profile(
     cat = catalog or DEFAULT_CATALOG
     dev = cat.get_profile(model)
 
+    if dev.supports(ConfigCapability.ASA_FIREWALL):
+        return DeviceConsoleProfile(
+            model=dev.model,
+            interaction_kind=ConsoleInteractionKind.ASA_CLI,
+            supports_ios_cli=True,
+            supports_paging_disable=True,
+            paging_disable_command="terminal pager 0",
+            line_delay_ms=90,
+            command_timeout_seconds=6.0,
+            max_recovery_attempts=4,
+            notes=f"Cisco ASA CLI profile for {dev.display_name}.",
+        )
+
     if dev.supports(ConfigCapability.IOS_CLI):
         delay = 100 if dev.category == DeviceCategory.L3_SWITCH else 80
         return DeviceConsoleProfile(

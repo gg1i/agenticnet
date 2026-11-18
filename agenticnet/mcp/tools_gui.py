@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
-from agenticnet.adapters.discovery import require_interactive_desktop_for_launch
+from agenticnet.adapters.discovery import (
+    require_interactive_desktop_for_launch,
+    validate_lab_file_path,
+    validate_packet_tracer_binary_path,
+)
 from agenticnet.core.enums import PermissionTier, StateLevel
 from agenticnet.core.exceptions import AdapterUnavailableError, ValidationError
 from agenticnet.core.models import OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
+from agenticnet.security.redaction import redact_cli_text
+from agenticnet.security.validation import safe_output_path
 
 
 def _call_with_optional(fn: Any, *args: Any, optional: dict[str, Any], **kwargs: Any) -> Any:
@@ -53,6 +60,10 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         """Launch Cisco Packet Tracer (or attach if already running) and wait for window."""
 
         def _run() -> OperationResult:
+            if executable_path is not None and str(executable_path).strip():
+                validate_packet_tracer_binary_path(executable_path)
+            if project_file is not None and str(project_file).strip():
+                validate_lab_file_path(project_file, must_exist=False)
             require_interactive_desktop_for_launch("packet_tracer_launch")
             data = _call_with_optional(
                 runtime.gui.launch_application,
@@ -92,6 +103,20 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         """Capture a screenshot of Packet Tracer or a dialog offscreen and inspect layout."""
 
         def _run() -> OperationResult:
+            safe_target: str | None = None
+            if output_path is not None:
+                raw_out = Path(output_path).expanduser()
+                target_in = (
+                    (runtime.settings.data_dir / "screenshots" / raw_out)
+                    if not raw_out.is_absolute()
+                    else raw_out
+                )
+                resolved = safe_output_path(
+                    target_in,
+                    default_base_dir=runtime.settings.data_dir,
+                    allow_outside_base=False,
+                )
+                safe_target = str(resolved)
             data = _call_with_optional(
                 runtime.gui.capture_screenshot,
                 optional={
@@ -99,7 +124,7 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                     "focus_first": focus_first,
                     "dialog_title": dialog_title,
                 },
-                output_path=output_path,
+                output_path=safe_target,
             )
             return OperationResult.ok(
                 "gui_screenshot",
@@ -110,9 +135,10 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 evidence=[f"PNG saved at {data.get('screenshot_path')}."],
             )
 
+        tier = PermissionTier.GUI_CONTROL if output_path else PermissionTier.READ_ONLY
         return runtime.execute(
             "gui_screenshot",
-            PermissionTier.READ_ONLY,
+            tier,
             {
                 "output_path": output_path,
                 "full_window": full_window,
@@ -233,7 +259,12 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         return runtime.execute(
             "gui_keypress",
             PermissionTier.GUI_CONTROL,
-            {"keys": keys, "has_text": bool(text), "dry_run": dry_run},
+            {
+                "keys": keys,
+                "has_text": bool(text),
+                "text_preview": redact_cli_text(text[:120]) if text else None,
+                "dry_run": dry_run,
+            },
             _run,
             confirm=confirm,
         )
@@ -323,11 +354,17 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 ],
             )
 
+        action_ops = [
+            str(a.get("op") or a.get("action") or "unknown")
+            for a in actions[:25]
+            if isinstance(a, dict)
+        ]
         return runtime.execute(
             "gui_batch",
             PermissionTier.GUI_CONTROL,
             {
                 "action_count": len(actions),
+                "action_ops": action_ops,
                 "background": background,
                 "restore_focus": restore_focus,
                 "dry_run": dry_run,
@@ -428,23 +465,24 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
         )
 
     specs = [
-        ("packet_tracer_detect", packet_tracer_detect, PermissionTier.READ_ONLY, True),
-        ("packet_tracer_launch", packet_tracer_launch, PermissionTier.GUI_CONTROL, False),
-        ("gui_screenshot", gui_screenshot, PermissionTier.READ_ONLY, True),
-        ("gui_calibrate", gui_calibrate, PermissionTier.GUI_CONTROL, False),
-        ("gui_click", gui_click, PermissionTier.GUI_CONTROL, False),
-        ("gui_keypress", gui_keypress, PermissionTier.GUI_CONTROL, False),
-        ("gui_state_inspect", gui_state_inspect, PermissionTier.READ_ONLY, True),
-        ("gui_recover", gui_recover, PermissionTier.GUI_CONTROL, False),
-        ("gui_batch", gui_batch, PermissionTier.GUI_CONTROL, False),
+        ("packet_tracer_detect", packet_tracer_detect, PermissionTier.READ_ONLY, True, "stable"),
+        ("packet_tracer_launch", packet_tracer_launch, PermissionTier.GUI_CONTROL, False, "stable"),
+        ("gui_screenshot", gui_screenshot, PermissionTier.READ_ONLY, False, "stable"),
+        ("gui_calibrate", gui_calibrate, PermissionTier.GUI_CONTROL, False, "stable"),
+        ("gui_click", gui_click, PermissionTier.GUI_CONTROL, False, "stable"),
+        ("gui_keypress", gui_keypress, PermissionTier.GUI_CONTROL, False, "stable"),
+        ("gui_state_inspect", gui_state_inspect, PermissionTier.READ_ONLY, True, "stable"),
+        ("gui_recover", gui_recover, PermissionTier.GUI_CONTROL, False, "stable"),
+        ("gui_batch", gui_batch, PermissionTier.GUI_CONTROL, False, "stable"),
         (
             "gui_attach_ip_phone_power",
             gui_attach_ip_phone_power,
             PermissionTier.GUI_CONTROL,
             False,
+            "experimental",
         ),
     ]
-    for name, fn, tier, ro in specs:
+    for name, fn, tier, ro, status in specs:
         runtime.registry.register_tool(
             server,
             name=name,
@@ -452,6 +490,7 @@ def register_gui_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
             permission_tier=tier,
             description=(fn.__doc__ or name).strip(),
             fn=fn,
+            status=status,
             read_only=ro,
             idempotent=ro,
         )

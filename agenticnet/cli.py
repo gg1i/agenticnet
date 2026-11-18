@@ -29,8 +29,17 @@ from agenticnet.adapters.script_bridge import (
 )
 from agenticnet.core.logging import configure_logging
 from agenticnet.core.settings import AgenticNetSettings, canonical_pt_bridge_data_dir
+from agenticnet.gui.safety import EmergencyStopController
 from agenticnet.mcp.server import create_mcp_server
 from agenticnet.security.redaction import redact_path_home
+
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _normalize_profile_arg(raw: str) -> str:
+    """Normalize permission profile CLI arguments (read_only -> read-only, full -> standard)."""
+    cleaned = raw.strip().lower().replace("_", "-")
+    return "standard" if cleaned == "full" else cleaned
 
 
 def _is_dir_writable(target: Path) -> bool:
@@ -45,8 +54,18 @@ def build_doctor_report(settings: AgenticNetSettings) -> dict[str, object]:
     """Run live environment probes with home/user path redaction and honest status."""
     pt_exe = _detect_packet_tracer_binary(settings.packet_tracer_path)
     pt_running = _is_packet_tracer_running()
-    session_file = settings.data_dir / "bridge_session.json"
-    bridge_probe = probe_bridge_health(session_file)
+    primary_session = settings.data_dir / "bridge_session.json"
+    canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
+    active_session = primary_session
+    bridge_probe = probe_bridge_health(primary_session)
+    if (
+        not bridge_probe.get("session_descriptor_present")
+        and canonical_session.resolve() != primary_session.resolve()
+    ):
+        canonical_probe = probe_bridge_health(canonical_session)
+        if canonical_probe.get("session_descriptor_present"):
+            bridge_probe = canonical_probe
+            active_session = canonical_session
     data_writable = _is_dir_writable(settings.data_dir)
     return {
         "python": sys.version.split()[0],
@@ -61,10 +80,11 @@ def build_doctor_report(settings: AgenticNetSettings) -> dict[str, object]:
         "packet_tracer_path": redact_path_home(pt_exe),
         "packet_tracer_running": pt_running,
         "script_bridge": {
-            "session_file": redact_path_home(session_file),
+            "session_file": redact_path_home(active_session),
+            "canonical_session_file": redact_path_home(canonical_session),
             **bridge_probe,
         },
-        "roadmap_stage": "phase_2_backend_router",
+        "roadmap_stage": "stage_1_packet_tracer_excellence",
         "capabilities_doc": "docs/CAPABILITIES.md",
     }
 
@@ -342,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_p.add_argument(
         "--profile",
+        type=_normalize_profile_arg,
         choices=["read-only", "planning", "configuration", "standard"],
         default=None,
         help="Permission profile limiting active tool tiers.",
@@ -351,6 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["solve_lab", "advanced"],
         default=None,
         help="Tool exposure profile: 'solve_lab' (default curated loop) or 'advanced' (all tools).",
+    )
+    serve_p.add_argument(
+        "--allow-unauthenticated-remote",
+        action="store_true",
+        help="Allow binding streamable-http or sse MCP transport to non-loopback hosts.",
     )
     serve_p.add_argument(
         "--json-logs", action="store_true", help="Emit JSON-formatted logs to stderr."
@@ -410,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup_p.add_argument(
         "--profile",
+        type=_normalize_profile_arg,
         choices=["read-only", "planning", "configuration", "standard"],
         default=None,
         help="Permission profile for generated MCP config (default: current/standard).",
@@ -580,6 +607,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "port", None):
             settings.port = args.port
 
+        allow_remote_env = (
+            os.environ.get("AGENTICNET_ALLOW_UNAUTHENTICATED_REMOTE")
+            or os.environ.get("NETFORGE_ALLOW_UNAUTHENTICATED_REMOTE")
+            or ""
+        ).strip().lower() in {"1", "true", "yes"}
+        allow_remote = (
+            bool(getattr(args, "allow_unauthenticated_remote", False)) or allow_remote_env
+        )
+        if (
+            settings.transport in {"streamable-http", "sse"}
+            and settings.host.strip().lower() not in _LOOPBACK_HOSTS
+            and not allow_remote
+        ):
+            print(
+                f"Error: Refusing to bind unauthenticated MCP {settings.transport} transport "
+                f"to non-loopback host '{settings.host}'. Bind to 127.0.0.1/localhost or pass "
+                "--allow-unauthenticated-remote "
+                "(or set AGENTICNET_ALLOW_UNAUTHENTICATED_REMOTE=true) "
+                "behind an authenticated reverse proxy.",
+                file=sys.stderr,
+            )
+            return 2
+
         configure_logging(settings.log_level, json_format=bool(getattr(args, "json_logs", False)))
         primary_session = settings.data_dir / "bridge_session.json"
         canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
@@ -588,11 +638,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if canonical_session.resolve() != primary_session.resolve()
             else None
         )
+        shared_safety = EmergencyStopController()
         bridge = HttpScriptBridgeBackend(
             HttpScriptBridgeServer(
                 session_file=primary_session,
                 mirror_session_files=mirrors,
             ),
+            safety=shared_safety,
             auto_launch_pt=settings.auto_launch_packet_tracer,
             packet_tracer_path=settings.packet_tracer_path,
         )

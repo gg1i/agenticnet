@@ -5,10 +5,11 @@ from __future__ import annotations
 import ipaddress
 import re
 from pathlib import Path
+from typing import Any
 
 from agenticnet.core.enums import ConfigCapability
-from agenticnet.core.exceptions import IOSConfigError
-from agenticnet.devices import DeviceProfile
+from agenticnet.core.exceptions import InterfaceError, IOSConfigError
+from agenticnet.devices import DEFAULT_CATALOG, DeviceCatalog, DeviceProfile
 from agenticnet.ios.models import CLIDiagnostic
 
 _CLI_ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
@@ -145,7 +146,10 @@ def parse_cli_output(output: str) -> list[CLIDiagnostic]:
 def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[CLIDiagnostic]:
     """Perform static capability & syntax checks on raw IOS commands before console execution."""
     diagnostics: list[CLIDiagnostic] = []
-    if not profile.supports(ConfigCapability.IOS_CLI):
+    has_cli = profile.supports(ConfigCapability.IOS_CLI) or profile.supports(
+        ConfigCapability.ASA_FIREWALL
+    )
+    if not has_cli:
         return [
             CLIDiagnostic(
                 line_number=1,
@@ -156,8 +160,23 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
             )
         ]
 
+    is_asa = profile.supports(ConfigCapability.ASA_FIREWALL) and not profile.supports(
+        ConfigCapability.IOS_CLI
+    )
     seen_trunk_encap = False
     for idx, raw_cmd in enumerate(commands, start=1):
+        if any(ch in raw_cmd for ch in ("\r", "\n", "\x00")):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=raw_cmd.replace("\r", "\\r").replace("\n", "\\n"),
+                    severity="error",
+                    code="CLI_CONTROL_CHAR_INJECTION",
+                    message="Command string contains embedded newline or null characters.",
+                )
+            )
+            continue
+
         cmd = raw_cmd.strip()
         if not cmd or cmd.startswith("!"):
             continue
@@ -199,17 +218,64 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                 )
             )
 
-        if (
-            lower.startswith(("router rip", "router bgp"))
-            and not profile.supports(ConfigCapability.STATIC_ROUTING)
-        ):
+        if lower.startswith("router bgp") and not profile.supports(ConfigCapability.BGP):
+            code = (
+                "UNSUPPORTED_ROUTING_PROTOCOL"
+                if not profile.supports(ConfigCapability.STATIC_ROUTING)
+                else "UNSUPPORTED_BGP"
+            )
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code=code,
+                    message=f"'{profile.model}' does not support BGP.",
+                )
+            )
+        elif lower.startswith("router rip") and not profile.supports(ConfigCapability.RIP):
             diagnostics.append(
                 CLIDiagnostic(
                     line_number=idx,
                     command=cmd,
                     severity="error",
                     code="UNSUPPORTED_ROUTING_PROTOCOL",
-                    message=f"'{profile.model}' is Layer 2 only and cannot run dynamic routing.",
+                    message=f"'{profile.model}' cannot run RIP dynamic routing.",
+                )
+            )
+
+        if lower.startswith("standby ") and not profile.supports(ConfigCapability.HSRP):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_HSRP",
+                    message=f"'{profile.model}' does not support HSRP ('standby').",
+                )
+            )
+
+        if lower.startswith("ip dhcp snooping") and not profile.supports(
+            ConfigCapability.DHCP_SNOOPING
+        ):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_DHCP_SNOOPING",
+                    message=f"'{profile.model}' does not support DHCP Snooping.",
+                )
+            )
+
+        if lower.startswith("ip arp inspection") and not profile.supports(ConfigCapability.DAI):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_DAI",
+                    message=f"'{profile.model}' does not support Dynamic ARP Inspection.",
                 )
             )
 
@@ -242,9 +308,8 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
 
         if "switchport trunk encapsulation" in lower:
             seen_trunk_encap = True
-            if (
-                profile.supports(ConfigCapability.TRUNKING)
-                and not profile.supports(ConfigCapability.TRUNK_ENCAP_DOT1Q)
+            if profile.supports(ConfigCapability.TRUNKING) and not profile.supports(
+                ConfigCapability.TRUNK_ENCAP_DOT1Q
             ):
                 diagnostics.append(
                     CLIDiagnostic(
@@ -285,8 +350,7 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                     severity="error",
                     code="UNSUPPORTED_SWITCHPORT",
                     message=(
-                        f"Router model '{profile.model}' does not support "
-                        "Layer 2 switchport commands."
+                        f"Model '{profile.model}' does not support Layer 2 switchport commands."
                     ),
                 )
             )
@@ -307,7 +371,7 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                         )
                     )
 
-        if lower.startswith("show "):
+        if lower.startswith("show ") and not is_asa:
             diagnostics.append(
                 CLIDiagnostic(
                     line_number=idx,
@@ -323,14 +387,153 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
     return diagnostics
 
 
+def validate_pre_apply(
+    profile_or_model: DeviceProfile | str,
+    commands: list[str],
+    *,
+    device_name: str | None = None,
+    ipam: Any | None = None,
+    catalog: DeviceCatalog | None = None,
+    raise_on_error: bool = False,
+) -> dict[str, Any]:
+    """Blocking pre-apply / pre-export validator gate for IOS and ASA configurations.
+
+    Checks capability rules, control-character injection, interface validity against the
+    device model, same-device IPv4 subnet overlaps, IPAM duplicate-IP conflicts, and
+    unsupported Packet Tracer IOS-XE constructs.
+    """
+    cat = catalog or DEFAULT_CATALOG
+    profile = (
+        profile_or_model
+        if isinstance(profile_or_model, DeviceProfile)
+        else cat.get_profile(profile_or_model)
+    )
+    diagnostics = list(validate_raw_commands(profile, commands))
+
+    current_iface: str | None = None
+    seen_subnets: list[tuple[str, ipaddress.IPv4Network, int]] = []
+
+    for idx, raw_cmd in enumerate(commands, start=1):
+        if any(ch in raw_cmd for ch in ("\r", "\n", "\x00")):
+            continue
+        cmd = raw_cmd.strip()
+        if not cmd or cmd.startswith("!"):
+            continue
+        lower = cmd.lower()
+
+        if lower in {"exit", "end"}:
+            current_iface = None
+            continue
+
+        if lower.startswith("interface ") and not lower.startswith("interface range "):
+            raw_if = cmd.split(None, 1)[1].strip()
+            try:
+                current_iface = cat.normalize_interface_name(profile.model, raw_if)
+            except InterfaceError as exc:
+                current_iface = raw_if
+                diagnostics.append(
+                    CLIDiagnostic(
+                        line_number=idx,
+                        command=cmd,
+                        severity="error",
+                        code="INVALID_INTERFACE_FOR_MODEL",
+                        message=exc.message,
+                    )
+                )
+            continue
+
+        if profile.model in {"4321", "ISR4331"} and lower.startswith(
+            ("route-map ", "ip prefix-list ", "ip policy route-map ")
+        ):
+            diagnostics.append(
+                CLIDiagnostic(
+                    line_number=idx,
+                    command=cmd,
+                    severity="error",
+                    code="UNSUPPORTED_PT_IOS_XE_COMMAND",
+                    message=(
+                        f"Packet Tracer IOS-XE on '{profile.model}' does not implement "
+                        "route-map, ip prefix-list, or policy-based routing."
+                    ),
+                )
+            )
+
+        if lower.startswith("ip address "):
+            parts = cmd.split()
+            if len(parts) >= 4 and parts[2].lower() not in {"dhcp", "negotiated"}:
+                try:
+                    ip_str, mask_str = parse_ipv4_and_mask(parts[2], parts[3])
+                    net = ipaddress.IPv4Network(f"{ip_str}/{mask_str}", strict=False)
+                    iface_label = current_iface or f"line_{idx}"
+                    for prev_iface, prev_net, _prev_ln in seen_subnets:
+                        if prev_iface != iface_label and prev_net.overlaps(net):
+                            diagnostics.append(
+                                CLIDiagnostic(
+                                    line_number=idx,
+                                    command=cmd,
+                                    severity="error",
+                                    code="OVERLAPPING_INTERFACE_SUBNET",
+                                    message=(
+                                        f"Subnet {net} on {iface_label} overlaps with {prev_net} "
+                                        f"configured on {prev_iface}."
+                                    ),
+                                )
+                            )
+                    seen_subnets.append((iface_label, net, idx))
+
+                    if ipam is not None and hasattr(ipam, "state"):
+                        for existing in ipam.state.allocations.values():
+                            same_owner = (
+                                device_name is not None
+                                and existing.device_name == device_name
+                                and existing.interface_name == (current_iface or "")
+                            )
+                            if existing.ip_address == ip_str and not same_owner:
+                                diagnostics.append(
+                                    CLIDiagnostic(
+                                        line_number=idx,
+                                        command=cmd,
+                                        severity="error",
+                                        code="IPAM_DUPLICATE_IP",
+                                        message=(
+                                            f"IP {ip_str} is already allocated in IPAM to "
+                                            f"{existing.device_name}:{existing.interface_name}."
+                                        ),
+                                    )
+                                )
+                except IOSConfigError:
+                    # Already reported by validate_raw_commands as INVALID_IP_OR_MASK
+                    pass
+
+    errors = [d for d in diagnostics if d.severity == "error"]
+    warnings = [d for d in diagnostics if d.severity == "warning"]
+    if raise_on_error and errors:
+        raise IOSConfigError(
+            f"Pre-apply validation blocked configuration for '{profile.model}': "
+            f"{len(errors)} error(s) ({errors[0].code}: {errors[0].message})",
+            details={
+                "model": profile.model,
+                "device_name": device_name,
+                "errors": [e.model_dump(mode="json") for e in errors],
+            },
+            remediation="Fix all validation errors before applying configuration to Packet Tracer.",
+        )
+
+    return {
+        "valid": len(errors) == 0,
+        "blocked": len(errors) > 0,
+        "model": profile.model,
+        "device_name": device_name,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "diagnostics": diagnostics,
+    }
+
+
 def load_ios_command_sequence(ios_path: Path, *, device_type: str = "router") -> list[str]:
     """Read an `.ios` config file and wrap with safe enable/conf-t entry for the device class."""
     raw_lines = ios_path.read_text(encoding="utf-8").splitlines()
-    body = [
-        line.strip()
-        for line in raw_lines
-        if line.strip() and not line.strip().startswith("!")
-    ]
+    body = [line.strip() for line in raw_lines if line.strip() and not line.strip().startswith("!")]
     while body and body[0].lower() in {"enable", "en", "configure terminal", "conf t"}:
         body.pop(0)
     # Never send "no" to switches (Catalyst has no setup dialog and triggers DNS lookup).

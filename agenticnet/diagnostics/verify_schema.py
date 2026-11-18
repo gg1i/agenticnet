@@ -6,6 +6,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agenticnet.security.validation import validate_cli_safe_text, validate_ping_target
+
 
 class _BaseRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -24,6 +26,21 @@ class _BaseRequirement(BaseModel):
         default=None,
         description="Optional human-readable explanation of what this requirement checks.",
     )
+
+    @model_validator(mode="after")
+    def _validate_cli_safe_fields(self) -> _BaseRequirement:
+        skip_fields = {"contains", "must_not_contain", "description"}
+        for fname in type(self).model_fields:
+            if fname in skip_fields:
+                continue
+            val = getattr(self, fname)
+            if isinstance(val, str):
+                validate_cli_safe_text(val, field_name=fname)
+            elif isinstance(val, list):
+                for item in val:
+                    if isinstance(item, str):
+                        validate_cli_safe_text(item, field_name=fname)
+        return self
 
 
 class InterfaceUpRequirement(_BaseRequirement):
@@ -86,6 +103,11 @@ class ReachableRequirement(_BaseRequirement):
     target: str = Field(alias="to", min_length=1, description="Destination IPv4 address.")
     min_received: int = Field(default=1, ge=1)
 
+    @model_validator(mode="after")
+    def _validate_target(self) -> ReachableRequirement:
+        self.target = validate_ping_target(self.target)
+        return self
+
 
 class ConfigContainsRequirement(_BaseRequirement):
     """Require text line(s)/substring(s) in `show running-config` (or within a section)."""
@@ -138,6 +160,51 @@ class EphoneRegisteredRequirement(_BaseRequirement):
     )
 
 
+class TracerouteHopsRequirement(_BaseRequirement):
+    """Require hop-by-hop path verification via IOS `traceroute` or PC `tracert`."""
+
+    type: Literal["traceroute_hops"]
+    source: str = Field(alias="from", min_length=1, description="Source device name.")
+    target: str = Field(alias="to", min_length=1, description="Destination IP or hostname.")
+    expected_hops: list[str] = Field(default_factory=list)
+    max_hops: int | None = Field(default=None, ge=1, le=30)
+    require_completed: bool = Field(default=True)
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> TracerouteHopsRequirement:
+        self.target = validate_ping_target(self.target)
+        return self
+
+
+class TrunkExistsRequirement(_BaseRequirement):
+    """Require an active 802.1Q trunk in `show interfaces trunk` on switch `device`."""
+
+    type: Literal["trunk_exists"]
+    device: str = Field(min_length=1)
+    interface: str = Field(min_length=1)
+    native_vlan: int | None = Field(default=None, ge=1, le=4094)
+    allowed_vlans: list[int] = Field(default_factory=list)
+
+
+class StpRootRequirement(_BaseRequirement):
+    """Require Spanning-Tree root bridge status for `vlan_id` in `show spanning-tree`."""
+
+    type: Literal["stp_root"]
+    device: str = Field(min_length=1)
+    vlan_id: int = Field(default=1, ge=1, le=4094)
+    expect_root: bool = Field(default=True)
+
+
+class HostIpconfigRequirement(_BaseRequirement):
+    """Require IP/gateway/DNS configuration in PT PC `ipconfig /all` output."""
+
+    type: Literal["host_ipconfig"]
+    device: str = Field(min_length=1)
+    ip: str | None = Field(default=None)
+    default_gateway: str | None = Field(default=None)
+    dns_server: str | None = Field(default=None)
+
+
 LabRequirement = Annotated[
     InterfaceUpRequirement
     | IpAssignedRequirement
@@ -147,7 +214,11 @@ LabRequirement = Annotated[
     | ReachableRequirement
     | ConfigContainsRequirement
     | TelephonyServiceRequirement
-    | EphoneRegisteredRequirement,
+    | EphoneRegisteredRequirement
+    | TracerouteHopsRequirement
+    | TrunkExistsRequirement
+    | StpRootRequirement
+    | HostIpconfigRequirement,
     Field(discriminator="type"),
 ]
 
@@ -254,7 +325,7 @@ SCHEMA_EXAMPLES: list[dict[str, Any]] = [
 def get_verify_requirements_schema() -> dict[str, Any]:
     """Return the JSON Schema and worked examples for `verify_lab` requirements."""
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "json_schema": VerifyLabRequest.model_json_schema(),
         "supported_types": [
             "interface_up",
@@ -266,6 +337,10 @@ def get_verify_requirements_schema() -> dict[str, Any]:
             "config_contains",
             "telephony_service",
             "ephone_registered",
+            "traceroute_hops",
+            "trunk_exists",
+            "stp_root",
+            "host_ipconfig",
         ],
         "examples": SCHEMA_EXAMPLES,
     }

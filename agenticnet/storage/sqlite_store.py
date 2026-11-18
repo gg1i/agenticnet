@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from agenticnet import __schema_version__
 from agenticnet.core.exceptions import ProjectAlreadyExistsError, ProjectNotFoundError, StorageError
-from agenticnet.core.models import DiagnosticRecord, ExecutionLogEntry, ProjectMetadata
+from agenticnet.core.models import DiagnosticRecord, ExecutionLogEntry
 from agenticnet.ios.models import ConfigSnapshot
 from agenticnet.security.redaction import redact_cli_text, redact_secrets
-from agenticnet.storage.models import ProjectBundle, migrate_project_payload
+from agenticnet.storage.models import ProjectBundle, ProjectMetadata, migrate_project_payload
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -102,6 +103,12 @@ CREATE TABLE IF NOT EXISTS diagnostic_results (
     created_at TEXT NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS workspace_preferences (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -120,9 +127,25 @@ class SQLiteStore:
         conn.execute("PRAGMA busy_timeout = 5000;")
         return conn
 
+    @contextmanager
+    def _transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        """Open a SQLite connection, manage commit/rollback, and always close the handle."""
+        conn = self._connect()
+        try:
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE;")
+            yield conn
+            conn.commit()
+        except Exception:
+            with suppress(sqlite3.Error):
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
         try:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 with suppress(sqlite3.Error):
                     conn.execute("PRAGMA journal_mode=WAL;")
                     conn.execute("PRAGMA synchronous=NORMAL;")
@@ -138,7 +161,7 @@ class SQLiteStore:
 
     def project_exists(self, project_id: str) -> bool:
         """Check whether a project ID exists in SQLite."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             row = conn.execute(
                 "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
             ).fetchone()
@@ -157,48 +180,64 @@ class SQLiteStore:
         bundle_json = safe_bundle.model_dump_json()
 
         try:
-            with self._connect() as conn:
+            with self._transaction(immediate=True) as conn:
                 if create_only:
-                    existing = conn.execute(
-                        "SELECT 1 FROM projects WHERE project_id = ?",
-                        (safe_bundle.metadata.project_id,),
-                    ).fetchone()
-                    if existing is not None:
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO projects (
+                                project_id, name, description, schema_version, packet_tracer_file,
+                                created_at, updated_at, recovery_checkpoint, bundle_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                safe_bundle.metadata.project_id,
+                                safe_bundle.metadata.name,
+                                safe_bundle.metadata.description,
+                                safe_bundle.schema_version,
+                                safe_bundle.metadata.packet_tracer_file,
+                                safe_bundle.metadata.created_at.isoformat(),
+                                safe_bundle.metadata.updated_at.isoformat(),
+                                safe_bundle.recovery_checkpoint,
+                                bundle_json,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
                         raise ProjectAlreadyExistsError(
                             f"Project '{safe_bundle.metadata.project_id}' already exists.",
                             details={"project_id": safe_bundle.metadata.project_id},
                             remediation=(
                                 "Open the existing project or choose a different project_id."
                             ),
-                        )
-
-                conn.execute(
-                    """
-                    INSERT INTO projects (
-                        project_id, name, description, schema_version, packet_tracer_file,
-                        created_at, updated_at, recovery_checkpoint, bundle_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(project_id) DO UPDATE SET
-                        name = excluded.name,
-                        description = excluded.description,
-                        schema_version = excluded.schema_version,
-                        packet_tracer_file = excluded.packet_tracer_file,
-                        updated_at = excluded.updated_at,
-                        recovery_checkpoint = excluded.recovery_checkpoint,
-                        bundle_json = excluded.bundle_json
-                    """,
-                    (
-                        safe_bundle.metadata.project_id,
-                        safe_bundle.metadata.name,
-                        safe_bundle.metadata.description,
-                        safe_bundle.schema_version,
-                        safe_bundle.metadata.packet_tracer_file,
-                        safe_bundle.metadata.created_at.isoformat(),
-                        safe_bundle.metadata.updated_at.isoformat(),
-                        safe_bundle.recovery_checkpoint,
-                        bundle_json,
-                    ),
-                )
+                        ) from exc
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO projects (
+                            project_id, name, description, schema_version, packet_tracer_file,
+                            created_at, updated_at, recovery_checkpoint, bundle_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(project_id) DO UPDATE SET
+                            name = excluded.name,
+                            description = excluded.description,
+                            schema_version = excluded.schema_version,
+                            packet_tracer_file = excluded.packet_tracer_file,
+                            updated_at = excluded.updated_at,
+                            recovery_checkpoint = excluded.recovery_checkpoint,
+                            bundle_json = excluded.bundle_json
+                        """,
+                        (
+                            safe_bundle.metadata.project_id,
+                            safe_bundle.metadata.name,
+                            safe_bundle.metadata.description,
+                            safe_bundle.schema_version,
+                            safe_bundle.metadata.packet_tracer_file,
+                            safe_bundle.metadata.created_at.isoformat(),
+                            safe_bundle.metadata.updated_at.isoformat(),
+                            safe_bundle.recovery_checkpoint,
+                            bundle_json,
+                        ),
+                    )
 
                 pid = safe_bundle.metadata.project_id
                 conn.execute("DELETE FROM devices WHERE project_id = ?", (pid,))
@@ -303,7 +342,7 @@ class SQLiteStore:
 
     def load_bundle(self, project_id: str) -> ProjectBundle:
         """Load and validate a ProjectBundle from SQLite."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             row = conn.execute(
                 "SELECT bundle_json FROM projects WHERE project_id = ?", (project_id,)
             ).fetchone()
@@ -319,7 +358,7 @@ class SQLiteStore:
 
     def list_projects(self) -> list[ProjectMetadata]:
         """List stored projects ordered by most recently updated."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             rows = conn.execute(
                 "SELECT bundle_json FROM projects ORDER BY updated_at DESC"
             ).fetchall()
@@ -332,7 +371,7 @@ class SQLiteStore:
 
     def delete_project(self, project_id: str) -> None:
         """Delete a project and cascaded records from SQLite."""
-        with self._connect() as conn:
+        with self._transaction(immediate=True) as conn:
             cur = conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
             if cur.rowcount == 0:
                 raise ProjectNotFoundError(f"Project '{project_id}' was not found.")
@@ -342,7 +381,7 @@ class SQLiteStore:
         safe_params = redact_secrets(entry.params_redacted)
         safe_summary = redact_cli_text(entry.summary)
         try:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 conn.execute(
                     """
                     INSERT INTO execution_logs (
@@ -370,7 +409,7 @@ class SQLiteStore:
         self, *, project_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         """Query recent execution log records."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             if project_id is not None:
                 rows = conn.execute(
                     """
@@ -413,12 +452,63 @@ class SQLiteStore:
 
     def count_logs_for_project(self, project_id: str) -> int:
         """Count execution logs recorded for a project."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM execution_logs WHERE project_id = ?",
                 (project_id,),
             ).fetchone()
         return int(row["cnt"]) if row else 0
+
+    def set_preference(self, key: str, value: Any) -> dict[str, Any]:
+        """Store or update a standing workspace preference in SQLite."""
+        cleaned_key = str(key or "").strip()
+        if not cleaned_key:
+            raise StorageError("Workspace preference key must not be empty.")
+        now_iso = datetime.now(UTC).isoformat()
+        safe_val = redact_secrets(value)
+        try:
+            with self._transaction(immediate=True) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO workspace_preferences (key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value_json = excluded.value_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (cleaned_key, json.dumps(safe_val, default=str), now_iso),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(f"Failed to persist preference '{cleaned_key}': {exc}") from exc
+        return {"key": cleaned_key, "value": safe_val, "updated_at": now_iso}
+
+    def get_preference(self, key: str, default: Any = None) -> Any:
+        """Read a standing workspace preference from SQLite, returning `default` if absent."""
+        cleaned_key = str(key or "").strip()
+        if not cleaned_key:
+            return default
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM workspace_preferences WHERE key = ?",
+                (cleaned_key,),
+            ).fetchone()
+        if row is None:
+            return default
+        return json.loads(row["value_json"])
+
+    def list_preferences(self) -> dict[str, Any]:
+        """Return all stored standing workspace preferences keyed by name."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT key, value_json, updated_at FROM workspace_preferences ORDER BY key ASC"
+            ).fetchall()
+        return {
+            r["key"]: {
+                "value": json.loads(r["value_json"]),
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        }
 
     def list_snapshots(
         self, project_id: str, device_name: str | None = None

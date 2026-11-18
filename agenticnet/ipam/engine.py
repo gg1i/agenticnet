@@ -406,12 +406,14 @@ class IPAMEngine:
                     details={"gateway": resolved_gw, "subnet": str(net)},
                 )
 
-        # Replace existing allocation for same (device_name, interface_name) if updating
+        # Replace existing allocation for same (device_name, interface_name, ip_version) if updating
         existing_key = next(
             (
                 k
                 for k, v in self.state.allocations.items()
-                if v.device_name == device_name and v.interface_name == interface_name
+                if v.device_name == device_name
+                and v.interface_name == interface_name
+                and (6 if ":" in v.ip_address else v.ip_version) == addr.version
             ),
             None,
         )
@@ -424,6 +426,7 @@ class IPAMEngine:
             device_name=device_name,
             interface_name=interface_name,
             ip_address=str(addr),
+            ip_version=addr.version,
             prefix_length=net.prefixlen,
             subnet_mask=mask_str,
             cidr=str(net),

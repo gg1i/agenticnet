@@ -146,6 +146,7 @@ def test_http_bridge_auth_and_session_descriptor(tmp_path: Path) -> None:
         with pytest.raises(urllib.error.HTTPError) as missing_exc:
             urllib.request.urlopen(f"{server.base_url}/v1/health", timeout=2.0)
         assert missing_exc.value.code == 401
+        missing_exc.value.close()
 
         # Disallowed external origin -> 403
         bad_origin_req = urllib.request.Request(
@@ -155,6 +156,7 @@ def test_http_bridge_auth_and_session_descriptor(tmp_path: Path) -> None:
         with pytest.raises(urllib.error.HTTPError) as origin_exc:
             urllib.request.urlopen(bad_origin_req, timeout=2.0)
         assert origin_exc.value.code == 403
+        origin_exc.value.close()
 
         # Valid token & PT origin -> 200 without leaking token
         ok_req = urllib.request.Request(
@@ -407,6 +409,7 @@ def test_http_bridge_security_origin_and_token_matrix(tmp_path: Path) -> None:
             with pytest.raises(urllib.error.HTTPError) as exc:
                 urllib.request.urlopen(req, timeout=2.0)
             assert exc.value.code == 403
+            exc.value.close()
 
         # 2. Valid PT origin (pt-sm:) with NO token -> 401
         no_tok_req = urllib.request.Request(
@@ -416,6 +419,7 @@ def test_http_bridge_security_origin_and_token_matrix(tmp_path: Path) -> None:
         with pytest.raises(urllib.error.HTTPError) as exc_missing:
             urllib.request.urlopen(no_tok_req, timeout=2.0)
         assert exc_missing.value.code == 401
+        exc_missing.value.close()
 
         # 3. Valid PT origin (pt-sm:) with WRONG token -> 401
         wrong_tok_req = urllib.request.Request(
@@ -425,6 +429,7 @@ def test_http_bridge_security_origin_and_token_matrix(tmp_path: Path) -> None:
         with pytest.raises(urllib.error.HTTPError) as exc_wrong:
             urllib.request.urlopen(wrong_tok_req, timeout=2.0)
         assert exc_wrong.value.code == 401
+        exc_wrong.value.close()
 
         # 4. Only PT origin (pt-sm:) + valid token is accepted -> 204 / 200
         ok_poll = urllib.request.Request(
@@ -546,6 +551,138 @@ def test_http_bridge_keepalive_configure_host_and_batch_ops(tmp_path: Path) -> N
             )
             assert batch_res["ok"] is True
             assert [name for name, _ in seen_ops] == ["configure_host", "batch_ops"]
+        finally:
+            client.stop()
+    finally:
+        backend.stop()
+
+
+@pytest.mark.unit
+def test_pt822_device_types_connection_close_and_workspace_opcodes(tmp_path: Path) -> None:
+    import http.client
+    from urllib.parse import urlparse
+
+    from agenticnet.adapters.script_bridge import PT_DEVICE_TYPES
+
+    assert PT_DEVICE_TYPES["switch_3650"] == 17
+    assert PT_DEVICE_TYPES["laptop"] == 18
+    assert PT_DEVICE_TYPES["tablet_pc"] == 19
+    assert PT_DEVICE_TYPES["smartphone"] == 21
+    assert PT_DEVICE_TYPES["home_voip"] == 24
+    assert PT_DEVICE_TYPES["analog_phone"] == 25
+    assert PT_DEVICE_TYPES["asa"] == 27
+    assert PT_DEVICE_TYPES["home_gateway"] == 29
+    assert PT_DEVICE_TYPES["wlc"] == 41
+    assert PT_DEVICE_TYPES["lightweight_ap"] == 44
+
+    js_text = (
+        Path(__file__).resolve().parents[2]
+        / "agenticnet/adapters/assets/netforge_bridge.js"
+    ).read_text(encoding="utf-8")
+    assert "/agenticnet/bridge_session.json" in js_text
+    assert "AC-POWER-SUPPLY" in js_text
+    assert "<--- More --->" in js_text
+    assert "setDnsServerIp" in js_text
+
+    session_file = tmp_path / "bridge_session.json"
+    server = HttpScriptBridgeServer(session_file=session_file)
+    backend = HttpScriptBridgeBackend(server)
+    backend.start()
+    try:
+        desc = json.loads(session_file.read_text(encoding="utf-8"))
+        parsed = urlparse(desc["url"])
+        assert parsed.hostname is not None and parsed.port is not None
+
+        # Verify Connection: close request receives Connection: close response
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3.0)
+        try:
+            conn.request(
+                "GET",
+                "/v1/health",
+                headers={
+                    "Origin": "pt-sm:",
+                    "X-AgenticNet-Token": desc["token"],
+                    "Connection": "close",
+                },
+            )
+            resp = conn.getresponse()
+            _ = resp.read()
+            assert resp.status == 200
+            assert (resp.getheader("Connection") or "").lower() == "close"
+        finally:
+            conn.close()
+
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        def _rec(op: str):
+            def _fn(p: dict[str, Any]) -> dict[str, Any]:
+                seen.append((op, p))
+                return {"ok": True, **p}
+
+            return _fn
+
+        client = _FakePtBridgeClient(
+            desc["url"],
+            desc["token"],
+            {
+                "add_device": lambda p: (
+                    seen.append(("add_device", p))
+                    or {"device_name": p.get("display_name") or "Switch0"}
+                ),
+                "remove_device": _rec("remove_device"),
+                "move_device": _rec("move_device"),
+                "delete_link": _rec("delete_link"),
+                "add_module": _rec("add_module"),
+                "create_link": lambda p: (
+                    seen.append(("create_link", p)) or {"linked": True, **p}
+                ),
+                "configure_host": _rec("configure_host"),
+                "cli_exec": lambda p: (
+                    seen.append(("cli_exec", p))
+                    or {
+                        "device_name": p["device_name"],
+                        "prompt": "R1#",
+                        "mode": "enable",
+                        "raw_output": "R1#show ver\nCisco IOS\nR1#",
+                        "command_statuses": [{"command": p["commands"][0], "status": 1}],
+                        "command_outputs": ["% Invalid input\n"],
+                        "stopped_on_error": bool(p.get("stop_on_error")),
+                        "timed_out": False,
+                    }
+                ),
+            },
+        )
+        client.start()
+        try:
+            added = backend.add_device(
+                "3650-24PS", device_type="switch_3650", x=200, y=300, display_name="CORE1"
+            )
+            assert added["device_name"] == "CORE1"
+            assert added["device_type"] == 17
+
+            dte_link = backend.create_link(
+                "R1", "Serial0/0/0", "R2", "Serial0/0/1", conn_type="serial_dte"
+            )
+            assert dte_link["device1"] == "R2"
+            assert dte_link["port1"] == "Serial0/0/1"
+
+            host = backend.configure_host(
+                "PC1",
+                ip="10.0.0.10",
+                subnet_mask="255.255.255.0",
+                default_gateway="10.0.0.1",
+                dns_server="8.8.8.8",
+            )
+            assert host["dns_server"] == "8.8.8.8"
+
+            assert backend.move_device("CORE1", 400.0, 250.0)["ok"] is True
+            assert backend.add_module("CORE1", 0, "AC-POWER-SUPPLY")["ok"] is True
+            assert backend.delete_link("R2", "Serial0/0/1")["ok"] is True
+            assert backend.remove_device("CORE1")["ok"] is True
+
+            cli = backend.execute_cli("R1", ["bad", "show ver"], stop_on_error=True)
+            assert cli["stopped_on_error"] is True
+            assert cli["command_outputs"] == ["% Invalid input\n"]
         finally:
             client.stop()
     finally:

@@ -284,3 +284,303 @@ def test_validate_raw_commands_extended_checks() -> None:
         ],
     )
     assert [d.code for d in ip_diags] == ["INVALID_IP_OR_MASK"]
+
+
+@pytest.mark.unit
+def test_ios_enterprise_generators_security_redaction_and_pre_apply_gate() -> None:
+    from agenticnet.core.exceptions import ValidationError
+    from agenticnet.ios.models import (
+        AsaAclRule,
+        AsaBasicConfigSpec,
+        AsaInterfaceZoneSpec,
+        AsaObjectNatSpec,
+        AsaRouteEntry,
+        BgpConfigSpec,
+        BgpNeighborEntry,
+        CmeVoipSpec,
+        DaiConfigSpec,
+        DhcpSnoopingSpec,
+        EphoneDnEntry,
+        EphoneEntry,
+        HsrpConfigSpec,
+        ManagementServicesSpec,
+    )
+    from agenticnet.ios.validators import validate_pre_apply
+    from agenticnet.ipam import IPAMEngine
+
+    ios = IOSGenerator()
+
+    # 1. L3 switch SVI auto-emits 'ip routing' + helper-address + IPv6 unicast-routing
+    svi = ios.interface(
+        "3560-24PS",
+        InterfaceConfigSpec(
+            device_name="SW-CORE",
+            interface="Vlan10",
+            ipv4_address="10.10.10.1/24",
+            ipv6_address="2001:db8:10::1/64",
+            helper_addresses=["10.10.99.10"],
+        ),
+    )
+    assert svi.commands[0] == "ip routing"
+    assert "ipv6 unicast-routing" in svi.commands
+    assert " ip helper-address 10.10.99.10" in svi.commands
+
+    # 2. Voice VLAN on access port + Option 150 on DHCP + bare-IP ACL + VTY access-class + L3 Po
+    voice_port = ios.access_port(
+        "2960-24TT",
+        AccessPortSpec(device_name="SW1", interface="Fa0/5", vlan_id=10, voice_vlan=100),
+    )
+    assert " switchport voice vlan 100" in voice_port.commands
+
+    dhcp_voip = ios.dhcp(
+        DhcpPoolSpec(
+            device_name="R-VOICE",
+            pool_name="VOICE",
+            network="10.50.100.0/24",
+            default_router="10.50.100.1",
+            option_150="10.50.100.1",
+        ),
+        "2811",
+    )
+    assert " option 150 ip 10.50.100.1" in dhcp_voip.commands
+
+    acl_host = ios.acl(
+        AclSpec(
+            device_name="R1",
+            acl_identifier="MGMT_ONLY",
+            acl_type="extended",
+            rules=[
+                AclRule(
+                    action="permit",
+                    protocol="tcp",
+                    source="10.10.10.5",
+                    destination="10.10.20.0/24",
+                    operator="eq",
+                    port="22",
+                )
+            ],
+            apply_vty=True,
+        ),
+        "2911",
+    )
+    assert " permit tcp host 10.10.10.5 10.10.20.0 0.0.0.255 eq 22" in acl_host.commands
+    assert " access-class MGMT_ONLY in" in acl_host.commands
+
+    nat_portfwd = ios.nat_pat(
+        NatPatSpec(
+            device_name="R1",
+            mode="static",
+            static_inside_local="192.168.1.50",
+            static_inside_global="203.0.113.10",
+            static_protocol="tcp",
+            static_local_port=8080,
+            static_global_port=80,
+        ),
+        "2911",
+    )
+    assert (
+        "ip nat inside source static tcp 192.168.1.50 8080 203.0.113.10 80" in nat_portfwd.commands
+    )
+
+    routed_po = ios.etherchannel(
+        EtherChannelSpec(
+            device_name="SW-CORE",
+            group_id=1,
+            member_interfaces=["Gi0/1", "Gi0/2"],
+            port_mode="routed",
+            ipv4_address="10.0.0.1/30",
+        ),
+        "3560-24PS",
+    )
+    assert routed_po.commands[0] == "ip routing"
+    assert " no switchport" in routed_po.commands
+    assert " ip address 10.0.0.1 255.255.255.252" in routed_po.commands
+
+    # 3. 7 new enterprise generators: HSRP, BGP, DHCP Snooping, DAI, Management, CME, ASA
+    hsrp = ios.generate_hsrp(
+        HsrpConfigSpec(
+            device_name="R1",
+            interface="Gi0/0",
+            group_id=10,
+            virtual_ip="192.168.10.1",
+            priority=120,
+            track_interface="Gi0/1",
+        ),
+        "2911",
+    )
+    assert " standby version 2" in hsrp.commands
+    assert " standby 10 ip 192.168.10.1" in hsrp.commands
+    assert " standby 10 track GigabitEthernet0/1 10" in hsrp.commands
+
+    bgp = ios.generate_bgp(
+        BgpConfigSpec(
+            device_name="R-EDGE",
+            local_as=65001,
+            router_id="1.1.1.1",
+            neighbors=[
+                BgpNeighborEntry(peer_ip="203.0.113.2", remote_as=65002, next_hop_self=True)
+            ],
+            networks=["192.168.10.0/24"],
+        ),
+        "ISR4331",
+    )
+    assert "router bgp 65001" in bgp.commands
+    assert " neighbor 203.0.113.2 remote-as 65002" in bgp.commands
+    assert " network 192.168.10.0 mask 255.255.255.0" in bgp.commands
+
+    snoop = ios.generate_dhcp_snooping(
+        DhcpSnoopingSpec(
+            device_name="SW1",
+            vlans=[10, 20],
+            trusted_interfaces=["Gi0/1"],
+            rate_limit_interfaces={"Fa0/1": 15},
+        ),
+        "2960-24TT",
+    )
+    assert "ip dhcp snooping vlan 10,20" in snoop.commands
+    assert " ip dhcp snooping trust" in snoop.commands
+    assert " ip dhcp snooping limit rate 15" in snoop.commands
+
+    dai = ios.generate_dai(
+        DaiConfigSpec(
+            device_name="SW1",
+            vlans=[10],
+            trusted_interfaces=["Gi0/1"],
+            validate_src_mac=True,
+            validate_ip=True,
+        ),
+        "2960-24TT",
+    )
+    assert "ip arp inspection vlan 10" in dai.commands
+    assert "ip arp inspection validate src-mac ip" in dai.commands
+
+    mgmt = ios.generate_management_services(
+        ManagementServicesSpec(
+            device_name="R1",
+            ntp_servers=["10.0.0.100"],
+            syslog_servers=["10.0.0.101"],
+            snmp_ro_community="SecretReadComm",
+            aaa_new_model=True,
+            radius_server_ip="10.0.0.102",
+            radius_key="RadKey999",
+        ),
+        "2911",
+    )
+    assert any("SecretReadComm" in c for c in mgmt.commands)
+    assert all("SecretReadComm" not in c for c in mgmt.commands_redacted)
+    assert all("RadKey999" not in c for c in mgmt.commands_redacted)
+
+    cme = ios.generate_cme_voip(
+        CmeVoipSpec(
+            device_name="R-VOICE",
+            source_address="10.50.100.1",
+            dns=[EphoneDnEntry(dn_id=1, number="1001", label="Desk1")],
+            ephones=[EphoneEntry(ephone_id=1, mac_address="0001.42AA.BBCC", button_mapping="1:1")],
+        ),
+        "2811",
+    )
+    assert "telephony-service" in cme.commands
+    assert "ephone-dn 1" in cme.commands
+    assert cme.warnings == []
+
+    asa_5505 = ios.generate_asa_basic(
+        AsaBasicConfigSpec(
+            device_name="FW1",
+            hostname="ASA-EDGE",
+            interfaces=[
+                AsaInterfaceZoneSpec(
+                    interface="Eth0/0",
+                    vlan_id=2,
+                    nameif="outside",
+                    security_level=0,
+                    ip_address="203.0.113.2/29",
+                ),
+                AsaInterfaceZoneSpec(
+                    interface="Eth0/1",
+                    vlan_id=1,
+                    nameif="inside",
+                    security_level=100,
+                    ip_address="192.168.1.1/24",
+                ),
+            ],
+            routes=[AsaRouteEntry(interface_nameif="outside", next_hop="203.0.113.1")],
+            object_nats=[AsaObjectNatSpec(object_name="LAN-NET", subnet="192.168.1.0/24")],
+            acl_rules=[
+                AsaAclRule(
+                    acl_name="OUTSIDE_IN",
+                    action="permit",
+                    protocol="tcp",
+                    source="any",
+                    destination="192.168.1.10",
+                    eq_port="443",
+                    apply_nameif="outside",
+                )
+            ],
+        ),
+        "5505",
+    )
+    assert " switchport access vlan 2" in asa_5505.commands
+    assert "interface Vlan2" in asa_5505.commands
+    assert " nat (inside,outside) dynamic interface" in asa_5505.commands
+    assert (
+        "access-list OUTSIDE_IN extended permit tcp any host 192.168.1.10 eq 443"
+        in asa_5505.commands
+    )
+
+    asa_5506 = ios.generate_asa_basic(
+        AsaBasicConfigSpec(
+            device_name="FW2",
+            interfaces=[
+                AsaInterfaceZoneSpec(
+                    interface="Gi1/1",
+                    nameif="outside",
+                    security_level=0,
+                    ip_address="203.0.113.2/29",
+                )
+            ],
+        ),
+        "5506-X",
+    )
+    assert "interface GigabitEthernet1/1" in asa_5506.commands
+    assert " switchport access vlan 2" not in asa_5506.commands
+
+    # 4. Control-character injection rejected + pre-apply validation + ConfigHistory CRUD
+    with pytest.raises(ValidationError):
+        InterfaceConfigSpec(device_name="R1", interface="Gi0/0", description="ok\nusername pwn")
+    with pytest.raises(ValidationError):
+        ios.hostname("R1\nreload", "2911")
+
+    ipam = IPAMEngine()
+    ipam.allocate_address("R2", "GigabitEthernet0/0", "10.0.0.1/24")
+    p_4331 = DEFAULT_CATALOG.get_profile("ISR4331")
+    pre_res = validate_pre_apply(
+        p_4331,
+        [
+            "interface Gi0/0/0",
+            "ip address 10.0.0.1 255.255.255.0",
+            "interface Gi0/0/1",
+            "ip address 10.0.0.50 255.255.255.128",
+            "route-map RM_TEST permit 10",
+        ],
+        device_name="R1",
+        ipam=ipam,
+        raise_on_error=False,
+    )
+    assert pre_res["blocked"] is True
+    pre_codes = {d.code for d in pre_res["diagnostics"]}
+    assert "IPAM_DUPLICATE_IP" in pre_codes
+    assert "OVERLAPPING_INTERFACE_SUBNET" in pre_codes
+    assert "UNSUPPORTED_PT_IOS_XE_COMMAND" in pre_codes
+
+    hist = ConfigHistory()
+    hist.upsert_config("R1", "hostname R1\ninterface Gi0/0\n shutdown")
+    numbered = hist.read_config_numbered("R1")
+    assert numbered["total_lines"] == 3
+    hist.merge_config_lines("R1", start_line=3, end_line=3, new_lines=["no shutdown"])
+    assert hist.read_config_numbered("R1")["lines"][2]["text"] == "no shutdown"
+    other_snap = hist.add_snapshot("R2", "hostname R2")
+    r1_snap = hist.latest_for_device("R1")
+    assert r1_snap is not None
+    with pytest.raises(ValidationError):
+        hist.compare(r1_snap.snapshot_id, other_snap.snapshot_id)
+    assert hist.delete_config("R1") == 1

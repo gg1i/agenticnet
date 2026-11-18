@@ -40,6 +40,25 @@ def create_mcp_server(
         script_backend=script_backend,
     )
 
+    if resolved_settings.tool_profile == "solve_lab":
+        instructions = (
+            "Start with `lab_start`, `lab_open`, or `project_create`, check `device_capabilities` "
+            "before picking models, compute subnets via `subnet_calculate`, build via "
+            "`device_add`, `connection_create`, and `host_configure`, push CLI via "
+            "`console_execute`, verify via `verify_requirements_schema` + `verify_lab` / "
+            "`lab_status` / `grade_lab`, and save via `lab_save` / `project_save`. Always "
+            "distinguish PLANNED AgenticNet state from VERIFIED Packet Tracer runtime state."
+        )
+    else:
+        instructions = (
+            "Create or open a project first (`project_create` / `project_open` or `lab_open`), "
+            "check `device_capabilities` before picking models, plan subnets via `vlsm_plan` or "
+            "`subnet_calculate`, build via `topology_create` or `device_add`, configure via "
+            "`configure_*` / `console_execute`, verify via `verify_lab` / `lab_status`, and save "
+            "via `project_save` / `lab_save`. Always distinguish PLANNED AgenticNet state from "
+            "VERIFIED Packet Tracer runtime state."
+        )
+
     server = MCPServer(
         name="agenticnet",
         title="AgenticNet — Agentic Networking Platform",
@@ -47,11 +66,7 @@ def create_mcp_server(
             "An open-source agentic networking platform focusing on Cisco Packet Tracer "
             "automation, configuration, validation, and diagnostics."
         ),
-        instructions=(
-            "Create or open a project first, check device_capabilities before picking models, "
-            "plan subnets via vlsm_plan, build via topology_create or device_add, and always "
-            "distinguish PLANNED AgenticNet state from VERIFIED Packet Tracer runtime state."
-        ),
+        instructions=instructions,
         version=__version__,
         log_level=resolved_settings.log_level,  # type: ignore[arg-type]
     )

@@ -29,7 +29,12 @@ def test_mcp_in_memory_protocol_session(mcp_bundle) -> None:
             manifest_res = await client.read_resource("agenticnet://manifest")
             manifest_json = json.loads(manifest_res.contents[0].text)
             assert len(tools_res.tools) == manifest_json["tool_count"]
-            assert len(tools_res.tools) == 82
+            assert len(tools_res.tools) == 94
+            assert manifest_json["platform_core"]["default_target_mode"] == "packet_tracer"
+            assert manifest_json["adapters"][0]["adapter_id"] == "cisco_packet_tracer"
+
+            guide_res = await client.read_resource("agenticnet://guides/master")
+            assert "AC-POWER-SUPPLY" in guide_res.contents[0].text
 
             prompt_res = await client.get_prompt(
                 "solve_lab",
@@ -64,7 +69,7 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
             assert client.server_info.name == "agenticnet"
             tools_res = await client.list_tools()
             tool_names = {t.name for t in tools_res.tools}
-            assert len(tool_names) == 25
+            assert len(tool_names) == 26
             assert {
                 "lab_start",
                 "lab_open",
@@ -73,6 +78,8 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
                 "list_devices",
                 "lab_snapshot",
                 "lab_diff",
+                "project_create",
+                "project_save",
                 "verify_lab",
                 "grade_lab",
                 "gui_attach_ip_phone_power",

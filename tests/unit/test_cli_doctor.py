@@ -58,7 +58,7 @@ def test_doctor_reports_real_probes_without_hardcoded_phase_claims(
 
     report = cli.build_doctor_report(settings)
     assert "phase_status" not in report
-    assert report["roadmap_stage"] == "phase_2_backend_router"
+    assert report["roadmap_stage"] == "stage_1_packet_tracer_excellence"
     assert report["packet_tracer_running"] is True
     assert report["packet_tracer_detected"] is True
     assert report["data_dir_writable"] is True

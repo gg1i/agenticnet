@@ -56,3 +56,45 @@ def test_device_capability_differences() -> None:
 
     assert not pc.supports(ConfigCapability.IOS_CLI)
     assert pc.supports(ConfigCapability.DHCP_CLIENT)
+
+
+@pytest.mark.unit
+def test_pt_822_catalog_profiles_quirks_and_vendor_metadata() -> None:
+    models = {p.model for p in DEFAULT_CATALOG.list_profiles()}
+    assert len(models) == 30
+    assert {
+        "5506-X",
+        "HomeGateway-PT",
+        "Smartphone-PT",
+        "TabletPC-PT",
+        "Analog-Phone-PT",
+    } <= models
+
+    # WRT300N vendor metadata & capability report fields
+    wrt = DEFAULT_CATALOG.get_profile("WRT300N")
+    assert wrt.vendor == "Linksys"
+    wrt_rep = DEFAULT_CATALOG.capability_report("WRT300N")
+    assert wrt_rep.vendor == "Linksys"
+    assert wrt_rep.target_mode == "packet_tracer"
+
+    # Analog-Phone-PT is distinct from Home-VOIP-PT (ATA)
+    assert DEFAULT_CATALOG.resolve_model_name("analog-phone-pt") == "Analog-Phone-PT"
+    assert DEFAULT_CATALOG.resolve_model_name("home-voip-pt") == "Home-VOIP-PT"
+    analog = DEFAULT_CATALOG.get_profile("Analog-Phone-PT")
+    assert not analog.supports(ConfigCapability.STATIC_IP)
+
+    # 4321 supports NIM-2T Serial0/1/0..1 + quirks/modules_supported
+    r4321 = DEFAULT_CATALOG.get_profile("4321")
+    assert DEFAULT_CATALOG.normalize_interface_name("4321", "se0/1/0") == "Serial0/1/0"
+    assert "NIM-2T" in r4321.modules_supported
+    assert any("securityk9" in q for q in r4321.quirks)
+
+    # 3650-24PS AC-POWER-SUPPLY quirk documented
+    sw3650 = DEFAULT_CATALOG.get_profile("3650-24PS")
+    assert "AC-POWER-SUPPLY" in sw3650.modules_supported
+    assert any("AC-POWER-SUPPLY" in q for q in sw3650.quirks)
+
+    # 5506-X routed firewall ports + Mgmt1/1 normalization
+    assert DEFAULT_CATALOG.normalize_interface_name("5506-X", "gi1/1") == "GigabitEthernet1/1"
+    assert DEFAULT_CATALOG.normalize_interface_name("5506-X", "mgmt1/1") == "Management1/1"
+    assert DEFAULT_CATALOG.normalize_interface_name("5506-X", "Gi1/1.20") == "GigabitEthernet1/1.20"

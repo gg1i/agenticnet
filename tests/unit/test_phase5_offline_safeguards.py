@@ -370,8 +370,10 @@ def test_readme_and_docs_counts_match_manifest(tmp_path: Path) -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert f"{total_tools} MCP tools ({solve_lab_count} in default `solve_lab` profile)" in readme
     assert f"{resource_count} resources, {prompt_count} prompts" in readme
+    assert f"verified device profiles across **{model_count} models**" in readme
     assert f"{total_tools} tools ({solve_lab_count} default)" in readme
     assert f"({model_count} models)" in readme
+    assert "17 models" not in readme
     for stale in ("69 MCP tools", "69 tools", "6 resources", "4 prompts"):
         assert stale not in readme
 
@@ -400,6 +402,8 @@ def test_readme_and_docs_counts_match_manifest(tmp_path: Path) -> None:
         f"`{resource_count}` resources, `{prompt_count}` prompts, `{model_count}` device models"
     )
     assert expected_arch_counts in arch_doc
+    assert f"({model_count} models)" in arch_doc
+    assert "17 models" not in arch_doc
 
 
 @pytest.mark.unit

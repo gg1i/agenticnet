@@ -152,6 +152,7 @@ class SimulatedConsoleTransport(ConsoleTransport):
         self._paged_remaining: dict[str, list[str]] = {}
         self._configs: dict[str, list[str]] = {}
         self._paging_disabled: dict[str, bool] = {}
+        self._is_asa: dict[str, bool] = {}
 
     def is_available(self) -> bool:
         return True
@@ -163,12 +164,14 @@ class SimulatedConsoleTransport(ConsoleTransport):
         initial_output: str | None = None,
         hostname: str = "Router",
         mode: str = "user_exec",
+        is_asa: bool = False,
     ) -> None:
         """Pre-seed a deterministic simulated console buffer."""
         self._hostnames[device_name] = hostname
         self._modes[device_name] = mode
         self._buffers[device_name] = initial_output or f"{hostname}>"
         self._configs.setdefault(device_name, [f"hostname {hostname}"])
+        self._is_asa[device_name] = is_asa
 
     def _prompt_for(self, device_name: str) -> str:
         host = self._hostnames.get(device_name, "Router")
@@ -176,12 +179,19 @@ class SimulatedConsoleTransport(ConsoleTransport):
         return {
             "setup_dialog": "Would you like to enter the initial configuration dialog? [yes/no]:",
             "press_return": "Press RETURN to get started!",
+            "password_prompt": "Password:",
+            "confirm_modulus": "How many bits in the modulus [512]:",
+            "confirm_clear": 'Clear "show interface" counters on all interfaces [confirm]',
             "user_exec": f"{host}>",
             "privileged_exec": f"{host}#",
             "global_config": f"{host}(config)#",
             "interface_config": f"{host}(config-if)#",
+            "interface_range_config": f"{host}(config-if-range)#",
+            "subinterface_config": f"{host}(config-subif)#",
             "router_config": f"{host}(config-router)#",
             "dhcp_config": f"{host}(dhcp-config)#",
+            "isakmp_config": f"{host}(config-isakmp)#",
+            "telephony_config": f"{host}(config-telephony)#",
             "pc_prompt": "C:\\>",
         }.get(mode, f"{host}#")
 
@@ -190,6 +200,12 @@ class SimulatedConsoleTransport(ConsoleTransport):
             if profile.interaction_kind == "pt_desktop_cmd":
                 self._modes[device_name] = "pc_prompt"
                 self._buffers[device_name] = "Packet Tracer PC Command Line 1.0\n\nC:\\>"
+            elif profile.interaction_kind == "asa_cli":
+                self._is_asa[device_name] = True
+                self._hostnames[device_name] = "ciscoasa"
+                self._modes[device_name] = "user_exec"
+                self._buffers[device_name] = "ciscoasa>"
+                self._configs.setdefault(device_name, ["hostname ciscoasa"])
             else:
                 self._hostnames[device_name] = "Router" if "Router" in profile.model else "Switch"
                 if self._initial_prompt == "Press RETURN to get started!":
@@ -226,6 +242,24 @@ class SimulatedConsoleTransport(ConsoleTransport):
         elif mode == "press_return":
             self._modes[device_name] = "user_exec"
             out_lines.append(self._prompt_for(device_name))
+        elif mode == "password_prompt":
+            self._modes[device_name] = "privileged_exec"
+            out_lines.append(self._prompt_for(device_name))
+        elif mode == "confirm_modulus":
+            bits = cmd or "512"
+            self._modes[device_name] = "global_config"
+            out_lines.append(
+                f"% Generating {bits} bit RSA keys, keys will be non-exportable...[OK]"
+            )
+            out_lines.append(self._prompt_for(device_name))
+        elif mode == "confirm_clear":
+            self._modes[device_name] = "privileged_exec"
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd.endswith("?"):
+            out_lines.append("Exec / configuration context help:")
+            out_lines.append("  ip         Global IP configuration subcommands")
+            out_lines.append("  interface  Select an interface to configure")
+            out_lines.append(self._prompt_for(device_name))
         elif mode == "pc_prompt":
             if cmd.lower().startswith("ping "):
                 target = cmd.split()[1]
@@ -244,7 +278,10 @@ class SimulatedConsoleTransport(ConsoleTransport):
                 )
             out_lines.append(self._prompt_for(device_name))
         elif cmd == "enable" and mode == "user_exec":
-            self._modes[device_name] = "privileged_exec"
+            if self._is_asa.get(device_name, False):
+                self._modes[device_name] = "password_prompt"
+            else:
+                self._modes[device_name] = "privileged_exec"
             out_lines.append(self._prompt_for(device_name))
         elif cmd == "disable" and mode == "privileged_exec":
             self._modes[device_name] = "user_exec"
@@ -253,14 +290,30 @@ class SimulatedConsoleTransport(ConsoleTransport):
             self._modes[device_name] = "global_config"
             out_lines.append("Enter configuration commands, one per line.  End with CNTL/Z.")
             out_lines.append(self._prompt_for(device_name))
-        elif cmd == "terminal length 0" and mode in {"user_exec", "privileged_exec"}:
+        elif (
+            cmd == "terminal length 0" and mode in {"user_exec", "privileged_exec"}
+        ) or (cmd == "terminal pager 0" and mode == "privileged_exec"):
             self._paging_disabled[device_name] = True
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd == "clear counters" and mode == "privileged_exec":
+            self._modes[device_name] = "confirm_clear"
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd == "crypto key generate rsa" and mode == "global_config":
+            self._modes[device_name] = "confirm_modulus"
             out_lines.append(self._prompt_for(device_name))
         elif cmd == "end":
             self._modes[device_name] = "privileged_exec"
             out_lines.append(self._prompt_for(device_name))
         elif cmd == "exit":
-            if mode in {"interface_config", "router_config", "dhcp_config"}:
+            if mode in {
+                "interface_config",
+                "interface_range_config",
+                "subinterface_config",
+                "router_config",
+                "dhcp_config",
+                "isakmp_config",
+                "telephony_config",
+            }:
                 self._modes[device_name] = "global_config"
             elif mode == "global_config":
                 self._modes[device_name] = "privileged_exec"
@@ -270,8 +323,30 @@ class SimulatedConsoleTransport(ConsoleTransport):
             self._hostnames[device_name] = new_host
             self._configs[device_name].append(cmd)
             out_lines.append(self._prompt_for(device_name))
-        elif cmd.startswith("interface ") and mode in {"global_config", "interface_config"}:
-            self._modes[device_name] = "interface_config"
+        elif cmd.startswith("interface range ") and mode in {
+            "global_config",
+            "interface_config",
+            "interface_range_config",
+        }:
+            self._modes[device_name] = "interface_range_config"
+            self._configs[device_name].append(cmd)
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd.startswith("interface ") and mode in {
+            "global_config",
+            "interface_config",
+            "subinterface_config",
+        }:
+            self._modes[device_name] = (
+                "subinterface_config" if "." in cmd else "interface_config"
+            )
+            self._configs[device_name].append(cmd)
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd.startswith("crypto isakmp policy ") and mode == "global_config":
+            self._modes[device_name] = "isakmp_config"
+            self._configs[device_name].append(cmd)
+            out_lines.append(self._prompt_for(device_name))
+        elif cmd == "telephony-service" and mode == "global_config":
+            self._modes[device_name] = "telephony_config"
             self._configs[device_name].append(cmd)
             out_lines.append(self._prompt_for(device_name))
         elif cmd.startswith("router ") and mode in {"global_config", "router_config"}:
@@ -291,7 +366,8 @@ class SimulatedConsoleTransport(ConsoleTransport):
             body.append("end")
             if not self._paging_disabled.get(device_name, False):
                 out_lines.extend(body[:2])
-                out_lines.append("--More--")
+                pager = "<--- More --->" if self._is_asa.get(device_name, False) else "--More--"
+                out_lines.append(pager)
                 self._paged_remaining[device_name] = body[2:]
             else:
                 out_lines.extend(body)

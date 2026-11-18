@@ -83,11 +83,7 @@ class _ScriptedCliBackend(ScriptBackend):
         cmd = commands[-1].strip()
         payload = self.responses.get((device_name, cmd))
         if payload is None:
-            raw = (
-                f"{device_name}#{cmd}\n"
-                f"% Invalid input detected at '^' marker.\n"
-                f"{device_name}#"
-            )
+            raw = f"{device_name}#{cmd}\n% Invalid input detected at '^' marker.\n{device_name}#"
             return {
                 "ok": True,
                 "device_name": device_name,
@@ -453,3 +449,86 @@ def test_verify_requirements_schema_tool_and_pass_fail_error_semantics(tmp_path:
         assert "show running-config" in tel_only["data"]["results"][0]["command"]
 
     asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_new_verify_requirement_types_and_ping_target_sanitization() -> None:
+    from agenticnet.adapters.router import BackendRouter
+    from agenticnet.core.exceptions import ValidationError
+    from agenticnet.diagnostics.verifier import LabVerifier
+    from agenticnet.diagnostics.verify_schema import normalize_requirements_payload
+
+    # Whitespace/newline injection in reachable/traceroute target fails schema validation
+    with pytest.raises(ValidationError):
+        normalize_requirements_payload(
+            [{"type": "reachable", "from": "R1", "to": "10.0.0.1 ; reload"}]
+        )
+    with pytest.raises(ValidationError):
+        normalize_requirements_payload(
+            [{"type": "traceroute_hops", "from": "R1", "to": "10.0.0.1\nend"}]
+        )
+
+    backend = _ScriptedCliBackend(connected=True)
+    backend.responses = {
+        ("R1", "traceroute 10.10.20.1"): {
+            "raw_output": (
+                "Tracing the route to 10.10.20.1\n"
+                "  1 10.10.12.2 1 msec 1 msec 1 msec\n"
+                "  2 10.10.20.1 2 msec 2 msec 2 msec\n"
+            )
+        },
+        ("SW1", "show interfaces trunk"): {
+            "raw_output": (
+                "Port        Mode         Encapsulation  Status        Native vlan\n"
+                "Gi0/1       on           802.1q         trunking      99\n\n"
+                "Port        Vlans allowed on trunk\n"
+                "Gi0/1       10,20,99\n"
+            )
+        },
+        ("SW1", "show spanning-tree"): {
+            "raw_output": (
+                "VLAN0010\n"
+                "  Spanning tree enabled protocol rstp\n"
+                "  Root ID    Priority    24586\n"
+                "             Address     0001.42AA.1111\n"
+                "             This bridge is the root\n"
+            )
+        },
+        ("PC1", "ipconfig /all"): {
+            "raw_output": (
+                "FastEthernet0 Connection:(default port)\n"
+                "   IPv4 Address....................: 10.10.10.50\n"
+                "   Subnet Mask.....................: 255.255.255.0\n"
+                "   Default Gateway.................: 10.10.10.1\n"
+                "   DNS Servers.....................: 10.10.99.53\n"
+            )
+        },
+    }
+    verifier = LabVerifier(BackendRouter(script_backend=backend))
+    rep = verifier.verify(
+        [
+            {
+                "type": "traceroute_hops",
+                "from": "R1",
+                "to": "10.10.20.1",
+                "expected_hops": ["10.10.12.2", "10.10.20.1"],
+            },
+            {
+                "type": "trunk_exists",
+                "device": "SW1",
+                "interface": "Gi0/1",
+                "native_vlan": 99,
+                "allowed_vlans": [10, 20],
+            },
+            {"type": "stp_root", "device": "SW1", "vlan_id": 10, "expect_root": True},
+            {
+                "type": "host_ipconfig",
+                "device": "PC1",
+                "ip": "10.10.10.50",
+                "default_gateway": "10.10.10.1",
+                "dns_server": "10.10.99.53",
+            },
+        ]
+    )
+    assert rep["passed"] is True
+    assert rep["summary"] == {"total": 4, "passed": 4, "failed": 0, "errors": 0}

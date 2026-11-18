@@ -3,7 +3,7 @@
 AgenticNet pairs a **cross-platform network engineering core** (topology modeling, VLSM/CIDR IPAM, Cisco IOS generation & validation, diagnostics, and SQLite state management) with an **authenticated local Cisco Packet Tracer Script Bridge** and optional Windows GUI fallback.
 
 <!-- BEGIN MANIFEST COUNTS -->
-> **Current Live Registry Counts (`docs/manifest.json`):** `82` registered tools (`advanced` profile) / `25` default (`solve_lab` profile), `7` resources, `6` prompts, `17` device models.
+> **Current Live Registry Counts (`docs/manifest.json`):** `94` registered tools (`advanced` profile) / `26` default (`solve_lab` profile), `7` resources, `6` prompts, `30` device models.
 <!-- END MANIFEST COUNTS -->
 
 ---
@@ -67,7 +67,7 @@ AgenticNet pairs a **cross-platform network engineering core** (topology modelin
 agenticnet/
 ├── core/         # StateLevel, OperationResult, exceptions, settings, logging
 ├── security/     # Permission tiers, confirmation gates, path safety, secret redaction
-├── devices/      # Verified Packet Tracer device catalog & port normalization (17 models)
+├── devices/      # Verified Packet Tracer device catalog & port normalization (30 models)
 ├── topology/     # NetworkX MultiGraph builder, Cisco cabling rules, layout, Mermaid/ASCII export
 ├── ipam/         # IPv4/IPv6 CIDR math, VLSM allocator, conflict detection, addressing tables
 ├── ios/          # Structured IOS generators, capability pre-validators, CLI parser, unified diff
@@ -77,7 +77,7 @@ agenticnet/
 ├── console/      # Console state-machine, prompt elevation, paging cleanup, paced queues
 ├── simulation/   # Simulation/realtime controls, PDU specs, show/ping/ephone CLI parsers
 ├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
-└── mcp/          # Official Python MCP SDK server, 82 tools (25 default), 7 resources, 6 prompts
+└── mcp/          # Official Python MCP SDK server, 94 tools (26 default), 7 resources, 6 prompts
 netforge/         # Legacy Python/CLI compatibility shim redirecting cleanly to agenticnet
 ```
 

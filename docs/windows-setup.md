@@ -20,7 +20,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -WithGui -Client an
 ```
 
 - Replace `-Client antigravity` with `claude`, `cursor`, `vscode`, or omit `-Client` to print the ready-to-paste MCP JSON snippet without modifying client files.
-- Add `-ToolProfile advanced` if you want all **82** tools (including `gui_*` fallback).
+- Add `-ToolProfile advanced` if you want all **94** tools (including `gui_*` fallback).
 - The script creates `.venv`, installs AgenticNet (`pip install -e ".[gui]"`), copies `netforge_bridge.pts`, configures your MCP client using the exact `.venv` Python path (no `PATH` changes required), and runs `agenticnet doctor`.
 
 ### Manual Alternative

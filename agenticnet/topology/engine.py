@@ -34,28 +34,38 @@ _COPPER_ETHERNET_MEDIA: set[PortMedia] = {
     PortMedia.TEN_GIGABIT_ETHERNET,
 }
 
-# MDI devices transmit on pins 1-2 (Routers, Hosts, Wireless Router Internet port).
+# MDI devices transmit on pins 1-2 (Routers, Hosts, APs, WLCs, Wireless Router Internet port).
 _MDI_CATEGORIES: set[DeviceCategory] = {
     DeviceCategory.ROUTER,
     DeviceCategory.PC,
     DeviceCategory.LAPTOP,
     DeviceCategory.SERVER,
     DeviceCategory.PRINTER,
+    DeviceCategory.ACCESS_POINT,
+    DeviceCategory.WLC,
+    DeviceCategory.CLOUD,
 }
 
-# MDI-X devices transmit on pins 3-6 (Switches, Access Points).
+# MDI-X devices transmit on pins 3-6 (Switches, ASA 5505 switch ports).
 _MDIX_CATEGORIES: set[DeviceCategory] = {
     DeviceCategory.L2_SWITCH,
     DeviceCategory.L3_SWITCH,
-    DeviceCategory.ACCESS_POINT,
+    DeviceCategory.FIREWALL,
 }
 
 
-def _is_mdi_endpoint(category: DeviceCategory, interface_name: str) -> bool:
-    """Determine whether an Ethernet port uses MDI (host/router) or MDI-X (switch) pinout."""
-    if category == DeviceCategory.WIRELESS_ROUTER:
-        return interface_name.lower() == "internet"
-    return category in _MDI_CATEGORIES
+def _is_mdi_endpoint(device: DeviceNode, interface_name: str) -> bool:
+    """Determine whether an Ethernet port uses MDI (host/router/AP) or MDI-X (switch) pinout."""
+    iface_low = interface_name.strip().lower()
+    if device.category == DeviceCategory.WIRELESS_ROUTER:
+        return iface_low == "internet"
+    if device.model == "7960" and iface_low == "pc":
+        # Cisco 7960 IP Phone 'PC' port is an internal 3-port switch port (MDI-X).
+        return False
+    if device.category == DeviceCategory.FIREWALL:
+        # ASA 5505 uses L2 switchports (MDI-X); ASA 5506-X uses routed GigabitEthernet ports (MDI).
+        return device.model != "5505"
+    return device.category in _MDI_CATEGORIES
 
 
 class TopologyEngine:
@@ -96,9 +106,12 @@ class TopologyEngine:
     def _next_default_position(self, category: DeviceCategory) -> Position2D:
         """Pick a non-overlapping default canvas coordinate grouped by device layer."""
         tier_y = {
+            DeviceCategory.CLOUD: 60.0,
             DeviceCategory.ROUTER: 120.0,
             DeviceCategory.WIRELESS_ROUTER: 120.0,
+            DeviceCategory.FIREWALL: 180.0,
             DeviceCategory.L3_SWITCH: 260.0,
+            DeviceCategory.WLC: 260.0,
             DeviceCategory.L2_SWITCH: 400.0,
             DeviceCategory.ACCESS_POINT: 400.0,
             DeviceCategory.SERVER: 540.0,
@@ -121,6 +134,7 @@ class TopologyEngine:
         x: float | None = None,
         y: float | None = None,
         role: str = "",
+        site_zone: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> DeviceNode:
         """Add a device from the verified DeviceCatalog with populated interfaces."""
@@ -154,6 +168,7 @@ class TopologyEngine:
             model=profile.model,
             category=profile.category,
             role=role,
+            site_zone=site_zone,
             position=pos,
             interfaces=interfaces,
             state_level=StateLevel.PLANNED,
@@ -235,13 +250,28 @@ class TopologyEngine:
                 remediation="Associate wireless clients via SSID instead of wired links.",
             )
 
+        both_phone = (
+            src_iface.name.strip().lower() == "phone" and dst_iface.name.strip().lower() == "phone"
+        )
+        if (
+            src_iface.name.strip().lower() == "phone" or dst_iface.name.strip().lower() == "phone"
+        ) and not both_phone:
+            raise TopologyConflictError(
+                f"Incompatible RJ-11 Phone interface: {src_dev.name}:{src_iface.name} "
+                f"cannot connect to {dst_dev.name}:{dst_iface.name}.",
+                details={"source_interface": src_iface.name, "target_interface": dst_iface.name},
+                remediation="Connect Phone ports only to another RJ-11 Phone endpoint.",
+            )
+
         both_serial = src_media == PortMedia.SERIAL and dst_media == PortMedia.SERIAL
         both_fiber = src_media == PortMedia.FIBER and dst_media == PortMedia.FIBER
         both_copper_eth = (
-            src_media in _COPPER_ETHERNET_MEDIA and dst_media in _COPPER_ETHERNET_MEDIA
+            not both_phone
+            and src_media in _COPPER_ETHERNET_MEDIA
+            and dst_media in _COPPER_ETHERNET_MEDIA
         )
 
-        if not (both_serial or both_fiber or both_copper_eth):
+        if not (both_phone or both_serial or both_fiber or both_copper_eth):
             raise TopologyConflictError(
                 f"Incompatible interface media: {src_dev.name}:{src_iface.name} "
                 f"({src_media.value}) cannot connect to {dst_dev.name}:{dst_iface.name} "
@@ -251,15 +281,27 @@ class TopologyEngine:
             )
 
         if requested is None or requested == CableType.AUTO:
+            if both_phone:
+                return CableType.PHONE
             if both_serial:
                 return CableType.SERIAL_DCE
             if both_fiber:
                 return CableType.FIBER
-            src_mdi = _is_mdi_endpoint(src_dev.category, src_iface.name)
-            dst_mdi = _is_mdi_endpoint(dst_dev.category, dst_iface.name)
+            src_mdi = _is_mdi_endpoint(src_dev, src_iface.name)
+            dst_mdi = _is_mdi_endpoint(dst_dev, dst_iface.name)
             return CableType.CROSSOVER if src_mdi == dst_mdi else CableType.STRAIGHT_THROUGH
 
         # Explicit cable validation
+        if requested == CableType.PHONE and not both_phone:
+            raise TopologyConflictError(
+                "Phone cable requires RJ-11 Phone interfaces on both endpoints.",
+                details={"source_interface": src_iface.name, "target_interface": dst_iface.name},
+            )
+        if both_phone and requested != CableType.PHONE:
+            raise TopologyConflictError(
+                f"Cable type '{requested.value}' cannot be used on RJ-11 Phone ports.",
+                details={"source_interface": src_iface.name, "target_interface": dst_iface.name},
+            )
         if requested in {CableType.SERIAL_DCE, CableType.SERIAL_DTE} and not both_serial:
             raise TopologyConflictError(
                 f"Cable type '{requested.value}' requires Serial interfaces on both endpoints.",
@@ -414,9 +456,13 @@ class TopologyEngine:
             tiers: list[list[str]] = [[], [], [], []]
             for dev_name in sorted(self.model.devices):
                 cat = self.model.devices[dev_name].category
-                if cat in {DeviceCategory.ROUTER, DeviceCategory.WIRELESS_ROUTER}:
+                if cat in {
+                    DeviceCategory.ROUTER,
+                    DeviceCategory.WIRELESS_ROUTER,
+                    DeviceCategory.CLOUD,
+                }:
                     tiers[0].append(dev_name)
-                elif cat == DeviceCategory.L3_SWITCH:
+                elif cat in {DeviceCategory.L3_SWITCH, DeviceCategory.FIREWALL, DeviceCategory.WLC}:
                     tiers[1].append(dev_name)
                 elif cat in {DeviceCategory.L2_SWITCH, DeviceCategory.ACCESS_POINT}:
                     tiers[2].append(dev_name)
@@ -652,3 +698,223 @@ class TopologyEngine:
 
         model = TopologyModel.model_validate(parsed)
         return cls(model=model, catalog=catalog)
+
+    def merge_topology(
+        self,
+        other: TopologyModel | TopologyEngine | dict[str, Any],
+        *,
+        overwrite_interfaces: bool = True,
+    ) -> dict[str, Any]:
+        """Incrementally merge devices, interface attributes, and links into this topology."""
+        if isinstance(other, TopologyEngine):
+            incoming = other.model
+        elif isinstance(other, TopologyModel):
+            incoming = other
+        elif isinstance(other, dict):
+            incoming = TopologyModel.model_validate(other)
+        else:
+            raise ValidationError("other must be a TopologyModel, TopologyEngine, or dict.")
+
+        if incoming.target_mode != self.model.target_mode:
+            raise TopologyConflictError(
+                f"Cannot merge topology with target_mode={incoming.target_mode!r} "
+                f"into active target_mode={self.model.target_mode!r}.",
+                details={
+                    "active_target_mode": self.model.target_mode,
+                    "incoming_target_mode": incoming.target_mode,
+                },
+                remediation=(
+                    "Keep Packet Tracer and non-Packet-Tracer designs in separate projects."
+                ),
+            )
+
+        added_devices: list[str] = []
+        updated_devices: list[str] = []
+        added_links: list[str] = []
+
+        for dev_name, inc_dev in incoming.devices.items():
+            if dev_name not in self.model.devices:
+                created = self.add_device(
+                    dev_name,
+                    inc_dev.model,
+                    x=inc_dev.position.x,
+                    y=inc_dev.position.y,
+                    role=inc_dev.role,
+                    site_zone=inc_dev.site_zone,
+                    metadata=dict(inc_dev.metadata),
+                )
+                created.state_level = inc_dev.state_level
+                added_devices.append(dev_name)
+                target_dev = created
+            else:
+                target_dev = self.model.devices[dev_name]
+                if inc_dev.role:
+                    target_dev.role = inc_dev.role
+                if inc_dev.site_zone:
+                    target_dev.site_zone = inc_dev.site_zone
+                if inc_dev.metadata:
+                    target_dev.metadata.update(inc_dev.metadata)
+                updated_devices.append(dev_name)
+
+            if overwrite_interfaces:
+                for if_name, inc_if in inc_dev.interfaces.items():
+                    if if_name in target_dev.interfaces:
+                        cur_if = target_dev.interfaces[if_name]
+                        for attr in (
+                            "admin_up",
+                            "ip_address",
+                            "subnet_mask",
+                            "ipv6_address",
+                            "default_gateway",
+                            "description",
+                            "vlan_mode",
+                            "access_vlan",
+                            "trunk_allowed_vlans",
+                            "native_vlan",
+                            "is_trunk",
+                            "state_level",
+                        ):
+                            val = getattr(inc_if, attr)
+                            if val is not None:
+                                setattr(cur_if, attr, val)
+
+        existing_pairs = {
+            tuple(
+                sorted(
+                    (
+                        (lnk.source_device, lnk.source_interface),
+                        (lnk.target_device, lnk.target_interface),
+                    )
+                )
+            )
+            for lnk in self.model.connections.values()
+        }
+        for lnk in incoming.connections.values():
+            pair_key = tuple(
+                sorted(
+                    (
+                        (lnk.source_device, lnk.source_interface),
+                        (lnk.target_device, lnk.target_interface),
+                    )
+                )
+            )
+            if pair_key in existing_pairs:
+                continue
+            created_lnk = self.connect(
+                lnk.source_device,
+                lnk.source_interface,
+                lnk.target_device,
+                lnk.target_interface,
+                cable_type=lnk.cable_type,
+                clock_rate=lnk.clock_rate,
+                notes=lnk.notes,
+            )
+            created_lnk.state_level = lnk.state_level
+            existing_pairs.add(pair_key)
+            added_links.append(created_lnk.connection_id)
+
+        return {
+            "devices_added": added_devices,
+            "devices_updated": updated_devices,
+            "connections_added": added_links,
+        }
+
+    def diff_topology(self, other: TopologyModel | TopologyEngine) -> dict[str, Any]:
+        """Compute structural device, link, and interface differences from self to other."""
+        after = other.model if isinstance(other, TopologyEngine) else other
+        before = self.model
+
+        before_devs = set(before.devices.keys())
+        after_devs = set(after.devices.keys())
+        devices_added = sorted(after_devs - before_devs)
+        devices_removed = sorted(before_devs - after_devs)
+
+        devices_modified: list[str] = []
+        interface_changes: list[dict[str, Any]] = []
+        for dev_name in sorted(before_devs & after_devs):
+            b_dev = before.devices[dev_name]
+            a_dev = after.devices[dev_name]
+            if (
+                b_dev.model != a_dev.model
+                or b_dev.role != a_dev.role
+                or b_dev.site_zone != a_dev.site_zone
+                or b_dev.position != a_dev.position
+            ):
+                devices_modified.append(dev_name)
+            for if_name in sorted(set(b_dev.interfaces) | set(a_dev.interfaces)):
+                b_if = b_dev.interfaces.get(if_name)
+                a_if = a_dev.interfaces.get(if_name)
+                b_snap = (
+                    None
+                    if b_if is None
+                    else {
+                        "admin_up": b_if.admin_up,
+                        "ip_address": b_if.ip_address,
+                        "subnet_mask": b_if.subnet_mask,
+                        "ipv6_address": b_if.ipv6_address,
+                        "default_gateway": b_if.default_gateway,
+                        "is_trunk": b_if.is_trunk,
+                        "access_vlan": b_if.access_vlan,
+                        "native_vlan": b_if.native_vlan,
+                    }
+                )
+                a_snap = (
+                    None
+                    if a_if is None
+                    else {
+                        "admin_up": a_if.admin_up,
+                        "ip_address": a_if.ip_address,
+                        "subnet_mask": a_if.subnet_mask,
+                        "ipv6_address": a_if.ipv6_address,
+                        "default_gateway": a_if.default_gateway,
+                        "is_trunk": a_if.is_trunk,
+                        "access_vlan": a_if.access_vlan,
+                        "native_vlan": a_if.native_vlan,
+                    }
+                )
+                if b_snap != a_snap:
+                    interface_changes.append(
+                        {
+                            "device": dev_name,
+                            "interface": if_name,
+                            "before": b_snap,
+                            "after": a_snap,
+                        }
+                    )
+
+        def _link_map(tm: TopologyModel) -> dict[tuple[tuple[str, str], tuple[str, str]], LinkEdge]:
+            out: dict[tuple[tuple[str, str], tuple[str, str]], LinkEdge] = {}
+            for edge in tm.connections.values():
+                ep1 = (edge.source_device, edge.source_interface)
+                ep2 = (edge.target_device, edge.target_interface)
+                key = (ep1, ep2) if ep1 <= ep2 else (ep2, ep1)
+                out[key] = edge
+            return out
+
+        b_links = _link_map(before)
+        a_links = _link_map(after)
+        links_added = [
+            a_links[k].model_dump(mode="json") for k in sorted(a_links.keys() - b_links.keys())
+        ]
+        links_removed = [
+            b_links[k].model_dump(mode="json") for k in sorted(b_links.keys() - a_links.keys())
+        ]
+
+        has_changes = bool(
+            devices_added
+            or devices_removed
+            or devices_modified
+            or links_added
+            or links_removed
+            or interface_changes
+        )
+        return {
+            "identical": not has_changes,
+            "has_changes": has_changes,
+            "devices_added": devices_added,
+            "devices_removed": devices_removed,
+            "devices_modified": devices_modified,
+            "links_added": links_added,
+            "links_removed": links_removed,
+            "interface_changes": interface_changes,
+        }

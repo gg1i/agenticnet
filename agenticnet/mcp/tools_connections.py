@@ -2,14 +2,50 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
 from agenticnet.core.enums import PermissionTier, StateLevel
 from agenticnet.core.exceptions import InterfaceError, ValidationError
-from agenticnet.core.models import OperationResult
+from agenticnet.core.models import ExecutionBackend, OperationResult
 from agenticnet.mcp.registry import AgenticNetRuntime
+
+
+def _resolve_topo_device_name(runtime: AgenticNetRuntime, name: str) -> str:
+    """Resolve a device name or IOS hostname alias against the active TopologyEngine."""
+    _, topo, _, _ = runtime.manager.require_active()
+    if name in topo.model.devices:
+        return name
+    mapped = runtime.router.resolve_pt_device_name(name)
+    if mapped in topo.model.devices:
+        return mapped
+    for cand_name, node in topo.model.devices.items():
+        if node.metadata.get("hostname") == name or node.role == name:
+            return cand_name
+    return name
+
+
+def _dispatch_delete_link(
+    runtime: AgenticNetRuntime,
+    source_device: str,
+    source_interface: str,
+    target_device: str,
+    target_interface: str,
+) -> tuple[ExecutionBackend, dict[str, Any], list[str], list[str]]:
+    del_fn = getattr(runtime.router, "delete_link", None)
+    if not callable(del_fn):
+        return ("offline_model", {}, [], [])
+    params = list(inspect.signature(del_fn).parameters.values())
+    pos_params = [
+        p
+        for p in params
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(pos_params) >= 4:
+        return del_fn(source_device, source_interface, target_device, target_interface)
+    return del_fn(source_device, source_interface)
 
 
 def register_connection_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
@@ -43,10 +79,12 @@ def register_connection_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
                 raise ValidationError(
                     f"Link limit reached ({runtime.settings.max_links_per_project})."
                 )
+            src_resolved = _resolve_topo_device_name(runtime, source_device)
+            dst_resolved = _resolve_topo_device_name(runtime, target_device)
             link = topo.connect(
-                source_device,
+                src_resolved,
                 source_interface,
-                target_device,
+                dst_resolved,
                 target_interface,
                 cable_type=cable_type,
                 clock_rate=clock_rate,
@@ -105,14 +143,30 @@ def register_connection_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
         def _run() -> OperationResult:
             _, topo, _, _ = runtime.manager.require_active()
             removed = topo.remove_connection(connection_id)
+            backend, live_res, live_ev, warnings = _dispatch_delete_link(
+                runtime,
+                removed.source_device,
+                removed.source_interface,
+                removed.target_device,
+                removed.target_interface,
+            )
+            payload = removed.model_dump(mode="json")
+            if live_res:
+                payload["live_backend"] = live_res
+            lvl = StateLevel.EXECUTED if backend == "script_backend" else StateLevel.PLANNED
             return OperationResult.ok(
                 "connection_remove",
                 f"Removed connection '{connection_id}' "
                 f"({removed.source_device}:{removed.source_interface} <-> "
                 f"{removed.target_device}:{removed.target_interface}).",
-                data=removed.model_dump(mode="json"),
-                state_level=StateLevel.PLANNED,
-                evidence=[f"Removed link '{connection_id}' and freed endpoint ports."],
+                data=payload,
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=[
+                    f"Removed link '{connection_id}' and freed endpoint ports.",
+                    *live_ev,
+                ],
             )
 
         return runtime.execute(
@@ -165,7 +219,8 @@ def register_connection_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
 
         def _run() -> OperationResult:
             _, topo, _, _ = runtime.manager.require_active()
-            dev = topo.get_device(device_name)
+            resolved_name = _resolve_topo_device_name(runtime, device_name)
+            dev = topo.get_device(resolved_name)
             ifaces = [
                 iface.model_dump(mode="json")
                 for iface in dev.interfaces.values()
@@ -204,7 +259,8 @@ def register_connection_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
 
         def _run() -> OperationResult:
             _, topo, _, _ = runtime.manager.require_active()
-            dev = topo.get_device(device_name)
+            resolved_name = _resolve_topo_device_name(runtime, device_name)
+            dev = topo.get_device(resolved_name)
             canon = runtime.catalog.normalize_interface_name(dev.model, interface_name)
             iface = dev.interfaces.get(canon)
             if iface is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -34,7 +35,7 @@ from agenticnet.gui.windows_backend import WindowsGuiBackend
 from agenticnet.ios.generators import IOSGenerator
 from agenticnet.mcp.profiles import TOOL_PROFILE_NAMES, resolve_tool_profile
 from agenticnet.security.permissions import PermissionGuard, PermissionPolicy
-from agenticnet.security.redaction import redact_secrets
+from agenticnet.security.redaction import redact_cli_text, redact_secrets
 from agenticnet.simulation.engine import SimulationEngine
 from agenticnet.storage.project_manager import ProjectManager
 
@@ -124,12 +125,19 @@ class AgenticNetRuntime:
         gui_backend: GuiBackend | None = None,
         console_transport: ConsoleTransport | None = None,
         script_backend: ScriptBackend | None = None,
+        safety: EmergencyStopController | None = None,
     ) -> None:
         self.settings = settings or AgenticNetSettings.from_env()
         self.catalog = catalog or DEFAULT_CATALOG
         self.manager = ProjectManager(self.settings, catalog=self.catalog)
         self.ios = IOSGenerator(catalog=self.catalog)
-        self.safety = EmergencyStopController()
+        existing_safety = getattr(script_backend, "safety", None)
+        self.safety = (
+            safety
+            or (existing_safety if isinstance(existing_safety, EmergencyStopController) else None)
+            or EmergencyStopController()
+        )
+        self._exec_lock = threading.RLock()
         self.calibration = CalibrationManager(self.settings)
         self.gui: GuiBackend = gui_backend or create_gui_backend(
             self.settings, calibration=self.calibration, safety=self.safety
@@ -141,6 +149,8 @@ class AgenticNetRuntime:
             else None
         )
         self.script: ScriptBackend | None = script_backend
+        if self.script is not None and hasattr(self.script, "safety"):
+            self.script.safety = self.safety
         self.router = BackendRouter(
             script_backend=script_backend,
             gui_backend=self.gui,
@@ -160,13 +170,13 @@ class AgenticNetRuntime:
             console_engine=self.console,
             simulation_engine=self.simulation,
         )
-        self.guard = PermissionGuard(
-            PermissionPolicy(
-                profile_name=self.settings.permission_profile,
-                allowed_tiers=set(self.settings.allowed_tiers),
-                require_destructive_confirmation=self.settings.require_destructive_confirmation,
-            )
+        policy = PermissionPolicy.from_profile(
+            self.settings.permission_profile,
+            require_destructive_confirmation=self.settings.require_destructive_confirmation,
         )
+        if "allowed_tiers" in self.settings.model_fields_set:
+            policy.allowed_tiers = set(self.settings.allowed_tiers)
+        self.guard = PermissionGuard(policy)
         self.registry = ToolRegistry(
             allowed_tool_names=resolve_tool_profile(self.settings.tool_profile)
         )
@@ -186,73 +196,102 @@ class AgenticNetRuntime:
         start = time.perf_counter()
         project_id = self.manager.active_project_id
 
-        try:
-            self.guard.check(
-                tool_name,
-                tier,
-                confirmed=confirm,
-                destructive_reason=destructive_reason,
-            )
-            result = handler()
-            result.operation_id = op_id
-        except ApprovalRequiredError as exc:
-            result = OperationResult.fail(
-                tool_name,
-                exc.message,
-                error_code=exc.error_code,
-                details=exc.details,
-                remediation=exc.remediation,
-                status=OperationStatus.APPROVAL_REQUIRED,
-                operation_id=op_id,
-            )
-        except PermissionDeniedError as exc:
-            result = OperationResult.fail(
-                tool_name,
-                exc.message,
-                error_code=exc.error_code,
-                details=exc.details,
-                remediation=exc.remediation,
-                status=OperationStatus.BLOCKED,
-                operation_id=op_id,
-            )
-        except AgenticNetError as exc:
-            result = OperationResult.fail(
-                tool_name,
-                exc.message,
-                error_code=exc.error_code,
-                details=exc.details,
-                remediation=exc.remediation,
-                status=OperationStatus.FAILED,
-                operation_id=op_id,
-            )
-        except Exception as exc:  # pragma: no cover - defensive boundary
-            logger.exception("Unhandled error in MCP tool %s", tool_name)
-            result = OperationResult.fail(
-                tool_name,
-                f"Unexpected internal error: {exc}",
-                error_code="INTERNAL_ERROR",
-                status=OperationStatus.FAILED,
-                operation_id=op_id,
-            )
+        with self._exec_lock:
+            try:
+                self.guard.check(
+                    tool_name,
+                    tier,
+                    confirmed=confirm,
+                    destructive_reason=destructive_reason,
+                )
+                result = handler()
+                result.operation_id = op_id
+                if (
+                    result.success
+                    and tier != PermissionTier.READ_ONLY
+                    and tool_name not in {"project_close", "project_save"}
+                ):
+                    try:
+                        self.manager.persist_active_if_open()
+                    except Exception:
+                        logger.warning(
+                            "Failed to auto-persist active project after %s",
+                            tool_name,
+                            exc_info=True,
+                        )
+            except ApprovalRequiredError as exc:
+                result = OperationResult.fail(
+                    tool_name,
+                    exc.message,
+                    error_code=exc.error_code,
+                    details=exc.details,
+                    remediation=exc.remediation,
+                    status=OperationStatus.APPROVAL_REQUIRED,
+                    operation_id=op_id,
+                )
+            except PermissionDeniedError as exc:
+                result = OperationResult.fail(
+                    tool_name,
+                    exc.message,
+                    error_code=exc.error_code,
+                    details=exc.details,
+                    remediation=exc.remediation,
+                    status=OperationStatus.BLOCKED,
+                    operation_id=op_id,
+                )
+            except AgenticNetError as exc:
+                result = OperationResult.fail(
+                    tool_name,
+                    exc.message,
+                    error_code=exc.error_code,
+                    details=exc.details,
+                    remediation=exc.remediation,
+                    status=OperationStatus.FAILED,
+                    operation_id=op_id,
+                )
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                logger.exception("Unhandled error in MCP tool %s", tool_name)
+                result = OperationResult.fail(
+                    tool_name,
+                    f"Unexpected internal error: {exc}",
+                    error_code="INTERNAL_ERROR",
+                    status=OperationStatus.FAILED,
+                    operation_id=op_id,
+                )
 
-        elapsed_ms = round((time.perf_counter() - start) * 1000.0, 2)
-        entry = ExecutionLogEntry(
-            operation_id=op_id,
-            project_id=self.manager.active_project_id or project_id,
-            tool_name=tool_name,
-            permission_tier=tier,
-            status=result.status,
-            state_level=result.state_level,
-            summary=result.summary,
-            params_redacted=redact_secrets(params),
-            duration_ms=elapsed_ms,
-        )
-        try:
-            self.manager.store.append_execution_log(entry)
-        except Exception:
-            logger.warning("Failed to persist audit log for operation %s", op_id, exc_info=True)
+            elapsed_ms = round((time.perf_counter() - start) * 1000.0, 2)
+            raw_audit: dict[str, Any] = dict(params)
+            if "commands" not in raw_audit and isinstance(result.data, dict):
+                if isinstance(result.data.get("commands_redacted"), list):
+                    raw_audit["commands_summary"] = [
+                        redact_cli_text(str(c)) for c in result.data["commands_redacted"][:25]
+                    ]
+                elif isinstance(result.data.get("transcripts"), list):
+                    raw_audit["commands_summary"] = [
+                        redact_cli_text(str(t.get("command", "")))
+                        for t in result.data["transcripts"][:25]
+                        if isinstance(t, dict) and t.get("command")
+                    ]
+            audit_params = redact_secrets(raw_audit)
+            entry = ExecutionLogEntry(
+                operation_id=op_id,
+                project_id=self.manager.active_project_id or project_id,
+                tool_name=tool_name,
+                permission_tier=tier,
+                status=result.status,
+                state_level=result.state_level,
+                summary=result.summary,
+                params_redacted=(
+                    audit_params if isinstance(audit_params, dict) else {"value": audit_params}
+                ),
+                duration_ms=elapsed_ms,
+            )
+            try:
+                self.manager.store.append_execution_log(entry)
+            except Exception:
+                logger.warning("Failed to persist audit log for operation %s", op_id, exc_info=True)
 
-        return result.model_dump(mode="json")
+            return result.model_dump(mode="json")
 
     def build_manifest(self) -> dict[str, Any]:
         """Generate a machine-readable capability manifest for the server."""
@@ -293,6 +332,66 @@ class AgenticNetRuntime:
             "available_tool_profiles": list(TOOL_PROFILE_NAMES),
             "tool_count": len(self.registry.tools),
             "categories": categories,
+            "platform_core": {
+                "architecture": "modular_adapter_core",
+                "default_target_mode": "packet_tracer",
+                "supported_target_modes": ["packet_tracer"],
+                "state_levels": ["planned", "executed", "verified"],
+                "execution_backends": [
+                    "offline_model",
+                    "script_backend",
+                    "gui_backend",
+                    "hybrid",
+                ],
+                "subsystems": [
+                    "capability_registry",
+                    "topology_and_ipam_engine",
+                    "config_lifecycle_and_pre_apply_validator",
+                    "execution_and_console_engine",
+                    "diagnostics_and_verification_engine",
+                    "sqlite_state_and_preferences_store",
+                ],
+            },
+            "adapters": [
+                {
+                    "adapter_id": "cisco_packet_tracer",
+                    "display_name": "Cisco Packet Tracer Adapter",
+                    "status": "active",
+                    "tested_simulator_version": "8.2.2",
+                    "supported_modes": ["packet_tracer"],
+                    "verified_model_count": len(self.catalog.list_profiles()),
+                    "connection_requirements": {
+                        "primary_bridge": (
+                            "Packet Tracer 8.2.2+ with Script Module 'netforge_bridge.pts' "
+                            "enabled On Startup over authenticated localhost HTTP IPC."
+                        ),
+                        "gui_fallback": (
+                            "Unlocked Windows 10/11 desktop session (optional; required only "
+                            "for Physical-tab or GUI-only dialogs)."
+                        ),
+                        "offline_mode": (
+                            "Cross-platform (Windows, Linux, macOS) with zero external "
+                            "simulator process required for planning, validation, and SQLite."
+                        ),
+                    },
+                    "capabilities": [
+                        "device_add_remove_move",
+                        "link_create_delete_and_mdi_mdix_validation",
+                        "ios_and_asa_cli_execution_with_paging_and_submodes",
+                        "host_ipv4_dhcp_static_gateway_dns_configuration",
+                        "copy_on_write_pkt_pka_lifecycle_and_live_hydration",
+                        "live_cli_root_cause_diagnostics_and_self_repair",
+                        "closed_loop_verify_lab_grade_lab_and_reversible_failure_drills",
+                    ],
+                    "limitations": [
+                        "PT IOS-XE (4321/ISR4331) omits route-map, ip prefix-list, and PBR.",
+                        "PT 3560-24PS omits NAT/PAT; 2960-24TT is Layer-2 only.",
+                        "PT ASA (5505/5506-X) omits dynamic routing, HA failover, and IKEv2.",
+                        "Server-PT services, WLC Web GUI, and Laptop NIC swaps require GUI mode.",
+                        "Locked .pka assessments fail closed in grade_lab and use verify_lab.",
+                    ],
+                }
+            ],
             "tools": [t.model_dump(mode="json") for t in self.registry.tools],
             "resources": list(self.registry.resource_uris),
             "prompts": list(self.registry.prompt_names),

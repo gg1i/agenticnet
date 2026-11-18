@@ -64,6 +64,7 @@ class IPAllocation(BaseModel):
     device_name: str
     interface_name: str
     ip_address: str
+    ip_version: int = 4
     prefix_length: int
     subnet_mask: str
     cidr: str

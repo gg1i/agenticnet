@@ -6,16 +6,29 @@ import re
 
 from agenticnet.simulation.models import (
     PacketEventRecord,
+    ParsedAclEntry,
     ParsedArpEntry,
+    ParsedBgpNeighbor,
+    ParsedCdpNeighbor,
     ParsedConfigSection,
     ParsedDhcpBinding,
     ParsedEphoneButton,
     ParsedEphoneEntry,
+    ParsedEtherChannelGroup,
+    ParsedEtherChannelMember,
+    ParsedHostIpconfig,
+    ParsedHsrpGroup,
     ParsedInterfaceBrief,
+    ParsedNatTranslation,
     ParsedOspfNeighbor,
     ParsedPingSummary,
     ParsedRouteEntry,
+    ParsedStpPortRole,
+    ParsedStpVlanInstance,
     ParsedTelephonyStatus,
+    ParsedTracerouteHop,
+    ParsedTracerouteSummary,
+    ParsedTrunkInterface,
     ParsedVlanEntry,
 )
 
@@ -43,9 +56,17 @@ _SUBNET_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _ROUTE_LINE_RE = re.compile(
-    r"^([CSOLRD*B](?:[A-Z0-9* ]{0,4})?)\s+([0-9.]+(?:/\d+)?)\s+"
+    r"^([CSOLRD*Bi](?:[A-Z0-9* ]{0,4})?)\s+([0-9.]+(?:/\d+)?)\s+"
     r"(?:\[(\d+/\d+)\]\s+via\s+([0-9.]+)(?:,\s*(?:[^,\s]+,\s*)?(\S+))?|"
     r"is\s+directly\s+connected,\s*(\S+))",
+    re.IGNORECASE,
+)
+_ROUTE_WRAPPED_HEAD_RE = re.compile(
+    r"^([CSOLRD*Bi](?:[A-Z0-9* ]{0,4})?)\s+([0-9.]+(?:/\d+)?)$",
+    re.IGNORECASE,
+)
+_ROUTE_VIA_CONTINUATION_RE = re.compile(
+    r"^\[(\d+/\d+)\]\s+via\s+([0-9.]+)(?:,\s*(?:[^,\s]+,\s*)?(\S+))?$",
     re.IGNORECASE,
 )
 _ARP_IOS_RE = re.compile(
@@ -97,6 +118,12 @@ _IFACE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("lo", "loopback"),
     ("port-channel", "port-channel"),
     ("po", "port-channel"),
+    ("dot11radio", "dot11radio"),
+    ("dot11", "dot11radio"),
+    ("wireless", "wireless"),
+    ("wlan", "wireless"),
+    ("management", "management"),
+    ("mgmt", "management"),
     ("vlan", "vlan"),
     ("vl", "vlan"),
 )
@@ -116,9 +143,9 @@ def canonicalize_interface_name(name: str) -> str:
 
 
 def clean_ios_output(raw_text: str) -> str:
-    """Strip CR, `--More--` pager artifacts, and IOS prompt echoes for resilient parsing."""
+    """Strip CR, `--More--` / `<--- More --->` pagers, and IOS prompt echoes for parsing."""
     text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\s*--More--\s*", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*(?:--More--|<---\s*More\s*--->)\s*", "\n", text, flags=re.IGNORECASE)
     lines: list[str] = []
     for line in text.splitlines():
         if _PROMPT_LINE_RE.match(line.strip()):
@@ -206,10 +233,11 @@ def parse_ping_output(raw_text: str, *, target_ip: str | None = None) -> ParsedP
 
 
 def parse_show_ip_route(raw_text: str) -> dict[str, object]:
-    """Parse Cisco IOS `show ip route` table lines and gateway of last resort."""
+    """Parse Cisco IOS `show ip route` table lines (including wrapped and ECMP routes)."""
     gateway_of_last_resort: str | None = None
     routes: list[ParsedRouteEntry] = []
     inherited_mask: str | None = None
+    pending_wrapped: tuple[str, str] | None = None
 
     for raw_line in clean_ios_output(raw_text).splitlines():
         line = raw_line.strip()
@@ -217,14 +245,18 @@ def parse_show_ip_route(raw_text: str) -> dict[str, object]:
             continue
         if line.lower().startswith("gateway of last resort is"):
             gateway_of_last_resort = line
+            pending_wrapped = None
             continue
         if "is variably subnetted" in line.lower():
             inherited_mask = None
+            pending_wrapped = None
             continue
         sub_m = _SUBNET_HEADER_RE.match(line)
         if sub_m:
             inherited_mask = sub_m.group(1)
+            pending_wrapped = None
             continue
+
         m = _ROUTE_LINE_RE.match(line)
         if m:
             code, net, metric, next_hop, via_iface, direct_iface = m.groups()
@@ -241,6 +273,47 @@ def parse_show_ip_route(raw_text: str) -> dict[str, object]:
                     raw_line=line,
                 )
             )
+            pending_wrapped = None
+            continue
+
+        wrap_m = _ROUTE_WRAPPED_HEAD_RE.match(line)
+        if wrap_m:
+            code, net = wrap_m.groups()
+            norm_net = net.strip()
+            if "/" not in norm_net and inherited_mask is not None:
+                norm_net = f"{norm_net}/{inherited_mask}"
+            pending_wrapped = (code.strip(), norm_net)
+            continue
+
+        cont_m = _ROUTE_VIA_CONTINUATION_RE.match(line)
+        if cont_m:
+            metric, next_hop, via_iface = cont_m.groups()
+            if pending_wrapped is not None:
+                w_code, w_net = pending_wrapped
+                routes.append(
+                    ParsedRouteEntry(
+                        code=w_code,
+                        network=w_net,
+                        metric=metric,
+                        next_hop=next_hop,
+                        outgoing_interface=via_iface,
+                        raw_line=f"{w_code} {w_net} {line}",
+                    )
+                )
+                pending_wrapped = None
+            elif routes:
+                prev = routes[-1]
+                routes.append(
+                    ParsedRouteEntry(
+                        code=prev.code,
+                        network=prev.network,
+                        metric=metric,
+                        next_hop=next_hop,
+                        outgoing_interface=via_iface,
+                        raw_line=line,
+                    )
+                )
+
     return {
         "gateway_of_last_resort": gateway_of_last_resort,
         "routes": routes,
@@ -317,7 +390,7 @@ def parse_show_vlan_brief(raw_text: str) -> list[ParsedVlanEntry]:
 def parse_show_ip_ospf_neighbor(raw_text: str) -> list[ParsedOspfNeighbor]:
     """Parse Cisco IOS `show ip ospf neighbor` adjacency rows."""
     neighbors: list[ParsedOspfNeighbor] = []
-    for raw_line in raw_text.splitlines():
+    for raw_line in clean_ios_output(raw_text).splitlines():
         line = " ".join(raw_line.strip().split())
         if not line or line.lower().startswith("neighbor id"):
             continue
@@ -526,9 +599,11 @@ def parse_show_telephony_service(raw_text: str) -> ParsedTelephonyStatus:
         re.IGNORECASE,
     )
     auto_assign = re.findall(r"auto\s+assign\s+[^\r\n]+", cleaned, re.IGNORECASE)
-    configured = any(
-        item is not None for item in (version_m, max_e_m, max_dn_m, src_m)
-    ) or "telephony-service" in low or bool(auto_assign)
+    configured = (
+        any(item is not None for item in (version_m, max_e_m, max_dn_m, src_m))
+        or "telephony-service" in low
+        or bool(auto_assign)
+    )
     return ParsedTelephonyStatus(
         configured=configured,
         version=version_m.group(1) if version_m else None,
@@ -604,3 +679,572 @@ def parse_show_ephone(raw_text: str) -> list[ParsedEphoneEntry]:
                 )
             )
     return entries
+
+
+def _expand_vlan_list(spec_text: str) -> list[int]:
+    """Expand a Cisco IOS VLAN list string (e.g. '1,10,20-22' or 'none') into sorted VLAN IDs."""
+    cleaned = spec_text.strip().lower()
+    if not cleaned or cleaned == "none":
+        return []
+    if cleaned == "all":
+        return list(range(1, 4095))
+    vlans: set[int] = set()
+    for token in cleaned.split(","):
+        part = token.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-", 1)
+            if bounds[0].isdigit() and bounds[1].isdigit():
+                start_v, end_v = int(bounds[0]), int(bounds[1])
+                if 1 <= start_v <= end_v <= 4094:
+                    vlans.update(range(start_v, end_v + 1))
+        elif part.isdigit():
+            vid = int(part)
+            if 1 <= vid <= 4094:
+                vlans.add(vid)
+    return sorted(vlans)
+
+
+def parse_traceroute_output(
+    raw_text: str, *, target_ip: str | None = None
+) -> ParsedTracerouteSummary:
+    """Parse Cisco IOS `traceroute` or Packet Tracer PC `tracert` hop-by-hop output."""
+    cleaned = clean_ios_output(raw_text)
+    low = cleaned.lower()
+    is_pc = (
+        "over a maximum of" in low
+        or "trace complete" in low
+        or "request timed out" in low
+        or bool(re.search(r"^\s*\d+\s+(?:<?\d+\s*ms|\*)", cleaned, re.IGNORECASE | re.MULTILINE))
+    )
+    kind = "pt_pc_cmd" if is_pc else "cisco_ios"
+
+    hdr_m = re.search(
+        r"Tracing\s+(?:the\s+)?route\s+to\s+(?:\S+\s+\[([0-9a-fA-F.:]+)\]|([0-9a-fA-F.:]+))",
+        cleaned,
+        re.IGNORECASE,
+    )
+    resolved_target = target_ip or ((hdr_m.group(1) or hdr_m.group(2)) if hdr_m else None)
+
+    hops: list[ParsedTracerouteHop] = []
+    _ip_token_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F]*:[0-9a-fA-F:]+)\b")
+
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        hop_m = re.match(r"^(\d{1,2})\s+(.+)$", line)
+        if not hop_m:
+            continue
+        hop_num = int(hop_m.group(1))
+        rest = hop_m.group(2).strip()
+
+        if kind == "pt_pc_cmd":
+            rtts = [
+                0.5 if val.startswith("<") else float(val)
+                for val in re.findall(r"(<\d+|\d+)\s*ms\b", rest, re.IGNORECASE)
+            ]
+            # Strip RTT probes to isolate trailing hop IP
+            tail = re.sub(r"(?:<\d+|\d+)\s*ms\b|\*", " ", rest, flags=re.IGNORECASE)
+            ip_m = _ip_token_re.search(tail)
+            hop_ip = ip_m.group(1) if ip_m else None
+            timed_out = hop_ip is None and ("*" in rest or "timed out" in rest.lower())
+        else:
+            rtts = [
+                float(val) for val in re.findall(r"(\d+(?:\.\d+)?)\s*msec\b", rest, re.IGNORECASE)
+            ]
+            ip_m = _ip_token_re.search(rest)
+            hop_ip = ip_m.group(1) if ip_m else None
+            timed_out = hop_ip is None and "*" in rest
+
+        hops.append(
+            ParsedTracerouteHop(
+                hop_number=hop_num,
+                ip_address=hop_ip,
+                rtt_ms=rtts,
+                timed_out=timed_out,
+                raw_line=line,
+            )
+        )
+
+    if resolved_target:
+        completed = any(h.ip_address == resolved_target for h in hops)
+    else:
+        completed = bool(hops and not hops[-1].timed_out and hops[-1].ip_address is not None)
+
+    return ParsedTracerouteSummary(
+        parser_kind=kind,
+        target_ip=resolved_target,
+        hops=hops,
+        completed=completed,
+    )
+
+
+def parse_ipconfig_all(raw_text: str) -> list[ParsedHostIpconfig]:
+    """Parse Packet Tracer PC/Laptop/Server `ipconfig` or `ipconfig /all` output."""
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    adapters: list[ParsedHostIpconfig] = []
+    current: ParsedHostIpconfig | None = None
+
+    _hdr_re = re.compile(r"^([A-Za-z0-9/_-]+)\s+Connection\s*:", re.IGNORECASE)
+    _kv_re = re.compile(r"^([A-Za-z0-9 /-]+?)\.*:\s*(.*)$")
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.lower().startswith(
+            ("packet tracer pc", "cisco packet tracer", "c:\\>")
+        ):
+            continue
+        hdr_m = _hdr_re.match(line)
+        if hdr_m:
+            current = ParsedHostIpconfig(adapter=hdr_m.group(1).strip())
+            adapters.append(current)
+            continue
+
+        kv_m = _kv_re.match(line)
+        if not kv_m:
+            continue
+        key = kv_m.group(1).strip().lower()
+        val = kv_m.group(2).strip()
+        if not val:
+            continue
+
+        if current is None:
+            current = ParsedHostIpconfig()
+            adapters.append(current)
+
+        if key in {"ipv4 address", "ip address"}:
+            current.ipv4_address = val
+        elif key == "subnet mask":
+            current.subnet_mask = val
+        elif key == "default gateway":
+            current.default_gateway = val
+        elif key == "physical address":
+            current.mac_address = val
+        elif key == "ipv6 address" or (
+            key == "link-local ipv6 address" and current.ipv6_address is None
+        ):
+            current.ipv6_address = val
+        elif key in {"dns servers", "dns server"}:
+            for item in re.split(r"[,\s]+", val):
+                if item and item not in current.dns_servers:
+                    current.dns_servers.append(item)
+        elif key in {"dhcp servers", "dhcp server"}:
+            for item in re.split(r"[,\s]+", val):
+                if item and item not in current.dhcp_servers:
+                    current.dhcp_servers.append(item)
+
+    return adapters
+
+
+def parse_show_interfaces_trunk(raw_text: str) -> list[ParsedTrunkInterface]:
+    """Parse Cisco IOS `show interfaces trunk` port status, native VLAN, and VLAN lists."""
+    cleaned = clean_ios_output(raw_text)
+    by_canon: dict[str, ParsedTrunkInterface] = {}
+    order: list[str] = []
+    section = "status"
+
+    _status_re = re.compile(
+        r"^(\S+)\s+(on|auto|desirable|off|nonegotiate)\s+(\S+)\s+"
+        r"(trunking|not-trunking|other)\s+(\d+)$",
+        re.IGNORECASE,
+    )
+    _port_vlans_re = re.compile(r"^(\S+)\s+([0-9,\-a-zA-Z]+)$")
+
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("port mode"):
+            section = "status"
+            continue
+        if "vlans allowed on trunk" in low:
+            section = "allowed"
+            continue
+        if "vlans allowed and active" in low:
+            section = "active"
+            continue
+        if "vlans in spanning tree forwarding" in low:
+            section = "forwarding"
+            continue
+
+        if section == "status":
+            m = _status_re.match(line)
+            if m:
+                port, mode, encap, st, native_str = m.groups()
+                canon = canonicalize_interface_name(port)
+                entry = ParsedTrunkInterface(
+                    port=port,
+                    mode=mode.lower(),
+                    encapsulation=encap.lower(),
+                    status=st.lower(),
+                    native_vlan=int(native_str),
+                )
+                by_canon[canon] = entry
+                if canon not in order:
+                    order.append(canon)
+        elif section in {"allowed", "forwarding"}:
+            m = _port_vlans_re.match(line)
+            if m:
+                port, vlan_spec = m.groups()
+                canon = canonicalize_interface_name(port)
+                entry = by_canon.get(canon)
+                if entry is None:
+                    entry = ParsedTrunkInterface(port=port)
+                    by_canon[canon] = entry
+                    order.append(canon)
+                expanded = _expand_vlan_list(vlan_spec)
+                if section == "allowed":
+                    entry.allowed_vlans_raw = vlan_spec
+                    entry.allowed_vlans = expanded
+                else:
+                    entry.forwarding_vlans_raw = vlan_spec
+                    entry.forwarding_vlans = expanded
+
+    return [by_canon[k] for k in order]
+
+
+def parse_show_spanning_tree(raw_text: str) -> list[ParsedStpVlanInstance]:
+    """Parse Cisco IOS `show spanning-tree` per-VLAN root/bridge IDs and port roles."""
+    cleaned = clean_ios_output(raw_text)
+    instances: list[ParsedStpVlanInstance] = []
+    current: ParsedStpVlanInstance | None = None
+    in_section: str | None = None
+
+    _vlan_hdr_re = re.compile(r"^VLAN0*(\d{1,4})\s*$", re.IGNORECASE)
+    _proto_re = re.compile(r"Spanning tree enabled protocol\s+(\S+)", re.IGNORECASE)
+    _prio_re = re.compile(r"\bPriority\s+(\d+)", re.IGNORECASE)
+    _addr_re = re.compile(r"\bAddress\s+([0-9a-fA-F.:-]+)", re.IGNORECASE)
+    _port_re = re.compile(
+        r"^((?:Fa|Gi|Te|Eth|Po)\S*\d)\s+(Root|Desg|Altn|Back|Mstr)\s+"
+        r"(FWD|BLK|LRN|LIS|BKN\*?)\s+(\d+)\s+(\d+\.\d+)",
+        re.IGNORECASE,
+    )
+
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        vh = _vlan_hdr_re.match(line)
+        if vh:
+            current = ParsedStpVlanInstance(vlan_id=int(vh.group(1)))
+            instances.append(current)
+            in_section = None
+            continue
+
+        if current is None:
+            continue
+
+        pm = _proto_re.search(line)
+        if pm:
+            current.protocol = pm.group(1).lower()
+            continue
+
+        low = line.lower()
+        if low.startswith("root id"):
+            in_section = "root"
+            prio_m = _prio_re.search(line)
+            if prio_m:
+                current.root_priority = int(prio_m.group(1))
+            continue
+        if low.startswith("bridge id"):
+            in_section = "bridge"
+            prio_m = _prio_re.search(line)
+            if prio_m:
+                current.bridge_priority = int(prio_m.group(1))
+            continue
+        if low.startswith(("interface role", "----")):
+            in_section = "ports"
+            continue
+
+        if "this bridge is the root" in low:
+            current.is_root_bridge = True
+            continue
+
+        if in_section == "root":
+            prio_m = _prio_re.search(line)
+            if prio_m and current.root_priority is None:
+                current.root_priority = int(prio_m.group(1))
+            addr_m = _addr_re.search(line)
+            if addr_m:
+                current.root_mac = addr_m.group(1)
+        elif in_section == "bridge":
+            prio_m = _prio_re.search(line)
+            if prio_m and current.bridge_priority is None:
+                current.bridge_priority = int(prio_m.group(1))
+            addr_m = _addr_re.search(line)
+            if addr_m:
+                current.bridge_mac = addr_m.group(1)
+                if current.root_mac and current.root_mac.lower() == current.bridge_mac.lower():
+                    current.is_root_bridge = True
+
+        port_m = _port_re.match(line)
+        if port_m:
+            iface, role, st, cost_str, pid = port_m.groups()
+            current.ports.append(
+                ParsedStpPortRole(
+                    interface=iface,
+                    role=role,
+                    status=st.upper(),
+                    cost=int(cost_str),
+                    port_id=pid,
+                )
+            )
+
+    return instances
+
+
+def parse_show_etherchannel_summary(raw_text: str) -> list[ParsedEtherChannelGroup]:
+    """Parse Cisco IOS `show etherchannel summary` bundle table and member port flags."""
+    cleaned = clean_ios_output(raw_text)
+    groups: list[ParsedEtherChannelGroup] = []
+    current: ParsedEtherChannelGroup | None = None
+    in_table = False
+
+    _row_re = re.compile(
+        r"^(\d+)\s+(Po\d+)\(([A-Za-z]+)\)\s+(\S+)\s*(.*)$",
+        re.IGNORECASE,
+    )
+    _member_re = re.compile(r"([A-Za-z]+\d+(?:/\d+)*)\(([A-Za-z]+)\)")
+
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("group port-channel") or low.startswith("------+"):
+            in_table = True
+            continue
+        if not in_table and not re.match(r"^\d+\s+Po\d+\(", line, re.IGNORECASE):
+            continue
+
+        row_m = _row_re.match(line)
+        if row_m:
+            in_table = True
+            gid_str, po_name, po_flags, proto, members_raw = row_m.groups()
+            flags_up = po_flags.upper()
+            members = [
+                ParsedEtherChannelMember(interface=m_if, flag=m_fl)
+                for m_if, m_fl in _member_re.findall(members_raw)
+            ]
+            current = ParsedEtherChannelGroup(
+                group_id=int(gid_str),
+                port_channel=po_name,
+                layer="L3" if "R" in flags_up else "L2",
+                in_use="U" in flags_up,
+                protocol="" if proto == "-" else proto,
+                members=members,
+            )
+            groups.append(current)
+            continue
+
+        if current is not None:
+            extra_members = [
+                ParsedEtherChannelMember(interface=m_if, flag=m_fl)
+                for m_if, m_fl in _member_re.findall(line)
+            ]
+            if extra_members:
+                current.members.extend(extra_members)
+
+    return groups
+
+
+def parse_show_cdp_neighbors(raw_text: str) -> list[ParsedCdpNeighbor]:
+    """Parse Cisco IOS `show cdp neighbors` (supporting single-line and wrapped Device IDs)."""
+    cleaned = clean_ios_output(raw_text)
+    neighbors: list[ParsedCdpNeighbor] = []
+    in_table = False
+    pending_dev_id: str | None = None
+
+    _if_pat = r"(?:Gig|Fas|Ten|Eth|Ser|Po|Fa|Gi|Te|Se)\s*\d+(?:/\d+)*(?:\.\d+)?"
+    _tail_re = re.compile(
+        rf"^({_if_pat})\s+(\d+)\s+((?:[R|T|B|S|H|I|r|P]\s+)+)(\S+)\s+({_if_pat}|\S+)$",
+        re.IGNORECASE,
+    )
+    _full_re = re.compile(
+        rf"^(\S+)\s+({_if_pat})\s+(\d+)\s+((?:[R|T|B|S|H|I|r|P]\s+)+)(\S+)\s+({_if_pat}|\S+)$",
+        re.IGNORECASE,
+    )
+
+    for raw_line in cleaned.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        if low.startswith("device id"):
+            in_table = True
+            pending_dev_id = None
+            continue
+        if low.startswith("total cdp entries"):
+            break
+        if not in_table:
+            continue
+
+        norm = " ".join(stripped.split())
+        if pending_dev_id is not None:
+            tail_m = _tail_re.match(norm)
+            if tail_m:
+                loc_if, hold_s, caps_s, platform, port_id = tail_m.groups()
+                neighbors.append(
+                    ParsedCdpNeighbor(
+                        device_id=pending_dev_id,
+                        local_interface=re.sub(r"\s+", "", loc_if),
+                        holdtime=int(hold_s),
+                        capabilities=[c for c in caps_s.split() if c],
+                        platform=platform,
+                        port_id=re.sub(r"\s+", "", port_id),
+                    )
+                )
+                pending_dev_id = None
+                continue
+            pending_dev_id = None
+
+        full_m = _full_re.match(norm)
+        if full_m:
+            dev_id, loc_if, hold_s, caps_s, platform, port_id = full_m.groups()
+            neighbors.append(
+                ParsedCdpNeighbor(
+                    device_id=dev_id,
+                    local_interface=re.sub(r"\s+", "", loc_if),
+                    holdtime=int(hold_s),
+                    capabilities=[c for c in caps_s.split() if c],
+                    platform=platform,
+                    port_id=re.sub(r"\s+", "", port_id),
+                )
+            )
+        elif " " not in norm:
+            pending_dev_id = norm
+
+    return neighbors
+
+
+def parse_show_ip_bgp_summary(raw_text: str) -> list[ParsedBgpNeighbor]:
+    """Parse Cisco IOS `show ip bgp summary` neighbor session rows."""
+    cleaned = clean_ios_output(raw_text)
+    peers: list[ParsedBgpNeighbor] = []
+    _peer_re = re.compile(
+        r"^(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]+)\s+(\d+)\s+(\d+)\s+"
+        r"\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\S+)\s+(\S+)$"
+    )
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line or line.lower().startswith("neighbor "):
+            continue
+        m = _peer_re.match(line)
+        if m:
+            nip, ver_s, asn_s, up_down, st_pfx = m.groups()
+            is_est = st_pfx.isdigit()
+            peers.append(
+                ParsedBgpNeighbor(
+                    neighbor_ip=nip,
+                    version=int(ver_s),
+                    remote_as=int(asn_s),
+                    up_down=up_down,
+                    state_or_prefixes=st_pfx,
+                    established=is_est,
+                    prefixes_received=int(st_pfx) if is_est else None,
+                )
+            )
+    return peers
+
+
+def parse_show_standby_brief(raw_text: str) -> list[ParsedHsrpGroup]:
+    """Parse Cisco IOS `show standby brief` HSRP group status rows."""
+    cleaned = clean_ios_output(raw_text)
+    groups: list[ParsedHsrpGroup] = []
+    _hsrp_re = re.compile(
+        r"^(\S+)\s+(\d+)\s+(\d+)\s+(?:(P)\s+)?(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
+        re.IGNORECASE,
+    )
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line or line.lower().startswith(("interface ", "p indicates")):
+            continue
+        m = _hsrp_re.match(line)
+        if m:
+            iface, grp_s, pri_s, preempt_flag, state, active_r, standby_r, vip = m.groups()
+            groups.append(
+                ParsedHsrpGroup(
+                    interface=iface,
+                    group_id=int(grp_s),
+                    priority=int(pri_s),
+                    preempt=bool(preempt_flag),
+                    state=state,
+                    active_router=active_r,
+                    standby_router=standby_r,
+                    virtual_ip=vip,
+                )
+            )
+    return groups
+
+
+def parse_show_access_lists(raw_text: str) -> list[ParsedAclEntry]:
+    """Parse Cisco IOS `show access-lists` standard and extended ACE entries and hit counters."""
+    cleaned = clean_ios_output(raw_text)
+    entries: list[ParsedAclEntry] = []
+    current_name: str | None = None
+    current_type: str = "extended"
+
+    _hdr_re = re.compile(
+        r"^(Standard|Extended)\s+IP\s+access\s+list\s+(\S+)$",
+        re.IGNORECASE,
+    )
+    _ace_re = re.compile(
+        r"^(?:(\d+)\s+)?(permit|deny)\s+(.+?)(?:\s+\((\d+)\s+match(?:es)?\))?$",
+        re.IGNORECASE,
+    )
+
+    for raw_line in cleaned.splitlines():
+        stripped = " ".join(raw_line.strip().split())
+        if not stripped:
+            continue
+        hdr_m = _hdr_re.match(stripped)
+        if hdr_m:
+            current_type = hdr_m.group(1).lower()
+            current_name = hdr_m.group(2)
+            continue
+        if current_name is None:
+            continue
+        ace_m = _ace_re.match(stripped)
+        if ace_m:
+            seq_s, action, body, matches_s = ace_m.groups()
+            entries.append(
+                ParsedAclEntry(
+                    acl_name=current_name,
+                    acl_type=current_type,
+                    sequence=int(seq_s) if seq_s else None,
+                    action=action.lower(),
+                    rule_text=body.strip(),
+                    matches=int(matches_s) if matches_s else 0,
+                )
+            )
+    return entries
+
+
+def parse_show_ip_nat_translations(raw_text: str) -> list[ParsedNatTranslation]:
+    """Parse Cisco IOS `show ip nat translations` active NAT/PAT table."""
+    cleaned = clean_ios_output(raw_text)
+    rows: list[ParsedNatTranslation] = []
+    _nat_re = re.compile(
+        r"^(tcp|udp|icmp|esp|---)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
+        re.IGNORECASE,
+    )
+    for raw_line in cleaned.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line or line.lower().startswith(("pro ", "total number")):
+            continue
+        m = _nat_re.match(line)
+        if m:
+            proto, in_glob, in_loc, out_loc, out_glob = m.groups()
+            rows.append(
+                ParsedNatTranslation(
+                    protocol=proto.lower(),
+                    inside_global=in_glob,
+                    inside_local=in_loc,
+                    outside_local=out_loc,
+                    outside_global=out_glob,
+                )
+            )
+    return rows

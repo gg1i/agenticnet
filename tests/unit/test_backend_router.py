@@ -464,3 +464,136 @@ def test_add_device_persistent_empty_name_fails_and_never_stores_empty_alias(
 
     asyncio.run(_exercise())
 
+
+@pytest.mark.unit
+def test_router_stage1_provenance_redaction_and_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agenticnet.adapters.router as router_mod
+    from agenticnet.adapters.base import GuiBackend
+    from agenticnet.adapters.router import transport_to_execution_backend
+    from agenticnet.gui.adapter import NullGuiBackend
+
+    assert transport_to_execution_backend("script_bridge") == "script_backend"
+    assert transport_to_execution_backend("windows_gui") == "gui_backend"
+    assert transport_to_execution_backend("windows_pt_gui_clipboard") == "gui_backend"
+    assert transport_to_execution_backend("test_ios_harness") == "offline_model"
+
+    settings = AgenticNetSettings(data_dir=tmp_path / "data")
+    null_gui = NullGuiBackend(settings)
+    assert null_gui.is_available() is False
+    assert BackendRouter(gui_backend=null_gui).has_live_gui() is False
+
+    class _LiveGuiStub(GuiBackend):
+        def __init__(self) -> None:
+            self.power_calls: list[dict[str, Any]] = []
+
+        def detect_application(self) -> dict[str, Any]:
+            return {"running": True, "window": {"hwnd": 101}}
+
+        def capture_screenshot(self, output_path: str | None = None) -> dict[str, Any]:
+            return {"screenshot_path": output_path or "stub.png"}
+
+        def attach_ip_phone_power(self, **kwargs: Any) -> dict[str, Any]:
+            self.power_calls.append(dict(kwargs))
+            return {"ok": True, "powered": True, **kwargs}
+
+    live_gui = _LiveGuiStub()
+    assert live_gui.is_available() is True
+
+    # Disconnected ScriptBackend + live GuiBackend -> attach_ip_phone_power uses GUI fallback
+    offline_script = _FakeScriptBackend(connected=False)
+    hybrid_router = BackendRouter(script_backend=offline_script, gui_backend=live_gui)
+    assert hybrid_router.has_live_gui() is True
+    backend_tag, pwr_data, _, _ = hybrid_router.attach_ip_phone_power(
+        "IP_PHONE1", canvas_x=320.0, canvas_y=180.0
+    )
+    assert backend_tag == "gui_backend"
+    assert pwr_data["powered"] is True
+    assert live_gui.power_calls[-1]["device_name"] == "IP_PHONE1"
+
+    # Offline fallback for remove_device, move_device, delete_link
+    assert hybrid_router.remove_device("R1")[0] == "offline_model"
+    assert hybrid_router.move_device("R1", 50.0, 60.0)[0] == "offline_model"
+    assert hybrid_router.delete_link("R1", "Gi0/0")[0] == "offline_model"
+
+    # Live ScriptBackend redaction, model mapping, serial_dte swap, and wait_for_connection
+    class _FullScriptBackend(_FakeScriptBackend):
+        def __init__(self) -> None:
+            super().__init__(connected=False)
+            self.wait_called = False
+            self.removed: list[str] = []
+            self.moved: list[tuple[str, float, float]] = []
+            self.deleted_links: list[tuple[str, str]] = []
+
+        def wait_for_connection(self, *, timeout_seconds: float = 15.0) -> bool:
+            _ = timeout_seconds
+            self.wait_called = True
+            self.connected = True
+            return True
+
+        def remove_device(
+            self, device_name: str, *, timeout_seconds: float | None = None
+        ) -> dict[str, Any]:
+            _ = timeout_seconds
+            self.removed.append(device_name)
+            return {"ok": True, "removed": True, "device_name": device_name}
+
+        def move_device(
+            self,
+            device_name: str,
+            x: float,
+            y: float,
+            *,
+            timeout_seconds: float | None = None,
+        ) -> dict[str, Any]:
+            _ = timeout_seconds
+            self.moved.append((device_name, x, y))
+            return {"ok": True, "moved": True, "device_name": device_name, "x": x, "y": y}
+
+        def delete_link(
+            self,
+            device_name: str,
+            port_name: str,
+            *,
+            timeout_seconds: float | None = None,
+        ) -> dict[str, Any]:
+            _ = timeout_seconds
+            self.deleted_links.append((device_name, port_name))
+            return {"ok": True, "deleted": True, "device_name": device_name, "port_name": port_name}
+
+    monkeypatch.setattr(router_mod, "is_packet_tracer_running", lambda: True)
+    full_script = _FullScriptBackend()
+    live_router = BackendRouter(script_backend=full_script)
+    assert live_router.ensure_live_script() is True
+    assert full_script.wait_called is True
+
+    live_router.add_device("SW3650", "3650-24PS")
+    live_router.add_device("FW2", "5506-X")
+    live_router.add_device("HGW1", "HomeGateway-PT")
+    live_router.add_device("PH1", "SMARTPHONE-PT")
+    live_router.add_device("TAB1", "TabletPC-PT")
+    assert [d["device_type"] for d in full_script.added_devices] == [17, 27, 29, 21, 19]
+
+    live_router.create_link("SW3650", "Serial0/0/0", "FW2", "Serial0/0/1", cable_type="serial_dte")
+    assert full_script.created_links[-1]["device1"] == live_router.resolve_pt_device_name("FW2")
+
+    live_router.console_transport.send_line("SW3650", "enable secret TopSecretPass123")
+    live_router.console_transport.send_batch(
+        "SW3650", ["username admin secret AnotherSecret456"]
+    )
+    logged = " ".join(
+        line for lines in live_router.executed_cli_log.values() for line in lines
+    )
+    assert "TopSecretPass123" not in logged
+    assert "AnotherSecret456" not in logged
+
+    sw_pt = live_router.resolve_pt_device_name("SW3650")
+    assert live_router.move_device("SW3650", 410.0, 220.0)[0] == "script_backend"
+    assert full_script.moved == [(sw_pt, 410.0, 220.0)]
+    assert live_router.delete_link("SW3650", "Gi1/0/1")[0] == "script_backend"
+    assert full_script.deleted_links == [(sw_pt, "Gi1/0/1")]
+    assert live_router.remove_device("SW3650")[0] == "script_backend"
+    assert full_script.removed == [sw_pt]
+    assert "SW3650" not in live_router.device_aliases
+

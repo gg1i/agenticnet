@@ -15,6 +15,17 @@ from agenticnet.mcp.registry import AgenticNetRuntime
 def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
     """Register Packet Tracer simulation mode and verification tools."""
 
+    def _mode_backend(data: dict[str, Any]) -> ExecutionBackend:
+        details = data.get("details") if isinstance(data.get("details"), dict) else {}
+        if data.get("dispatched_to_script") or details.get("dispatched_to_script"):
+            return "script_backend"
+        if data.get("dispatched_to_gui") or details.get("dispatched_to_gui"):
+            return "gui_backend"
+        raw_backend = data.get("execution_backend") or details.get("execution_backend")
+        if raw_backend in {"offline_model", "script_backend", "gui_backend", "hybrid"}:
+            return raw_backend  # type: ignore[return-value]
+        return "offline_model"
+
     def simulation_mode(mode: Literal["realtime", "simulation"]) -> dict[str, Any]:
         """Switch Packet Tracer between 'realtime' and 'simulation' clock modes."""
 
@@ -26,6 +37,7 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
                 f"Switched Packet Tracer mode to '{mode}'.",
                 data=data,
                 state_level=lvl,
+                execution_backend=_mode_backend(data),
                 evidence=[f"Mode transition to {mode} requested."],
             )
 
@@ -47,6 +59,7 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
                 "Simulation mode activated.",
                 data=data,
                 state_level=lvl,
+                execution_backend=_mode_backend(data),
                 evidence=["Simulation mode enabled."],
             )
 
@@ -68,6 +81,7 @@ def register_simulation_tools(server: MCPServer, runtime: AgenticNetRuntime) -> 
                 "Realtime mode restored.",
                 data=data,
                 state_level=lvl,
+                execution_backend=_mode_backend(data),
                 evidence=["Realtime mode restored."],
             )
 

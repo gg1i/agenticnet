@@ -182,3 +182,105 @@ def test_ipam_gateway_lookup_out_of_subnet_gateway_and_trunk_mode_mismatch() -> 
         "ipconfig 10.50.20.11 255.255.255.0 10.50.20.254"
     ]
     assert r1.name == "R1"
+
+
+@pytest.mark.unit
+def test_live_root_cause_diagnostics_and_state_level_honesty() -> None:
+    from agenticnet.core.enums import StateLevel
+
+    transport = SimulatedConsoleTransport()
+    transport.seed_device("R1", hostname="R1", mode="privileged_exec")
+    transport.seed_device("PC1", hostname="PC1", mode="pc_prompt")
+    console = DeviceConsoleEngine(transport=transport)
+    engine = DiagnosticsEngine(console_engine=console)
+
+    topo = TopologyEngine()
+    topo.add_device("R1", "2911")
+    topo.add_device("R2", "2911")
+    topo.add_device("SW-CORE", "3560-24PS")
+    topo.add_device("SW-ACC", "2960-24TT")
+    topo.add_device("PC1", "PC-PT")
+    topo.connect("R1", "Gi0/0", "R2", "Gi0/0")
+    topo.connect("SW-CORE", "Gi0/1", "SW-ACC", "Gi0/1")
+
+    # Offline run_diagnostics MUST stay StateLevel.PLANNED even when console is attached
+    pc_if = topo.model.devices["PC1"].interfaces["FastEthernet0"]
+    pc_if.ipv4_address = "192.168.1.10"
+    pc_if.subnet_mask = "255.255.255.0"
+    offline_rep = engine.run_diagnostics(topo)
+    assert offline_rep.state_level == StateLevel.PLANNED
+
+    # Executing host ipconfig repair preserves PC mode and syncs default_gateway into topology
+    gw_prop = next(p for p in offline_rep.proposed_repairs if p.target_device == "PC1")
+    engine.execute_repair(gw_prop.proposal_id, topology=topo)
+    assert pc_if.default_gateway == "192.168.1.1"
+
+    # Live CLI root-cause diagnostics: L3 switch missing ip routing, OSPF passive + area mismatch,
+    # admin-down interface, trunk native VLAN mismatch, and ACL deny drops
+    live_snaps = {
+        "R1": {
+            "show ip interface brief": (
+                "Interface              IP-Address      OK? Method Status                Protocol\n"
+                "GigabitEthernet0/0     10.0.12.1       YES manual up                    up\n"
+                "GigabitEthernet0/1     10.0.99.1       YES manual administratively down down\n"
+            ),
+            "show running-config": (
+                "hostname R1\n!\n"
+                "router ospf 1\n"
+                " network 10.0.12.0 0.0.0.3 area 0\n"
+                " passive-interface GigabitEthernet0/0\n!\n"
+            ),
+            "show access-lists": (
+                "Extended IP access list BLOCK_ICMP\n"
+                "    10 deny icmp any any (7 matches)\n"
+                "    20 permit ip any any\n"
+            ),
+        },
+        "R2": {
+            "show ip interface brief": (
+                "Interface              IP-Address      OK? Method Status                Protocol\n"
+                "GigabitEthernet0/0     10.0.12.2       YES manual up                    up\n"
+            ),
+            "show running-config": (
+                "hostname R2\n!\nrouter ospf 1\n network 10.0.12.0 0.0.0.3 area 10\n!\n"
+            ),
+        },
+        "SW-CORE": {
+            "show ip interface brief": (
+                "Interface              IP-Address      OK? Method Status                Protocol\n"
+                "Vlan10                 10.10.10.1      YES manual up                    up\n"
+                "Vlan20                 10.10.20.1      YES manual up                    up\n"
+            ),
+            "show running-config": (
+                "hostname SW-CORE\n!\ninterface Vlan10\n ip address 10.10.10.1 255.255.255.0\n!\n"
+            ),
+            "show interfaces trunk": (
+                "Port        Mode         Encapsulation  Status        Native vlan\n"
+                "Gi0/1       on           802.1q         trunking      99\n"
+            ),
+        },
+        "SW-ACC": {
+            "show ip interface brief": "",
+            "show running-config": "hostname SW-ACC\n!\n",
+            "show interfaces trunk": (
+                "Port        Mode         Encapsulation  Status        Native vlan\n"
+                "Gi0/1       on           802.1q         trunking      1\n"
+            ),
+        },
+    }
+    live_rep = engine.run_live_diagnostics(topo, live_snapshots=live_snaps)
+    assert live_rep.state_level == StateLevel.VERIFIED
+    live_codes = {f.code for f in live_rep.findings}
+    assert {
+        "LIVE_INTERFACE_ADMIN_DOWN",
+        "LIVE_L3_SWITCH_MISSING_IP_ROUTING",
+        "LIVE_OSPF_PASSIVE_INTERFACE_ON_TRANSIT",
+        "LIVE_OSPF_AREA_MISMATCH",
+        "LIVE_TRUNK_NATIVE_VLAN_MISMATCH",
+        "LIVE_ACL_DENY_DROPS",
+    } <= live_codes
+
+    # Verify native VLAN repair syncs native_vlan back to topology
+    trunk_prop = next(p for p in live_rep.proposed_repairs if "native VLAN" in p.summary)
+    engine.execute_repair(trunk_prop.proposal_id, topology=topo)
+    assert topo.model.devices["SW-ACC"].interfaces["GigabitEthernet0/1"].native_vlan == 99

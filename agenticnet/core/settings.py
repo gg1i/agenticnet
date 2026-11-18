@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agenticnet.core.enums import PermissionTier
+from agenticnet.core.exceptions import ValidationError
 
 
 def _is_windows() -> bool:
@@ -88,6 +89,28 @@ class AgenticNetSettings(BaseModel):
     auto_launch_packet_tracer: bool = True
     auto_create_project: bool = True
 
+    @model_validator(mode="after")
+    def _sync_permission_tiers_from_profile(self) -> AgenticNetSettings:
+        """Normalize permission_profile and derive allowed_tiers fail-closed unless set."""
+        from agenticnet.security.permissions import PermissionPolicy
+
+        try:
+            policy = PermissionPolicy.from_profile(
+                self.permission_profile,
+                require_destructive_confirmation=self.require_destructive_confirmation,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                str(exc),
+                details={"permission_profile": self.permission_profile},
+                remediation="Use one of: read-only, planning, configuration, standard.",
+            ) from exc
+
+        self.permission_profile = policy.profile_name
+        if "allowed_tiers" not in self.model_fields_set:
+            self.allowed_tiers = set(policy.allowed_tiers)
+        return self
+
     @property
     def db_path(self) -> Path:
         """Full SQLite database file path."""
@@ -101,41 +124,43 @@ class AgenticNetSettings(BaseModel):
     @classmethod
     def from_env(cls) -> AgenticNetSettings:
         """Build settings from `AGENTICNET_*` (or legacy `NETFORGE_*`) environment variables."""
-        profile = (
-            _env_str("AGENTICNET_PERMISSION_PROFILE", "NETFORGE_PERMISSION_PROFILE", "standard")
-            .strip()
-            .lower()
+        from agenticnet.security.permissions import PermissionPolicy
+
+        raw_profile = _env_str(
+            "AGENTICNET_PERMISSION_PROFILE", "NETFORGE_PERMISSION_PROFILE", "standard"
         )
-        tier_map: dict[str, set[PermissionTier]] = {
-            "read-only": {PermissionTier.READ_ONLY},
-            "planning": {PermissionTier.READ_ONLY, PermissionTier.PLANNING},
-            "configuration": {
-                PermissionTier.READ_ONLY,
-                PermissionTier.PLANNING,
-                PermissionTier.CONFIGURATION,
-            },
-            "standard": {
-                PermissionTier.READ_ONLY,
-                PermissionTier.PLANNING,
-                PermissionTier.CONFIGURATION,
-                PermissionTier.GUI_CONTROL,
-                PermissionTier.DESTRUCTIVE,
-            },
-        }
-        allowed_tiers = tier_map.get(profile, tier_map["standard"])
-        tool_profile = (
-            _env_str("AGENTICNET_TOOL_PROFILE", "NETFORGE_TOOL_PROFILE", "solve_lab")
-            .strip()
-            .lower()
-        )
-        if tool_profile not in {"solve_lab", "advanced"}:
-            tool_profile = "solve_lab"
         require_confirm_raw = (
             _env_str("AGENTICNET_REQUIRE_CONFIRM", "NETFORGE_REQUIRE_CONFIRM", "true")
             .strip()
             .lower()
         )
         require_confirm = require_confirm_raw not in {"0", "false", "no"}
+        try:
+            policy = PermissionPolicy.from_profile(
+                raw_profile,
+                require_destructive_confirmation=require_confirm,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                f"Invalid permission profile {raw_profile!r} from environment.",
+                details={"permission_profile": raw_profile},
+                remediation=(
+                    "Set AGENTICNET_PERMISSION_PROFILE to "
+                    "read-only, planning, configuration, or standard."
+                ),
+            ) from exc
+
+        tool_profile = (
+            _env_str("AGENTICNET_TOOL_PROFILE", "NETFORGE_TOOL_PROFILE", "solve_lab")
+            .strip()
+            .lower()
+        )
+        if tool_profile not in {"solve_lab", "advanced"}:
+            raise ValidationError(
+                f"Invalid tool profile {tool_profile!r} from environment.",
+                details={"tool_profile": tool_profile},
+                remediation="Set AGENTICNET_TOOL_PROFILE to 'solve_lab' or 'advanced'.",
+            )
 
         return cls(
             data_dir=default_data_dir(),
@@ -144,10 +169,10 @@ class AgenticNetSettings(BaseModel):
             transport=_env_str("AGENTICNET_TRANSPORT", "NETFORGE_TRANSPORT", "stdio").lower(),
             host=_env_str("AGENTICNET_HOST", "NETFORGE_HOST", "127.0.0.1"),
             port=int(_env_str("AGENTICNET_PORT", "NETFORGE_PORT", "8765")),
-            permission_profile=profile,
+            permission_profile=policy.profile_name,
             tool_profile=tool_profile,
             require_destructive_confirmation=require_confirm,
-            allowed_tiers=allowed_tiers,
+            allowed_tiers=set(policy.allowed_tiers),
             max_devices_per_project=int(
                 _env_str("AGENTICNET_MAX_DEVICES", "NETFORGE_MAX_DEVICES", "250")
             ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import platform
 import threading
 import time
@@ -80,6 +81,8 @@ def _predict_mode_after(current: CLIPromptMode, cmd: str) -> CLIPromptMode:
         if current not in {CLIPromptMode.USER_EXEC, CLIPromptMode.UNKNOWN, CLIPromptMode.PC_PROMPT}:
             return CLIPromptMode.GLOBAL_CONFIG
         return current
+    if low.startswith(("interface range ", "int range ")):
+        return CLIPromptMode.INTERFACE_RANGE_CONFIG
     if low.startswith(("interface ", "int ")):
         return CLIPromptMode.SUBINTERFACE_CONFIG if "." in low else CLIPromptMode.INTERFACE_CONFIG
     if low.startswith("router "):
@@ -92,6 +95,24 @@ def _predict_mode_after(current: CLIPromptMode, cmd: str) -> CLIPromptMode:
         return CLIPromptMode.VLAN_CONFIG
     if low.startswith(("ip access-list ", "access-list ")):
         return CLIPromptMode.ACL_CONFIG
+    if low.startswith("crypto isakmp policy "):
+        return CLIPromptMode.CRYPTO_ISAKMP_CONFIG
+    if low.startswith("crypto map ") and len(low.split()) >= 4:
+        return CLIPromptMode.CRYPTO_MAP_CONFIG
+    if low.startswith("zone security "):
+        return CLIPromptMode.ZONE_CONFIG
+    if low.startswith("zone-pair security "):
+        return CLIPromptMode.ZONE_PAIR_CONFIG
+    if low.startswith("policy-map "):
+        return CLIPromptMode.POLICY_MAP_CONFIG
+    if low.startswith("class-map "):
+        return CLIPromptMode.CLASS_MAP_CONFIG
+    if low == "telephony-service":
+        return CLIPromptMode.TELEPHONY_CONFIG
+    if low.startswith("ephone-dn "):
+        return CLIPromptMode.EPHONE_DN_CONFIG
+    if low.startswith("ephone "):
+        return CLIPromptMode.EPHONE_CONFIG
     return current
 
 
@@ -201,7 +222,13 @@ class DeviceConsoleEngine(ConsoleBackend):
             disable_paging
             and profile.supports_paging_disable
             and self.transport.transport_name != "script_bridge"
-            and parsed.mode in {CLIPromptMode.USER_EXEC, CLIPromptMode.PRIVILEGED_EXEC}
+            and (
+                parsed.mode == CLIPromptMode.PRIVILEGED_EXEC
+                or (
+                    parsed.mode == CLIPromptMode.USER_EXEC
+                    and profile.interaction_kind != ConsoleInteractionKind.ASA_CLI
+                )
+            )
         ):
             chunk = self.transport.send_line(
                 device_name,
@@ -324,11 +351,14 @@ class DeviceConsoleEngine(ConsoleBackend):
                 )
                 try:
                     t0 = time.perf_counter()
-                    batch_res = self.transport.send_batch(  # type: ignore[attr-defined]
-                        device_name,
-                        batch_cmds,
-                        timeout_s=batch_timeout_s,
-                    )
+                    send_batch_fn = self.transport.send_batch  # type: ignore[attr-defined]
+                    batch_kwargs: dict[str, Any] = {"timeout_s": batch_timeout_s}
+                    try:
+                        if "stop_on_error" in inspect.signature(send_batch_fn).parameters:
+                            batch_kwargs["stop_on_error"] = bool(stop_on_error)
+                    except (TypeError, ValueError):
+                        pass
+                    batch_res = send_batch_fn(device_name, batch_cmds, **batch_kwargs)
                     batch_elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
                     batch_handled = True
                 except AdapterUnavailableError:
@@ -345,18 +375,21 @@ class DeviceConsoleEngine(ConsoleBackend):
                 cleaned_out = redact_cli_text(strip_paging_and_control(raw_out))
                 prompt_str = str(batch_res.get("prompt", "")).strip()
                 statuses_raw = batch_res.get("command_statuses", [])
+                raw_cmd_outputs = batch_res.get("command_outputs")
+                stopped_on_error = bool(batch_res.get("stopped_on_error", False))
                 non_fatal_set = {
                     str(c).strip().lower() for c in batch_res.get("non_fatal_commands", []) if c
                 }
                 timed_out = bool(batch_res.get("timed_out", False))
 
-                # Filter out harmless `terminal length 0` errors already flagged non-fatal by bridge
+                # Filter out harmless paging-disable errors already flagged non-fatal by bridge
                 diags_source = cleaned_out
-                if "terminal length 0" in non_fatal_set:
+                if "terminal length 0" in non_fatal_set or "terminal pager 0" in non_fatal_set:
                     diags_source = "\n".join(
                         ln
                         for ln in cleaned_out.splitlines()
                         if "terminal length 0" not in ln.lower()
+                        and "terminal pager 0" not in ln.lower()
                     )
                 diags = parse_cli_output(diags_source)
 
@@ -366,6 +399,8 @@ class DeviceConsoleEngine(ConsoleBackend):
                 per_cmd_failed: list[bool] = [False] * len(cleaned_lines)
                 s_idx = 0
                 for idx, (cmd, _) in enumerate(cleaned_lines):
+                    if cmd.endswith("?"):
+                        continue
                     canon = _canon_mode_cmd(cmd)
                     matched_entry: dict[str, Any] | None = None
                     for probe in range(s_idx, len(status_iter)):
@@ -387,32 +422,77 @@ class DeviceConsoleEngine(ConsoleBackend):
                         d_cmd_low = d_item.command.strip().lower()
                         if d_cmd_low:
                             for idx, (cmd, _) in enumerate(cleaned_lines):
+                                if cmd.endswith("?"):
+                                    continue
                                 if cmd.lower() == d_cmd_low or d_cmd_low in cmd.lower():
                                     per_cmd_failed[idx] = True
                                     per_cmd_diags.setdefault(idx, []).append(d_item)
                                     matched_any = True
                         if not matched_any and cleaned_lines:
-                            fallback_idx = len(cleaned_lines) - 1
-                            for idx, (cmd, _) in reversed(list(enumerate(cleaned_lines))):
-                                if cmd.lower() in cleaned_out.lower():
+                            fallback_idx = 0
+                            for idx, (cmd, is_prep) in enumerate(cleaned_lines):
+                                if not is_prep and not cmd.endswith("?"):
                                     fallback_idx = idx
-                                    break
+                                    if cmd.lower() in cleaned_out.lower():
+                                        break
                             per_cmd_failed[fallback_idx] = True
                             per_cmd_diags.setdefault(fallback_idx, []).append(d_item)
 
+                if stopped_on_error and not any(per_cmd_failed) and cleaned_lines:
+                    fail_pos = min(max(len(status_iter) - 1, 0), len(cleaned_lines) - 1)
+                    per_cmd_failed[fail_pos] = True
+
+                first_fail_idx: int | None = None
+                for idx, failed_flag in enumerate(per_cmd_failed):
+                    if failed_flag:
+                        first_fail_idx = idx
+                        break
+
+                single_user_show = (
+                    len([c for c in commands if c.strip()]) == 1
+                    and next(c.strip().lower() for c in commands if c.strip()).startswith("show")
+                )
+
                 per_cmd_ms = round(batch_elapsed / len(cleaned_lines), 2) if cleaned_lines else 0.0
                 for idx, (cmd, is_prep) in enumerate(cleaned_lines):
+                    redacted_cmd = redact_cli_text(cmd)
+                    if stop_on_error and first_fail_idx is not None and idx > first_fail_idx:
+                        mode_before = session.current_mode
+                        skip_diag = CLIDiagnostic(
+                            line_number=idx + 1,
+                            command=redacted_cmd,
+                            severity="warning",
+                            code="SKIPPED_AFTER_ERROR",
+                            message=(
+                                f"Skipped '{redacted_cmd}' because stop_on_error=True "
+                                "after an earlier command failed."
+                            ),
+                        )
+                        warnings.append(skip_diag.message)
+                        transcripts.append(
+                            CommandTranscript(
+                                command=redacted_cmd,
+                                mode_before=mode_before,
+                                mode_after=mode_before,
+                                raw_output="",
+                                diagnostics=[skip_diag],
+                                succeeded=False,
+                                elapsed_ms=0.0,
+                            )
+                        )
+                        continue
+
                     mode_before = session.current_mode
                     mode_after = _predict_mode_after(mode_before, cmd)
                     session.current_mode = mode_after
-                    redacted_cmd = redact_cli_text(cmd)
-                    ok = not per_cmd_failed[idx]
+                    ok = True if cmd.endswith("?") else not per_cmd_failed[idx]
                     cmd_diags: list[CLIDiagnostic] = []
                     if not ok:
                         cmd_diags = per_cmd_diags.get(idx) or diags or [
                             CLIDiagnostic(
                                 line_number=idx + 1,
                                 command=redacted_cmd,
+                                severity="error",
                                 code="CLI_COMMAND_FAILED",
                                 message=(
                                     f"Device returned non-zero IOS status for '{redacted_cmd}'."
@@ -431,12 +511,35 @@ class DeviceConsoleEngine(ConsoleBackend):
                         failed_commands.append(redacted_cmd)
                         warnings.append(f"CLI batch timed out around '{redacted_cmd}'.")
 
+                    if isinstance(raw_cmd_outputs, list) and idx < len(raw_cmd_outputs):
+                        slice_clean = redact_cli_text(
+                            strip_paging_and_control(str(raw_cmd_outputs[idx]))
+                        )
+                        if (
+                            idx == 0
+                            and is_prep
+                            and single_user_show
+                            and len(raw_cmd_outputs) > 1
+                        ):
+                            user_slice = redact_cli_text(
+                                strip_paging_and_control(str(raw_cmd_outputs[-1]))
+                            )
+                            transcript_out = (
+                                f"{slice_clean}\n{user_slice}".strip()
+                                if slice_clean.strip()
+                                else (user_slice or cleaned_out)
+                            )
+                        else:
+                            transcript_out = slice_clean if slice_clean else cleaned_out
+                    else:
+                        transcript_out = cleaned_out
+
                     transcripts.append(
                         CommandTranscript(
                             command=redacted_cmd,
                             mode_before=mode_before,
                             mode_after=mode_after,
-                            raw_output=cleaned_out if idx == len(cleaned_lines) - 1 else "",
+                            raw_output=transcript_out,
                             diagnostics=cmd_diags,
                             succeeded=ok,
                             elapsed_ms=per_cmd_ms,
@@ -517,8 +620,29 @@ class DeviceConsoleEngine(ConsoleBackend):
                 timeout_s=profile.command_timeout_seconds,
             )
 
-            # Drain any --More-- paging automatically if paging wasn't disabled.
+            # Handle interactive password/confirmation/setup prompts, then drain paging.
             parsed = PromptDetector.parse(raw_out)
+            interactive_guard = 0
+            while interactive_guard < 4 and parsed.mode in {
+                CLIPromptMode.PASSWORD_PROMPT,
+                CLIPromptMode.CONFIRM_PROMPT,
+                CLIPromptMode.INITIAL_SETUP_DIALOG,
+            }:
+                if parsed.mode == CLIPromptMode.PASSWORD_PROMPT:
+                    reply = enable_password or ""
+                elif parsed.mode == CLIPromptMode.INITIAL_SETUP_DIALOG:
+                    reply = "no"
+                elif "how many bits in the modulus" in raw_out.lower():
+                    reply = "1024"
+                else:
+                    reply = ""
+                extra_prompt = self.transport.send_line(
+                    device_name, reply, timeout_s=profile.command_timeout_seconds
+                )
+                raw_out = f"{raw_out}\n{extra_prompt}"
+                parsed = PromptDetector.parse(raw_out)
+                interactive_guard += 1
+
             drain_guard = 0
             while parsed.has_paging and drain_guard < 12:
                 extra = self.transport.send_line(
@@ -530,7 +654,7 @@ class DeviceConsoleEngine(ConsoleBackend):
 
             elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
             cleaned_out = redact_cli_text(strip_paging_and_control(raw_out))
-            diags = parse_cli_output(cleaned_out)
+            diags = [] if cmd.endswith("?") else parse_cli_output(cleaned_out)
             ok = len(diags) == 0
 
             mode_after = (

@@ -95,3 +95,27 @@ def test_ipam_registry_conflict_detection_and_export() -> None:
     assert "| R1 | GigabitEthernet0/0.10 | 10.10.10.1 |" in md
     csv_out = ipam.export_addressing_table("csv")
     assert "PC1,FastEthernet0,10.10.10.10" in csv_out
+
+
+@pytest.mark.unit
+def test_ipam_dual_stack_ipv4_and_ipv6_coexistence_on_same_interface() -> None:
+    ipam = IPAMEngine()
+    ipam.register_pool("LAN-V4", "192.168.50.0/24", gateway="192.168.50.1")
+    ipam.register_pool("LAN-V6", "2001:db8:50::/64", gateway="2001:db8:50::1")
+
+    v4_alloc = ipam.allocate_address("R1", "GigabitEthernet0/0", "192.168.50.1/24")
+    v6_alloc = ipam.allocate_address("R1", "GigabitEthernet0/0", "2001:db8:50::1/64")
+
+    assert v4_alloc.ip_version == 4
+    assert v6_alloc.ip_version == 6
+    assert len(ipam.state.allocations) == 2
+
+    # Updating IPv6 on the same interface updates only the IPv6 record, preserving IPv4
+    v6_updated = ipam.allocate_address("R1", "GigabitEthernet0/0", "2001:db8:50::254/64")
+    assert v6_updated.allocation_id == v6_alloc.allocation_id
+    ips_on_if = {
+        a.ip_version: a.ip_address
+        for a in ipam.state.allocations.values()
+        if a.device_name == "R1" and a.interface_name == "GigabitEthernet0/0"
+    }
+    assert ips_on_if == {4: "192.168.50.1", 6: "2001:db8:50::254"}

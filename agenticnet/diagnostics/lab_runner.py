@@ -108,9 +108,7 @@ def evaluate_lab_status(
         list(grade_report.get("unmet_items", [])) if grade_available and grade_report else []
     )
     grader_unavailable_reason = (
-        None
-        if (grade_report is None or grade_available)
-        else grade_report.get("reason")
+        None if (grade_report is None or grade_available) else grade_report.get("reason")
     )
 
     verify_ok = True if verify_report is None else bool(verify_report.get("passed"))
@@ -303,8 +301,7 @@ def _canonical_link_key(link: dict[str, Any]) -> tuple[tuple[str, str], tuple[st
 
 def _format_link(link: dict[str, Any]) -> str:
     return (
-        f"{link.get('device1')}:{link.get('port1')} "
-        f"<-> {link.get('device2')}:{link.get('port2')}"
+        f"{link.get('device1')}:{link.get('port1')} <-> {link.get('device2')}:{link.get('port2')}"
     )
 
 
@@ -358,9 +355,7 @@ def compute_lab_diff(
 
     before_links = {_canonical_link_key(lnk): lnk for lnk in before.get("links", [])}
     after_links = {_canonical_link_key(lnk): lnk for lnk in after.get("links", [])}
-    links_added = [
-        dict(after_links[k]) for k in sorted(after_links.keys() - before_links.keys())
-    ]
+    links_added = [dict(after_links[k]) for k in sorted(after_links.keys() - before_links.keys())]
     links_removed = [
         dict(before_links[k]) for k in sorted(before_links.keys() - after_links.keys())
     ]
@@ -442,8 +437,10 @@ def compute_lab_diff(
         for ic in interface_changes[:12]:
             after_s = ic.get("after") or {}
             ip_s = after_s.get("ip_address") or "unassigned"
-            state_s = "up/up" if (after_s.get("port_up") and after_s.get("protocol_up")) else (
-                "up/down" if after_s.get("port_up") else "down"
+            state_s = (
+                "up/up"
+                if (after_s.get("port_up") and after_s.get("protocol_up"))
+                else ("up/down" if after_s.get("port_up") else "down")
             )
             iface_strs.append(f"{ic['device']}:{ic['interface']} ({ip_s}, {state_s})")
         extra = f" (+{len(interface_changes) - 12} more)" if len(interface_changes) > 12 else ""
@@ -711,10 +708,32 @@ def _infer_is_activity(path: str | None, open_data: Any) -> bool | None:
 def _infer_dev_type_code(model: str, category: Any) -> int:
     cat_str = category.value if hasattr(category, "value") else str(category)
     model_key = str(model).strip().lower()
-    if model_key in {"7960", "ip_phone", "cisco ip phone"}:
+    if model_key in {"7960", "ip_phone", "cisco ip phone", "ip phone"}:
         cat_str = "ip_phone"
+    elif "3650" in model_key:
+        cat_str = "switch_3650"
+    elif model_key in {"lap-pt", "lap", "3702i", "air-cap3702i", "cap3702i", "lightweight_ap"}:
+        cat_str = "lap"
+    elif model_key in {"5505", "5506-x", "5506"} or model_key.startswith("asa"):
+        cat_str = "asa"
+    elif model_key in {"2504", "3504"} or model_key.startswith("wlc"):
+        cat_str = "wlc"
+    elif model_key.startswith("cloud"):
+        cat_str = "cloud"
+    elif model_key in {"ata"} or model_key.startswith(("home-voip", "home_voip")):
+        cat_str = "home_voip"
+    elif model_key.startswith(("analog-phone", "analog_phone")):
+        cat_str = "analog_phone"
     elif model_key.startswith("laptop"):
         cat_str = "laptop"
+    elif model_key.startswith("tablet"):
+        cat_str = "tablet_pc"
+    elif model_key.startswith("smartphone"):
+        cat_str = "smartphone"
+    elif model_key in {"dlc100"} or model_key.startswith(
+        ("homegateway", "home-gateway", "home_gateway")
+    ):
+        cat_str = "home_gateway"
     elif model_key.startswith("server"):
         cat_str = "server"
     elif model_key.startswith("printer"):
@@ -946,9 +965,7 @@ def _apply_batch_build(
                     dhcp=bool(dev.get("dhcp", False)),
                     ip=str(dev.get("ip") or dev.get("ip_address") or "") or None,
                     subnet_mask=str(dev.get("subnet_mask", "")) or None,
-                    default_gateway=str(
-                        dev.get("default_gateway") or dev.get("gateway") or ""
-                    )
+                    default_gateway=str(dev.get("default_gateway") or dev.get("gateway") or "")
                     or None,
                     console_engine=runtime.console,
                 )
@@ -1209,10 +1226,7 @@ def start_lab_session(
     if settings is not None:
         src_session = Path(settings.data_dir) / "bridge_session.json"
         canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
-        if (
-            src_session.is_file()
-            and src_session.resolve() != canonical_session.resolve()
-        ):
+        if src_session.is_file() and src_session.resolve() != canonical_session.resolve():
             with suppress(OSError):
                 canonical_session.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src_session, canonical_session)
@@ -1332,3 +1346,193 @@ def start_lab_session(
     if batch_build is not None:
         result["batch_build"] = batch_build
     return result
+
+
+def _extract_drill_steps(step_spec: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    """Normalize primary + optional secondary `{device, commands}` entries for a drill step."""
+    steps: list[tuple[str, list[str]]] = []
+    dev = str(step_spec.get("device", "")).strip()
+    cmds = [str(c) for c in step_spec.get("commands", []) if str(c).strip()]
+    if dev and cmds:
+        steps.append((dev, cmds))
+    sec = step_spec.get("secondary")
+    if isinstance(sec, dict):
+        s_dev = str(sec.get("device", "")).strip()
+        s_cmds = [str(c) for c in sec.get("commands", []) if str(c).strip()]
+        if s_dev and s_cmds:
+            steps.append((s_dev, s_cmds))
+    elif isinstance(sec, list):
+        for item in sec:
+            if isinstance(item, dict):
+                s_dev = str(item.get("device", "")).strip()
+                s_cmds = [str(c) for c in item.get("commands", []) if str(c).strip()]
+                if s_dev and s_cmds:
+                    steps.append((s_dev, s_cmds))
+    return steps
+
+
+def run_failure_drill(
+    router: BackendRouter,
+    lab_spec: dict[str, Any] | None = None,
+    *,
+    requirements: dict[str, Any] | list[dict[str, Any]] | None = None,
+    break_step: dict[str, Any] | None = None,
+    fix_step: dict[str, Any] | None = None,
+    task_ids: list[str] | None = None,
+    dry_run: bool = False,
+    require_healthy_baseline: bool = True,
+    settle_scale: float = 1.0,
+    timeout_seconds: float = 25.0,
+    poll_wait_seconds: float | None = 0.0,
+    recovery_poll_wait_seconds: float | None = 0.0,
+) -> dict[str, Any]:
+    """Execute a reversible fault-injection and recovery verification drill.
+
+    Runs:
+    1) Baseline `evaluate_lab_status` check
+    2) Controlled `break_step` CLI injection
+    3) Outage verification (`expected_failing_ids` must fail)
+    4) Guaranteed reversible `fix_step` restoration (`try ... finally`)
+    5) Post-recovery `evaluate_lab_status` verification + timing telemetry
+    """
+    spec = lab_spec or {}
+    resolved_reqs = requirements or spec.get("verification") or spec.get("requirements")
+    resolved_break = break_step or spec.get("break_step")
+    resolved_fix = fix_step or spec.get("fix_step")
+    resolved_tasks = task_ids if task_ids is not None else spec.get("task_ids")
+
+    if not resolved_reqs:
+        raise ValidationError("run_failure_drill requires verification requirements.")
+    if not isinstance(resolved_break, dict) or not _extract_drill_steps(resolved_break):
+        raise ValidationError(
+            "run_failure_drill requires a valid `break_step` with device/commands."
+        )
+    if not isinstance(resolved_fix, dict) or not _extract_drill_steps(resolved_fix):
+        raise ValidationError("run_failure_drill requires a valid `fix_step` with device/commands.")
+
+    break_ops = _extract_drill_steps(resolved_break)
+    fix_ops = _extract_drill_steps(resolved_fix)
+    expected_failing = [str(fid) for fid in resolved_break.get("expected_failing_ids", [])]
+
+    if dry_run:
+        return {
+            "drill_passed": False,
+            "dry_run": True,
+            "state_level": StateLevel.PLANNED.value,
+            "execution_backend": "offline_model",
+            "break_operations": [{"device": d, "commands": c} for d, c in break_ops],
+            "fix_operations": [{"device": d, "commands": c} for d, c in fix_ops],
+            "expected_failing_ids": expected_failing,
+        }
+
+    if not router.has_live_script() or router.script_backend is None:
+        raise AdapterUnavailableError(
+            "run_failure_drill requires a connected Packet Tracer ScriptBackend (or dry_run=True)."
+        )
+
+    t_start = time.monotonic()
+    t0 = time.monotonic()
+    baseline = evaluate_lab_status(
+        router,
+        requirements=resolved_reqs,
+        task_ids=resolved_tasks,
+        include_activity_grade=False,
+        timeout_seconds=timeout_seconds,
+        poll_wait_seconds=poll_wait_seconds,
+    )
+    baseline_ms = round((time.monotonic() - t0) * 1000.0, 2)
+    baseline_ok = bool(baseline.get("overall_passed"))
+
+    if require_healthy_baseline and not baseline_ok:
+        return {
+            "drill_passed": False,
+            "aborted_unhealthy_baseline": True,
+            "reversible_restored": True,
+            "state_level": baseline.get("state_level", StateLevel.EXECUTED.value),
+            "execution_backend": "script_backend",
+            "baseline": baseline,
+            "timings_ms": {"baseline_ms": baseline_ms, "total_ms": baseline_ms},
+        }
+
+    break_transcripts: list[dict[str, Any]] = []
+    fix_transcripts: list[dict[str, Any]] = []
+    outage_status: dict[str, Any] = {}
+    break_ms = 0.0
+    outage_verify_ms = 0.0
+    fix_ms = 0.0
+
+    try:
+        tb = time.monotonic()
+        for dev_name, cmds in break_ops:
+            pt_dev = router.resolve_pt_device_name(dev_name)
+            res = router.script_backend.execute_cli(pt_dev, cmds, timeout_seconds=timeout_seconds)
+            break_transcripts.append({"device": dev_name, "pt_device": pt_dev, "result": res})
+        break_ms = round((time.monotonic() - tb) * 1000.0, 2)
+
+        to = time.monotonic()
+        outage_status = evaluate_lab_status(
+            router,
+            requirements=resolved_reqs,
+            task_ids=resolved_tasks,
+            include_activity_grade=False,
+            timeout_seconds=timeout_seconds,
+            poll_wait_seconds=0.0,
+        )
+        outage_verify_ms = round((time.monotonic() - to) * 1000.0, 2)
+    finally:
+        tf = time.monotonic()
+        for dev_name, cmds in fix_ops:
+            pt_dev = router.resolve_pt_device_name(dev_name)
+            res = router.script_backend.execute_cli(pt_dev, cmds, timeout_seconds=timeout_seconds)
+            fix_transcripts.append({"device": dev_name, "pt_device": pt_dev, "result": res})
+        settle_s = float(resolved_fix.get("settle_seconds", 0.0)) * max(0.0, float(settle_scale))
+        if settle_s > 0:
+            time.sleep(settle_s)
+        fix_ms = round((time.monotonic() - tf) * 1000.0, 2)
+
+    tr = time.monotonic()
+    recovery_status = evaluate_lab_status(
+        router,
+        requirements=resolved_reqs,
+        task_ids=resolved_tasks,
+        include_activity_grade=False,
+        timeout_seconds=timeout_seconds,
+        poll_wait_seconds=recovery_poll_wait_seconds,
+    )
+    recovery_verify_ms = round((time.monotonic() - tr) * 1000.0, 2)
+    total_ms = round((time.monotonic() - t_start) * 1000.0, 2)
+
+    observed_failing = [
+        str(item.get("id"))
+        for item in outage_status.get("what_is_left", {}).get("failing_requirements", [])
+        if item.get("id") is not None
+    ]
+    missing_expected = [fid for fid in expected_failing if fid not in observed_failing]
+    outage_detected = not bool(outage_status.get("overall_passed"))
+    expected_matched = len(missing_expected) == 0
+    recovered = bool(recovery_status.get("overall_passed"))
+    drill_passed = bool(baseline_ok and outage_detected and expected_matched and recovered)
+
+    return {
+        "drill_passed": drill_passed,
+        "reversible_restored": recovered,
+        "outage_detected": outage_detected,
+        "expected_failing_ids": expected_failing,
+        "observed_failing_ids": observed_failing,
+        "missing_expected_failures": missing_expected,
+        "state_level": recovery_status.get("state_level", StateLevel.EXECUTED.value),
+        "execution_backend": "script_backend",
+        "timings_ms": {
+            "baseline_ms": baseline_ms,
+            "break_ms": break_ms,
+            "outage_verify_ms": outage_verify_ms,
+            "fix_ms": fix_ms,
+            "recovery_verify_ms": recovery_verify_ms,
+            "total_ms": total_ms,
+        },
+        "break_transcripts": break_transcripts,
+        "fix_transcripts": fix_transcripts,
+        "baseline": baseline,
+        "outage": outage_status,
+        "recovery": recovery_status,
+    }

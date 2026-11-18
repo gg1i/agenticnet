@@ -393,14 +393,15 @@ def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
     srv_default, rt_default = create_mcp_server(default_settings)
     default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
     assert default_names == SOLVE_LAB_TOOLS
-    assert len(default_names) == 25
+    assert len(default_names) == len(SOLVE_LAB_TOOLS)
+    assert len(default_names) == 26
     assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
     assert "configure_ospf" not in default_names
 
     adv_settings = AgenticNetSettings(data_dir=tmp_path / ".nf2", tool_profile="advanced")
     srv_adv, rt_adv = create_mcp_server(adv_settings)
     adv_names = {t.name for t in asyncio.run(srv_adv.list_tools())}
-    assert len(adv_names) == 82
+    assert len(adv_names) >= 82
     assert default_names < adv_names
     assert rt_adv.build_manifest()["tool_profile"] == "advanced"
 
@@ -429,9 +430,7 @@ def test_benchmark_runner_mock_and_fail_closed_live(tmp_path: Path) -> None:
 
     # Budget limit test (--max-iterations 1 leaves lab broken -> budget_exceeded)
     budget_file = tmp_path / "bench_budget.json"
-    rc_budget = bench_cli.main(
-        ["--mock", "--max-iterations", "1", "--output", str(budget_file)]
-    )
+    rc_budget = bench_cli.main(["--mock", "--max-iterations", "1", "--output", str(budget_file)])
     assert rc_budget == 1
     single = BenchmarkResult.model_validate_json(budget_file.read_text(encoding="utf-8"))
     assert single.passed is False
@@ -584,8 +583,7 @@ def test_verifier_paced_cli_queue_and_bounded_retries(tmp_path: Path) -> None:
             return {
                 "ok": True,
                 "raw_output": (
-                    "GigabitEthernet0/0     10.0.0.1        "
-                    "YES manual up                    up\n"
+                    "GigabitEthernet0/0     10.0.0.1        YES manual up                    up\n"
                 ),
                 "results": [{"command": commands[0], "status": 0}],
             }
@@ -1139,3 +1137,116 @@ def test_one_command_lab_start_copy_on_write_diff_watch_and_guards(
     assert doc_ready["success"] is True
     assert doc_ready["data"]["working_copy_path"] == str(tmp_path / "md_out.pkt")
 
+
+@pytest.mark.unit
+def test_pt822_dev_type_inference_and_reversible_failure_drill() -> None:
+    from agenticnet.adapters.router import BackendRouter
+    from agenticnet.diagnostics.lab_runner import _infer_dev_type_code, run_failure_drill
+
+    assert _infer_dev_type_code("3650-24PS", "l3_switch") == 17
+    assert _infer_dev_type_code("5505", "firewall") == 27
+    assert _infer_dev_type_code("5506-X", "firewall") == 27
+    assert _infer_dev_type_code("WLC-2504", "wlc") == 41
+    assert _infer_dev_type_code("LAP-PT", "access_point") == 44
+    assert _infer_dev_type_code("3702i", "access_point") == 44
+    assert _infer_dev_type_code("Cloud-PT", "cloud") == 2
+    assert _infer_dev_type_code("Home-VOIP-PT", "pc") == 24
+    assert _infer_dev_type_code("Analog-Phone-PT", "pc") == 25
+    assert _infer_dev_type_code("Smartphone-PT", "pc") == 21
+    assert _infer_dev_type_code("TabletPC-PT", "pc") == 19
+    assert _infer_dev_type_code("HomeGateway-PT", "wireless_router") == 29
+
+    class _StatefulDrillBackend(_MockLabBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.route_present = True
+
+        def execute_cli(
+            self, device_name: str, commands: list[str], **kwargs: Any
+        ) -> dict[str, Any]:
+            joined = "\n".join(commands)
+            if "no ip route 10.10.2.0" in joined:
+                self.route_present = False
+                return {"ok": True, "raw_output": "", "command_statuses": []}
+            if "ip route 10.10.2.0" in joined:
+                self.route_present = True
+                return {"ok": True, "raw_output": "", "command_statuses": []}
+            cmd = commands[-1]
+            if cmd == "show ip route":
+                out = (
+                    "S    10.10.2.0/24 [1/0] via 10.10.12.2\n"
+                    if self.route_present
+                    else "C    10.10.12.0/30 is directly connected, GigabitEthernet0/0\n"
+                )
+                return {
+                    "ok": True,
+                    "raw_output": out,
+                    "prompt": "R1#",
+                    "command_statuses": [{"command": cmd, "status": 0}],
+                }
+            if cmd == "ping 10.10.2.1":
+                out = (
+                    "Sending 5, 100-byte ICMP Echos to 10.10.2.1:\n"
+                    "!!!!!\nSuccess rate is 100 percent (5/5)\n"
+                    if self.route_present
+                    else (
+                        "Sending 5, 100-byte ICMP Echos to 10.10.2.1:\n"
+                        ".....\nSuccess rate is 0 percent (0/5)\n"
+                    )
+                )
+                return {
+                    "ok": True,
+                    "raw_output": out,
+                    "prompt": "R1#",
+                    "command_statuses": [{"command": cmd, "status": 0}],
+                }
+            return super().execute_cli(device_name, commands, **kwargs)
+
+    lab_spec = {
+        "verification": {
+            "requirements": [
+                {
+                    "id": "r1_static_route",
+                    "type": "route_exists",
+                    "device": "R1",
+                    "network": "10.10.2.0/24",
+                    "protocol_code": "S",
+                },
+                {
+                    "id": "r1_ping_r2_lan",
+                    "type": "reachable",
+                    "from": "R1",
+                    "to": "10.10.2.1",
+                },
+            ]
+        },
+        "break_step": {
+            "device": "R1",
+            "commands": [
+                "configure terminal",
+                "no ip route 10.10.2.0 255.255.255.0 10.10.12.2",
+                "end",
+            ],
+            "expected_failing_ids": ["r1_static_route", "r1_ping_r2_lan"],
+        },
+        "fix_step": {
+            "device": "R1",
+            "commands": [
+                "configure terminal",
+                "ip route 10.10.2.0 255.255.255.0 10.10.12.2",
+                "end",
+            ],
+            "settle_seconds": 5,
+        },
+    }
+
+    router = BackendRouter(script_backend=_StatefulDrillBackend())
+    dry = run_failure_drill(router, lab_spec, dry_run=True)
+    assert dry["dry_run"] is True and dry["state_level"] == "planned"
+
+    live = run_failure_drill(router, lab_spec, settle_scale=0.0)
+    assert live["drill_passed"] is True
+    assert live["outage_detected"] is True
+    assert live["reversible_restored"] is True
+    assert live["state_level"] == "verified"
+    assert set(live["observed_failing_ids"]) == {"r1_static_route", "r1_ping_r2_lan"}

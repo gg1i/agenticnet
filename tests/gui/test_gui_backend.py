@@ -992,3 +992,60 @@ def test_execute_batch_dialog_normalized_coordinates(
             background=True,
             restore_focus=False,
         )
+
+
+@pytest.mark.unit
+def test_gui_is_available_launch_extension_validation_and_clipboard_restore(
+    isolated_settings: AgenticNetSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agenticnet.gui.windows_backend as wb
+    from agenticnet.gui.adapter import NullGuiBackend
+
+    fake = _FakeGuiBackend(isolated_settings)
+    assert fake.is_available() is True
+    assert NullGuiBackend(isolated_settings).is_available() is False
+
+    backend = WindowsGuiBackend(isolated_settings)
+    monkeypatch.setattr(wb.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        backend,
+        "_detect_fast",
+        lambda: {"running": True, "window": {"hwnd": 100}},
+    )
+    assert backend.is_available() is True
+    monkeypatch.setattr(
+        backend,
+        "_detect_fast",
+        lambda: {"running": False, "window": None},
+    )
+    assert backend.is_available() is False
+
+    # Reject non-.pkt/.pka/.pksz project_file before launching anything
+    for bad_file in ("malicious.exe", "notes.txt", "script.bat"):
+        with pytest.raises(ValidationError, match="extension"):
+            backend.launch_application(project_file=bad_file)
+
+    # Restore Windows clipboard reliably in finally: even on non-empty capture or error
+    monkeypatch.setattr(backend.safety, "check_safe_to_act", lambda **_kw: None)
+    monkeypatch.setattr(wb.time, "sleep", lambda _s: None)
+    written: list[str] = []
+    reads = iter(["user-original-clipboard", "Router#show version\n"])
+    monkeypatch.setattr(wb, "_clipboard_read", lambda: next(reads))
+    monkeypatch.setattr(wb, "_clipboard_write", lambda val: written.append(val))
+    monkeypatch.setattr(backend, "_send_key_chord", lambda chord: [chord])
+
+    out = backend.capture_text_from_focused_window()
+    assert "Router#show version" in out
+    assert written == ["user-original-clipboard"]
+
+    written.clear()
+    monkeypatch.setattr(wb, "_clipboard_read", lambda: "preserved-on-failure")
+
+    def _boom(_chord: str) -> list[str]:
+        raise RuntimeError("chord failed")
+
+    monkeypatch.setattr(backend, "_send_key_chord", _boom)
+    with pytest.raises(RuntimeError, match="chord failed"):
+        backend.capture_text_from_focused_window()
+    assert written == ["preserved-on-failure"]

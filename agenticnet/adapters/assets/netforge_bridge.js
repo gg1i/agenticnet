@@ -58,18 +58,30 @@ function resolveSessionCandidates() {
                         String(tParts[ti - 1]).toLowerCase() === "appdata" &&
                         String(tParts[ti]).toLowerCase() === "local"
                     ) {
+                        var localBase = tParts.slice(0, ti + 1).join("/");
                         appendUniquePath(
                             candidates,
                             seen,
-                            tParts.slice(0, ti + 1).join("/") + "/netforge/bridge_session.json"
+                            localBase + "/agenticnet/bridge_session.json"
+                        );
+                        appendUniquePath(
+                            candidates,
+                            seen,
+                            localBase + "/netforge/bridge_session.json"
                         );
                     }
                 }
                 if (tParts.length > 1) {
+                    var parentTemp = tParts.slice(0, tParts.length - 1).join("/");
                     appendUniquePath(
                         candidates,
                         seen,
-                        tParts.slice(0, tParts.length - 1).join("/") + "/netforge/bridge_session.json"
+                        parentTemp + "/agenticnet/bridge_session.json"
+                    );
+                    appendUniquePath(
+                        candidates,
+                        seen,
+                        parentTemp + "/netforge/bridge_session.json"
                     );
                 }
             }
@@ -84,13 +96,21 @@ function resolveSessionCandidates() {
                 }
                 for (var bi = 0; bi < bases.length; bi++) {
                     var b = bases[bi];
+                    appendUniquePath(candidates, seen, b + "/AppData/Local/agenticnet/bridge_session.json");
                     appendUniquePath(candidates, seen, b + "/AppData/Local/netforge/bridge_session.json");
+                    appendUniquePath(candidates, seen, b + "/.local/share/agenticnet/bridge_session.json");
                     appendUniquePath(candidates, seen, b + "/.local/share/netforge/bridge_session.json");
+                    appendUniquePath(
+                        candidates,
+                        seen,
+                        b + "/Library/Application Support/agenticnet/bridge_session.json"
+                    );
                     appendUniquePath(
                         candidates,
                         seen,
                         b + "/Library/Application Support/netforge/bridge_session.json"
                     );
+                    appendUniquePath(candidates, seen, b + "/.agenticnet/bridge_session.json");
                     appendUniquePath(candidates, seen, b + "/.netforge/bridge_session.json");
                 }
             }
@@ -326,12 +346,19 @@ function handleCliExec(requestId, params) {
     var requestedTimeoutMs = Number(params.timeout_ms || 25000);
     var timeoutMs = isNaN(requestedTimeoutMs) || requestedTimeoutMs <= 0 ? 25000 : requestedTimeoutMs;
     var waitForPrompt = params.wait_for_prompt !== false;
+    var stopOnError = Boolean(params.stop_on_error);
+    var autoConfirm = params.auto_confirm !== false;
+    var enablePassword = params.enable_password ? String(params.enable_password) : "";
     var dev = ipc.network().getDevice(devName);
     if (!dev) {
         sendBridgeResult(requestId, false, {}, "Device not found: " + devName);
         return;
     }
-    var term = dev.getCommandLine();
+    var term = null;
+    try { term = dev.getCommandLine(); } catch (eCl) {}
+    if (!term && typeof dev.getCommandPrompt === "function") {
+        try { term = dev.getCommandPrompt(); } catch (eCp) {}
+    }
     if (!term) {
         sendBridgeResult(requestId, false, {}, "Device has no TerminalLine: " + devName);
         return;
@@ -339,17 +366,44 @@ function handleCliExec(requestId, params) {
 
     var chunks = [];
     var statuses = [];
+    var commandOutputs = [];
     var nonFatalCommands = [];
     var moreCount = 0;
     var lastMoreChunkLen = -1;
+    var lastInteractiveLen = -1;
+    var cmdStartLen = 0;
     var sent = false;
     var nextIdx = 0;
+    var stoppedOnError = false;
     var stage = "check_boot";
     var yesNoHandled = false;
     var pressReturnSentAt = 0;
     var lastCmdSentAt = 0;
     var finished = false;
     var iv = null;
+
+    var sendSingleCommand = function (cmdText) {
+        var s = String(cmdText || "");
+        var trimmedCmd = s.replace(/^\s+|\s+$/g, "");
+        cmdStartLen = chunks.join("").length;
+        lastCmdSentAt = Date.now();
+        if (trimmedCmd.length > 0 && trimmedCmd.slice(-1) === "?" && typeof term.enterChar === "function") {
+            var prefix = trimmedCmd.slice(0, -1);
+            for (var chIdx = 0; chIdx < prefix.length; chIdx += 1) {
+                term.enterChar(prefix.charCodeAt(chIdx), 0);
+            }
+            term.enterChar(63, 0);
+            try { term.enterChar(21, 0); } catch (eClr) {}
+            return;
+        }
+        term.enterCommand(s);
+    };
+
+    var hasSliceError = function (sliceText) {
+        return /%\s*(Invalid|Incomplete|Ambiguous|Bad mask|overlaps with|Unrecognized)/i.test(
+            String(sliceText || "")
+        );
+    };
 
     var onOut = function (_src, args) { chunks.push(String(args.newOutput || "")); };
     var onEnd = function (_src, args) {
@@ -359,12 +413,22 @@ function handleCliExec(requestId, params) {
         var cmdStr = String(args.inputCommand || "");
         var st = Number(args.status);
         var trimmed = cmdStr.replace(/^\s+|\s+$/g, "").toLowerCase();
-        var isTermLenZero = trimmed.indexOf("terminal length 0") === 0;
-        var isNonFatal = isTermLenZero && st !== 0;
+        var isPagerDisable = (
+            trimmed.indexOf("terminal length 0") === 0
+            || trimmed.indexOf("terminal pager 0") === 0
+        );
+        var isNonFatal = isPagerDisable && st !== 0;
         if (isNonFatal) {
             nonFatalCommands.push(cmdStr);
         }
+        var fullNow = chunks.join("");
+        var cmdSlice = fullNow.slice(cmdStartLen);
+        cmdStartLen = fullNow.length;
+        commandOutputs.push(cmdSlice);
         statuses.push({ command: cmdStr, status: st, non_fatal: isNonFatal });
+        if (stopOnError && !isNonFatal && (st !== 0 || hasSliceError(cmdSlice))) {
+            stoppedOnError = true;
+        }
     };
     var onMore = function () {
         moreCount += 1;
@@ -451,8 +515,10 @@ function handleCliExec(requestId, params) {
                         mode: String(term.getMode() || ""),
                         raw_output: rawNow || promptNow,
                         command_statuses: statuses,
+                        command_outputs: commandOutputs,
                         non_fatal_commands: nonFatalCommands,
                         more_pages_advanced: moreCount,
+                        stopped_on_error: false,
                         timed_out: false
                     }, null);
                     return;
@@ -469,16 +535,35 @@ function handleCliExec(requestId, params) {
                 }
                 sent = true;
                 nextIdx = 1;
-                lastCmdSentAt = Date.now();
-                term.enterCommand(execCommands.length > 0 ? String(execCommands[0]) : "");
+                sendSingleCommand(execCommands.length > 0 ? String(execCommands[0]) : "");
                 stage = "wait_done";
             } else if (stage === "wait_done") {
-                var tail = rawNow.slice(-32);
-                var atMore = tail.indexOf("--More--") !== -1;
+                var tail = rawNow.slice(-64);
+                var atMore = (
+                    tail.indexOf("--More--") !== -1
+                    || tail.indexOf("<--- More --->") !== -1
+                );
                 if (atMore && rawNow.length !== lastMoreChunkLen) {
                     lastMoreChunkLen = rawNow.length;
                     moreCount += 1;
                     try { term.enterChar(32, 0); } catch (eMore) {}
+                }
+                // Handle interactive ASA blank enable Password: and [confirm] prompts
+                if (statuses.length < nextIdx && !atMore && rawNow.length !== lastInteractiveLen) {
+                    var tailTrim = tail.replace(/\s+$/g, "");
+                    if (/Password:\s*$/i.test(tailTrim)) {
+                        lastInteractiveLen = rawNow.length;
+                        lastCmdSentAt = Date.now();
+                        term.enterCommand(enablePassword);
+                    } else if (autoConfirm && /\[confirm\]\s*$/i.test(tailTrim)) {
+                        lastInteractiveLen = rawNow.length;
+                        lastCmdSentAt = Date.now();
+                        term.enterCommand("");
+                    } else if (autoConfirm && /How many bits in the modulus\s*\[[0-9]+\]:\s*$/i.test(tailTrim)) {
+                        lastInteractiveLen = rawNow.length;
+                        lastCmdSentAt = Date.now();
+                        term.enterCommand("1024");
+                    }
                 }
                 // Recover if PT drops a `commandEnded` event while an async syslog line
                 // interleaves and the CLI prompt is already back (skip slow ping/traceroute).
@@ -491,18 +576,31 @@ function handleCliExec(requestId, params) {
                         || pendingLow.indexOf("traceroute") === 0
                     );
                     if (!isSlowNetCmd) {
-                        statuses.push({ command: pendingCmd, status: 0, non_fatal: true });
+                        var synthSlice = rawNow.slice(cmdStartLen);
+                        cmdStartLen = rawNow.length;
+                        commandOutputs.push(synthSlice);
+                        var synthErr = hasSliceError(synthSlice);
+                        statuses.push({
+                            command: pendingCmd,
+                            status: synthErr ? 1 : 0,
+                            non_fatal: !synthErr
+                        });
+                        if (stopOnError && synthErr) {
+                            stoppedOnError = true;
+                        }
                         lastCmdSentAt = Date.now();
                     }
                 }
                 // Send commands one at a time: queued keystrokes typed while a
                 // --More-- pager is active get swallowed (observed: "ping" -> "ing").
-                if (nextIdx < execCommands.length && statuses.length >= nextIdx && !atMore) {
-                    lastCmdSentAt = Date.now();
-                    term.enterCommand(String(execCommands[nextIdx]));
+                if (!stoppedOnError && nextIdx < execCommands.length && statuses.length >= nextIdx && !atMore) {
+                    sendSingleCommand(String(execCommands[nextIdx]));
                     nextIdx += 1;
                 }
-                var doneByCount = statuses.length >= execCommands.length && !atMore;
+                var doneByCount = (
+                    (stoppedOnError && !atMore)
+                    || (statuses.length >= execCommands.length && !atMore)
+                );
                 if (!waitForPrompt || doneByCount || elapsed >= effectiveTimeoutMs) {
                     finishCli(true, {
                         device_name: devName,
@@ -510,8 +608,10 @@ function handleCliExec(requestId, params) {
                         mode: String(term.getMode() || ""),
                         raw_output: chunks.join(""),
                         command_statuses: statuses,
+                        command_outputs: commandOutputs,
                         non_fatal_commands: nonFatalCommands,
                         more_pages_advanced: moreCount,
+                        stopped_on_error: stoppedOnError,
                         timed_out: !doneByCount && waitForPrompt
                     }, null);
                 }
@@ -654,7 +754,7 @@ function attachRouterSerialModulesOnDevice(dev) {
     }
 
     var suppList = [];
-    var hwicSupported = false;
+    var serialMod = "";
     try {
         if (typeof dev.getSupportedModule === "function") {
             var rawSupp = dev.getSupportedModule();
@@ -662,16 +762,18 @@ function attachRouterSerialModulesOnDevice(dev) {
                 for (var si = 0; si < rawSupp.length; si++) {
                     var entry = String(rawSupp[si]);
                     suppList.push(entry);
-                    if (entry.indexOf("HWIC-2T") === 0) {
-                        hwicSupported = true;
+                    if (!serialMod && entry.indexOf("HWIC-2T") === 0) {
+                        serialMod = "HWIC-2T";
+                    } else if (!serialMod && entry.indexOf("NIM-2T") === 0) {
+                        serialMod = "NIM-2T";
                     }
                 }
             }
         }
     } catch (eSupp) {}
 
-    if (!hwicSupported) {
-        return { ok: true, hwics_added: 0, serial_ports: [], reason: "HWIC-2T not supported" };
+    if (!serialMod) {
+        return { ok: true, hwics_added: 0, serial_ports: [], reason: "HWIC-2T/NIM-2T not supported" };
     }
 
     var rootMod = null;
@@ -682,8 +784,8 @@ function attachRouterSerialModulesOnDevice(dev) {
     var methods = [];
     var targetSlots = [0, 1];
     var devSlotsByIdx = {
-        0: ["0/0", "0"],
-        1: ["0/1", "1"]
+        0: ["0/0", "0/1", "0"],
+        1: ["0/1", "0/2", "1"]
     };
 
     for (var ti = 0; ti < targetSlots.length; ti++) {
@@ -691,10 +793,10 @@ function attachRouterSerialModulesOnDevice(dev) {
         var slotOk = false;
         if (rootMod && typeof rootMod.addModuleAt === "function") {
             try {
-                if (rootMod.addModuleAt("HWIC-2T", slotIdx)) {
+                if (rootMod.addModuleAt(serialMod, slotIdx)) {
                     slotOk = true;
                     hwicsAdded += 1;
-                    methods.push("rootModule.addModuleAt(HWIC-2T," + slotIdx + ")");
+                    methods.push("rootModule.addModuleAt(" + serialMod + "," + slotIdx + ")");
                 }
             } catch (eAma) {}
         }
@@ -702,10 +804,10 @@ function attachRouterSerialModulesOnDevice(dev) {
             var cands = devSlotsByIdx[slotIdx] || [String(slotIdx)];
             for (var ci = 0; ci < cands.length; ci++) {
                 try {
-                    if (dev.addModule(cands[ci], 2, "HWIC-2T")) {
+                    if (dev.addModule(cands[ci], 2, serialMod)) {
                         slotOk = true;
                         hwicsAdded += 1;
-                        methods.push("device.addModule(" + cands[ci] + ",2,HWIC-2T)");
+                        methods.push("device.addModule(" + cands[ci] + ",2," + serialMod + ")");
                         break;
                     }
                 } catch (eAm) {}
@@ -740,6 +842,89 @@ function attachRouterSerialModulesOnDevice(dev) {
     }
 }
 
+function attachSwitch3650PowerOnDevice(dev) {
+    try {
+        if (!dev) {
+            return { ok: false, powered: false, error: "Null device handle" };
+        }
+        var psNames = ["AC-POWER-SUPPLY"];
+        try {
+            if (typeof dev.getSupportedModule === "function") {
+                var rawSupp = dev.getSupportedModule();
+                if (rawSupp && typeof rawSupp.length === "number") {
+                    for (var si = 0; si < rawSupp.length; si++) {
+                        var entry = String(rawSupp[si]);
+                        if (entry.toUpperCase().indexOf("POWER") !== -1) {
+                            var tok = entry.split(",")[0].split(":")[0].split(" ")[0].replace(/^\s+|\s+$/g, "");
+                            if (tok && psNames.indexOf(tok) === -1) {
+                                psNames.unshift(tok);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (eSupp3650) {}
+
+        var rootMod = null;
+        try { rootMod = dev.getRootModule ? dev.getRootModule() : null; } catch (eRm3650) {}
+        var slotCount = 0;
+        if (rootMod) {
+            try {
+                if (typeof rootMod.getSlotCount === "function") {
+                    slotCount = Number(rootMod.getSlotCount()) || 0;
+                }
+            } catch (eSc3650) {}
+        }
+
+        var added = false;
+        var methodUsed = "";
+        for (var pi = 0; pi < psNames.length && !added; pi++) {
+            var psModel = psNames[pi];
+            if (rootMod && typeof rootMod.addModuleAt === "function") {
+                var maxIdx = Math.max(slotCount, 4);
+                for (var idx = 0; idx <= maxIdx; idx++) {
+                    try {
+                        if (rootMod.addModuleAt(psModel, idx)) {
+                            added = true;
+                            methodUsed = "rootModule.addModuleAt(" + psModel + "," + idx + ")";
+                            break;
+                        }
+                    } catch (eAma3650) {}
+                }
+            }
+            if (!added && typeof dev.addModule === "function") {
+                var slotCands = ["0", "1", "0/0", "0/1", "1/0", ""];
+                for (var ci = 0; ci < slotCands.length; ci++) {
+                    try {
+                        if (dev.addModule(slotCands[ci], 11, psModel) || dev.addModule(slotCands[ci], 0, psModel)) {
+                            added = true;
+                            methodUsed = "device.addModule(" + slotCands[ci] + "," + psModel + ")";
+                            break;
+                        }
+                    } catch (eAm3650) {}
+                }
+            }
+        }
+
+        try {
+            if (typeof dev.setPower === "function") {
+                dev.setPower(true);
+            }
+        } catch (ePwr3650) {}
+
+        var afterPower = false;
+        try { afterPower = Boolean(dev.getPower && dev.getPower()); } catch (eAp3650) {}
+        return {
+            ok: true,
+            powered: afterPower,
+            module_added: added,
+            method_used: methodUsed
+        };
+    } catch (eOuter3650) {
+        return { ok: false, powered: false, error: String(eOuter3650) };
+    }
+}
+
 function addDeviceSync(params) {
     try {
         var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
@@ -754,8 +939,18 @@ function addDeviceSync(params) {
             8: ["PC-PT", "PC", ""],
             9: ["Server-PT", "Server", ""],
             10: ["Printer-PT", "Printer", ""],
-            17: ["Laptop-PT", "Laptop", ""],
-            12: ["7960", "IP Phone", ""]
+            12: ["7960", "IP Phone", ""],
+            16: ["3560-24PS", "Multilayer Switch", ""],
+            17: ["3650-24PS", ""],
+            18: ["Laptop-PT", "Laptop", ""],
+            19: ["TabletPC-PT", ""],
+            21: ["SMARTPHONE-PT", ""],
+            24: ["Home-VOIP-PT", ""],
+            25: ["Analog-Phone-PT", ""],
+            27: ["5505", "5506-X", ""],
+            29: ["HomeGateway-PT", "Home Gateway", ""],
+            41: ["WLC-2504", "WLC-3504", ""],
+            44: ["LAP-PT", "3702i", ""]
         };
         var extraCands = fallbacksByType[dTypeNum] || [];
         for (var ei = 0; ei < extraCands.length; ei++) {
@@ -798,6 +993,17 @@ function addDeviceSync(params) {
                 addOut.auto_powered = Boolean(pwrInfo.powered);
                 addOut.power_details = pwrInfo;
             } catch (ePwrAdd) {
+                addOut.auto_powered = false;
+            }
+        } else if (
+            params.auto_power !== false
+            && (dTypeNum === 17 || dModelStr.indexOf("3650") !== -1)
+        ) {
+            try {
+                var ps3650Info = attachSwitch3650PowerOnDevice(createdDev);
+                addOut.auto_powered = Boolean(ps3650Info.powered);
+                addOut.power_details = ps3650Info;
+            } catch (ePwr3650Add) {
                 addOut.auto_powered = false;
             }
         }
@@ -863,6 +1069,19 @@ function configureHostSync(params, aliasMap) {
                 }
             } catch (eGw2) {}
         }
+        var hDns = params.dns_server ? String(params.dns_server) : "";
+        if (hDns) {
+            try {
+                if (typeof hPort.setDnsServerIp === "function") {
+                    hPort.setDnsServerIp(hDns);
+                }
+            } catch (eDns1) {}
+            try {
+                if (typeof hDev.setDnsServerIp === "function") {
+                    hDev.setDnsServerIp(hDns);
+                }
+            } catch (eDns2) {}
+        }
         if (params.display_name) {
             try { hDev.setName(String(params.display_name)); } catch (eDn) {}
         }
@@ -874,7 +1093,8 @@ function configureHostSync(params, aliasMap) {
                 dhcp: useDhcp,
                 ip: hIp,
                 subnet_mask: hMask,
-                default_gateway: hGw
+                default_gateway: hGw,
+                dns_server: hDns
             },
             error: null
         };
@@ -892,6 +1112,14 @@ function createLinkSync(params, aliasMap) {
         var p1 = String(params.port1 || "");
         var p2 = String(params.port2 || "");
         var ctype = Number(params.conn_type || 8107);
+        if (params.swap_dce || String(params.cable_role || "").toLowerCase() === "dte") {
+            var tmpD = d1;
+            var tmpP = p1;
+            d1 = d2;
+            p1 = p2;
+            d2 = tmpD;
+            p2 = tmpP;
+        }
         var lwl = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
         var linked = Boolean(lwl.createLink(d1, p1, d2, p2, ctype));
         return {
@@ -901,6 +1129,127 @@ function createLinkSync(params, aliasMap) {
         };
     } catch (err) {
         return { ok: false, data: {}, error: "createLinkSync exception: " + String(err) };
+    }
+}
+
+function removeDeviceSync(params, aliasMap) {
+    try {
+        var rawName = String(params.device_name || "");
+        var dName = (aliasMap && aliasMap[rawName]) ? aliasMap[rawName] : rawName;
+        if (!dName) {
+            return { ok: false, data: {}, error: "Missing device_name" };
+        }
+        var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
+        var removed = Boolean(lw.removeDevice(dName));
+        return {
+            ok: removed,
+            data: { removed: removed, device_name: dName },
+            error: removed ? null : ("removeDevice returned false for " + dName)
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "removeDeviceSync exception: " + String(err) };
+    }
+}
+
+function moveDeviceSync(params, aliasMap) {
+    try {
+        var rawName = String(params.device_name || "");
+        var dName = (aliasMap && aliasMap[rawName]) ? aliasMap[rawName] : rawName;
+        var dev = ipc.network().getDevice(dName);
+        if (!dev) {
+            return { ok: false, data: {}, error: "Device not found: " + dName };
+        }
+        var tx = Math.round(Number(params.x || 0));
+        var ty = Math.round(Number(params.y || 0));
+        var moved = Boolean(dev.moveToLocation(tx, ty));
+        return {
+            ok: moved,
+            data: { moved: moved, device_name: dName, x: tx, y: ty },
+            error: moved ? null : "moveToLocation returned false"
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "moveDeviceSync exception: " + String(err) };
+    }
+}
+
+function deleteLinkSync(params, aliasMap) {
+    try {
+        var rawName = String(params.device_name || params.device1 || "");
+        var dName = (aliasMap && aliasMap[rawName]) ? aliasMap[rawName] : rawName;
+        var pName = String(params.port_name || params.port1 || "");
+        if (!dName || !pName) {
+            return { ok: false, data: {}, error: "Missing device_name or port_name" };
+        }
+        var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace();
+        var deleted = Boolean(lw.deleteLink(dName, pName));
+        return {
+            ok: deleted,
+            data: { deleted: deleted, device_name: dName, port_name: pName },
+            error: deleted ? null : "deleteLink returned false"
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "deleteLinkSync exception: " + String(err) };
+    }
+}
+
+function addModuleSync(params, aliasMap) {
+    try {
+        var rawName = String(params.device_name || "");
+        var dName = (aliasMap && aliasMap[rawName]) ? aliasMap[rawName] : rawName;
+        var modName = String(params.module_name || params.module || "");
+        var slotRaw = (params.slot !== undefined && params.slot !== null) ? params.slot : 0;
+        var slotStr = String(slotRaw);
+        var modType = (params.module_type !== undefined && params.module_type !== null)
+            ? Number(params.module_type)
+            : 0;
+        var powerCycle = params.power_cycle !== false;
+        var dev = ipc.network().getDevice(dName);
+        if (!dev) {
+            return { ok: false, data: {}, error: "Device not found: " + dName };
+        }
+        if (!modName) {
+            return { ok: false, data: {}, error: "Missing module_name" };
+        }
+        var rootMod = null;
+        try { rootMod = dev.getRootModule ? dev.getRootModule() : null; } catch (eRmMod) {}
+        if (powerCycle) {
+            try { if (typeof dev.setPower === "function") { dev.setPower(false); } } catch (eOffMod) {}
+        }
+        var added = false;
+        var methodUsed = "";
+        var slotNum = Number(slotRaw);
+        if (!isNaN(slotNum) && rootMod && typeof rootMod.addModuleAt === "function") {
+            try {
+                if (rootMod.addModuleAt(modName, slotNum)) {
+                    added = true;
+                    methodUsed = "rootModule.addModuleAt(" + modName + "," + slotNum + ")";
+                }
+            } catch (eAmaMod) {}
+        }
+        if (!added && typeof dev.addModule === "function") {
+            try {
+                if (dev.addModule(slotStr, modType, modName)) {
+                    added = true;
+                    methodUsed = "device.addModule(" + slotStr + "," + modType + "," + modName + ")";
+                }
+            } catch (eAmMod) {}
+        }
+        if (powerCycle) {
+            try { if (typeof dev.setPower === "function") { dev.setPower(true); } } catch (eOnMod) {}
+        }
+        return {
+            ok: added,
+            data: {
+                module_added: added,
+                device_name: dName,
+                slot: slotStr,
+                module_name: modName,
+                method_used: methodUsed
+            },
+            error: added ? null : ("Failed to insert module " + modName + " in slot " + slotStr)
+        };
+    } catch (err) {
+        return { ok: false, data: {}, error: "addModuleSync exception: " + String(err) };
     }
 }
 
@@ -941,6 +1290,26 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                 sendBridgeResult(requestId, linkRes.ok, linkRes.data, linkRes.error);
                 return;
             }
+            case "remove_device": {
+                var remRes = removeDeviceSync(params, null);
+                sendBridgeResult(requestId, remRes.ok, remRes.data, remRes.error);
+                return;
+            }
+            case "move_device": {
+                var movRes = moveDeviceSync(params, null);
+                sendBridgeResult(requestId, movRes.ok, movRes.data, movRes.error);
+                return;
+            }
+            case "delete_link": {
+                var delRes = deleteLinkSync(params, null);
+                sendBridgeResult(requestId, delRes.ok, delRes.data, delRes.error);
+                return;
+            }
+            case "add_module": {
+                var modRes = addModuleSync(params, null);
+                sendBridgeResult(requestId, modRes.ok, modRes.data, modRes.error);
+                return;
+            }
             case "batch_ops": {
                 var ops = params.ops || [];
                 var aliasMap = {};
@@ -959,6 +1328,14 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                         itemRes = createLinkSync(opParams, aliasMap);
                     } else if (opName === "configure_host") {
                         itemRes = configureHostSync(opParams, aliasMap);
+                    } else if (opName === "remove_device") {
+                        itemRes = removeDeviceSync(opParams, aliasMap);
+                    } else if (opName === "move_device") {
+                        itemRes = moveDeviceSync(opParams, aliasMap);
+                    } else if (opName === "delete_link") {
+                        itemRes = deleteLinkSync(opParams, aliasMap);
+                    } else if (opName === "add_module") {
+                        itemRes = addModuleSync(opParams, aliasMap);
                     } else if (opName === "attach_ip_phone_power") {
                         var pRaw = String(opParams.device_name || "");
                         var pTarget = aliasMap[pRaw] || pRaw;
@@ -1129,19 +1506,23 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     14: "cable_modem",
                     15: "remote_network",
                     16: "multilayer_switch",
-                    17: "laptop",
-                    18: "tablet",
-                    19: "pda",
-                    20: "wireless_end_device",
-                    21: "wired_end_device",
-                    22: "tv",
-                    23: "home_voip",
-                    24: "analog_phone",
-                    26: "asa",
-                    27: "ioe",
-                    28: "home_gateway",
-                    31: "access_point",
-                    39: "wlc"
+                    17: "multilayer_switch",
+                    18: "laptop",
+                    19: "tablet",
+                    20: "pda",
+                    21: "wireless_end_device",
+                    22: "wired_end_device",
+                    23: "tv",
+                    24: "home_voip",
+                    25: "analog_phone",
+                    26: "multiuser",
+                    27: "asa",
+                    28: "ioe",
+                    29: "home_gateway",
+                    30: "wireless_router",
+                    33: "access_point",
+                    41: "wlc",
+                    44: "lightweight_ap"
                 };
 
                 for (var i = 0; i < devCount; i++) {
@@ -1151,12 +1532,20 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     var dName = "";
                     var dModel = "";
                     var dType = -1;
+                    var devX = 0;
+                    var devY = 0;
+                    var devPowered = true;
+                    var devGateway = "";
                     try { dName = String(dev.getName() || ""); } catch (eDn) {}
                     try { dModel = String(dev.getModel() || ""); } catch (eDm) {}
                     try { dType = Number(dev.getType()); } catch (eDt) {}
+                    try { if (typeof dev.getXCoordinate === "function") { devX = Number(dev.getXCoordinate()) || 0; } } catch (eDx) {}
+                    try { if (typeof dev.getYCoordinate === "function") { devY = Number(dev.getYCoordinate()) || 0; } } catch (eDy) {}
+                    try { if (typeof dev.getPower === "function") { devPowered = Boolean(dev.getPower()); } } catch (eDp) {}
+                    try { if (typeof dev.getDefaultGateway === "function") { devGateway = String(dev.getDefaultGateway() || ""); } } catch (eDgw) {}
 
                     var hostname = "";
-                    var isIosCliDevice = (dType === 0 || dType === 1 || dType === 16 || dType === 26);
+                    var isIosCliDevice = (dType === 0 || dType === 1 || dType === 16 || dType === 17 || dType === 27);
                     if (isIosCliDevice) {
                         try {
                             if (typeof dev.getHostName === "function") {
@@ -1192,6 +1581,9 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                         var mac = "";
                         var ipAddr = "";
                         var subMask = "";
+                        var portGw = "";
+                        var portDns = "";
+                        var dhcpOn = false;
                         var hasLink = false;
                         var remPort = "";
                         var remDev = "";
@@ -1206,6 +1598,17 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                             }
                             if (typeof p.getSubnetMask === "function") {
                                 subMask = String(p.getSubnetMask() || "");
+                            }
+                            if (typeof p.getDefaultGateway === "function") {
+                                portGw = String(p.getDefaultGateway() || "");
+                            }
+                            if (typeof p.getDnsServerIp === "function") {
+                                portDns = String(p.getDnsServerIp() || "");
+                            }
+                            if (typeof p.isDhcpClientOn === "function") {
+                                dhcpOn = Boolean(p.isDhcpClientOn());
+                            } else if (typeof dev.getDhcpFlag === "function") {
+                                dhcpOn = Boolean(dev.getDhcpFlag());
                             }
                         } catch (eIp) {}
                         try {
@@ -1242,6 +1645,9 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                             name: pName,
                             ip_address: ipAddr,
                             subnet_mask: subMask,
+                            default_gateway: portGw || devGateway,
+                            dns_server: portDns,
+                            dhcp_enabled: dhcpOn,
                             port_up: isUp,
                             protocol_up: protoUp,
                             mac_address: mac,
@@ -1277,6 +1683,10 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                         type_code: dType,
                         type: typeNames[dType] || "other",
                         hostname: hostname || dName,
+                        x: devX,
+                        y: devY,
+                        powered: devPowered,
+                        default_gateway: devGateway,
                         port_count: ports.length,
                         ports: ports
                     });

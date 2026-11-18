@@ -50,6 +50,14 @@ class GuiBackend(ABC):
             platform="unknown",
         )
 
+    def is_available(self) -> bool:
+        """Return True when a live Packet Tracer GUI window is reachable."""
+        try:
+            det = self.detect_application()
+        except Exception:
+            return False
+        return bool(isinstance(det, dict) and det.get("running") and det.get("window") is not None)
+
     def launch_application(
         self,
         executable_path: str | None = None,
@@ -237,12 +245,64 @@ class ScriptBackend(ABC):
         ip: str | None = None,
         subnet_mask: str | None = None,
         default_gateway: str | None = None,
+        dns_server: str | None = None,
         display_name: str | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Configure DHCP or static IPv4/gateway on a PT host device (`PC-PT`, `Laptop-PT`)."""
+        """Configure DHCP or static IPv4/gateway/DNS on a PT host device (`PC-PT`, `Laptop-PT`)."""
         raise AdapterUnavailableError(
             f"{self.__class__.__name__} does not implement configure_host."
+        )
+
+    def remove_device(
+        self,
+        device_name: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Remove a device from the active Packet Tracer logical workspace."""
+        raise AdapterUnavailableError(
+            f"{self.__class__.__name__} does not implement remove_device."
+        )
+
+    def move_device(
+        self,
+        device_name: str,
+        x: float,
+        y: float,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Move a device to `(x, y)` on the active Packet Tracer logical workspace."""
+        raise AdapterUnavailableError(
+            f"{self.__class__.__name__} does not implement move_device."
+        )
+
+    def delete_link(
+        self,
+        device_name: str,
+        port_name: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Delete the link attached to `device_name:port_name` in Packet Tracer."""
+        raise AdapterUnavailableError(
+            f"{self.__class__.__name__} does not implement delete_link."
+        )
+
+    def add_module(
+        self,
+        device_name: str,
+        slot: str | int,
+        module_name: str,
+        *,
+        module_type: int | None = None,
+        power_cycle: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Insert a hardware module into a device slot in Packet Tracer."""
+        raise AdapterUnavailableError(
+            f"{self.__class__.__name__} does not implement add_module."
         )
 
     def batch_ops(

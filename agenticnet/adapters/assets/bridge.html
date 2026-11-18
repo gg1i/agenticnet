@@ -64,7 +64,10 @@
             }
             fetch(cfg.url + "/v1/commands/next?wait_ms=1500", {
                 method: "GET",
-                headers: { "X-NetForge-Token": cfg.token }
+                headers: {
+                    "X-AgenticNet-Token": cfg.token,
+                    "X-NetForge-Token": cfg.token
+                }
             })
             .then(function (resp) {
                 if (gen !== generation || !polling) { return; }
@@ -123,6 +126,7 @@
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
+                "X-AgenticNet-Token": cfg.token,
                 "X-NetForge-Token": cfg.token
             },
             body: JSON.stringify(resultObj)

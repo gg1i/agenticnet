@@ -264,6 +264,214 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
 
         return runtime.execute("topology_analyze", PermissionTier.READ_ONLY, params, _run)
 
+    def topology_merge(
+        devices: list[TopologyDeviceSpec] = Field(default_factory=list),
+        connections: list[TopologyLinkSpec] = Field(default_factory=list),
+        topology_payload: dict[str, Any] | None = None,
+        overwrite_interfaces: bool = True,
+        push_live: bool = False,
+    ) -> dict[str, Any]:
+        """Incrementally merge devices, interfaces, and links into the active topology."""
+        params = {
+            "device_count": len(devices),
+            "connection_count": len(connections),
+            "has_payload": topology_payload is not None,
+            "overwrite_interfaces": overwrite_interfaces,
+            "push_live": push_live,
+        }
+
+        def _run() -> OperationResult:
+            from agenticnet.core.models import ExecutionBackend
+            from agenticnet.topology.engine import TopologyEngine
+            from agenticnet.topology.models import TopologyModel
+
+            _, topo, _, _ = runtime.manager.require_active()
+            staged = TopologyEngine(
+                model=topo.model.model_copy(deep=True),
+                catalog=runtime.catalog,
+            )
+
+            merged_summary: dict[str, list[str]] = {
+                "devices_added": [],
+                "devices_updated": [],
+                "connections_added": [],
+            }
+            if topology_payload is not None:
+                incoming_model = TopologyModel.model_validate(topology_payload)
+                res_payload = staged.merge_topology(
+                    incoming_model, overwrite_interfaces=overwrite_interfaces
+                )
+                merged_summary["devices_added"].extend(res_payload["devices_added"])
+                merged_summary["devices_updated"].extend(res_payload["devices_updated"])
+                merged_summary["connections_added"].extend(res_payload["connections_added"])
+
+            if devices:
+                dev_engine = TopologyEngine(
+                    model=TopologyModel(target_mode=staged.model.target_mode),
+                    catalog=runtime.catalog,
+                )
+                for d_spec in devices:
+                    dev_engine.add_device(
+                        d_spec.name, d_spec.model, x=d_spec.x, y=d_spec.y, role=d_spec.role
+                    )
+                res_devs = staged.merge_topology(
+                    dev_engine.model, overwrite_interfaces=overwrite_interfaces
+                )
+                for name in res_devs["devices_added"]:
+                    if name not in merged_summary["devices_added"]:
+                        merged_summary["devices_added"].append(name)
+                for name in res_devs["devices_updated"]:
+                    if name not in merged_summary["devices_updated"]:
+                        merged_summary["devices_updated"].append(name)
+
+            existing_pairs = {
+                tuple(
+                    sorted(
+                        (
+                            (lnk.source_device, lnk.source_interface),
+                            (lnk.target_device, lnk.target_interface),
+                        )
+                    )
+                )
+                for lnk in staged.model.connections.values()
+            }
+            for link in connections:
+                src_dev = staged.get_device(link.source_device)
+                dst_dev = staged.get_device(link.target_device)
+                src_if = runtime.catalog.normalize_interface_name(
+                    src_dev.model, link.source_interface, allow_logical=False
+                )
+                dst_if = runtime.catalog.normalize_interface_name(
+                    dst_dev.model, link.target_interface, allow_logical=False
+                )
+                pair_key = tuple(sorted(((src_dev.name, src_if), (dst_dev.name, dst_if))))
+                if pair_key in existing_pairs:
+                    continue
+                edge = staged.connect(
+                    src_dev.name,
+                    src_if,
+                    dst_dev.name,
+                    dst_if,
+                    cable_type=link.cable_type,
+                    clock_rate=link.clock_rate,
+                )
+                existing_pairs.add(pair_key)
+                merged_summary["connections_added"].append(edge.connection_id)
+
+            if len(staged.model.devices) > runtime.settings.max_devices_per_project:
+                raise ValidationError(
+                    "Merged topology would exceed max_devices_per_project "
+                    f"({runtime.settings.max_devices_per_project})."
+                )
+            if len(staged.model.connections) > runtime.settings.max_links_per_project:
+                raise ValidationError(
+                    "Merged topology would exceed max_links_per_project "
+                    f"({runtime.settings.max_links_per_project})."
+                )
+
+            topo.model = staged.model
+            topo._rebuild_graph()
+
+            backend: ExecutionBackend = "offline_model"
+            lvl = StateLevel.PLANNED
+            evidence = [
+                f"Merged +{len(merged_summary['devices_added'])} device(s), "
+                f"~{len(merged_summary['devices_updated'])} updated, "
+                f"+{len(merged_summary['connections_added'])} link(s)."
+            ]
+            warnings: list[str] = []
+
+            if push_live:
+                for d_name in merged_summary["devices_added"]:
+                    node = topo.get_device(d_name)
+                    b_dev, _, ev_d, w_d = runtime.router.add_device(
+                        node.name,
+                        node.model,
+                        category=node.category,
+                        x=node.position.x,
+                        y=node.position.y,
+                    )
+                    if b_dev == "script_backend":
+                        backend = "script_backend"
+                        lvl = StateLevel.EXECUTED
+                    evidence.extend(ev_d)
+                    warnings.extend(w_d)
+                for conn_id in merged_summary["connections_added"]:
+                    lnk = topo.model.connections[conn_id]
+                    b_lnk, _, ev_l, w_l = runtime.router.create_link(
+                        lnk.source_device,
+                        lnk.source_interface,
+                        lnk.target_device,
+                        lnk.target_interface,
+                        cable_type=lnk.cable_type.value,
+                    )
+                    if b_lnk == "script_backend":
+                        backend = "script_backend"
+                        lvl = StateLevel.EXECUTED
+                    evidence.extend(ev_l)
+                    warnings.extend(w_l)
+
+            return OperationResult.ok(
+                "topology_merge",
+                (
+                    f"Merged topology: +{len(merged_summary['devices_added'])} device(s), "
+                    f"+{len(merged_summary['connections_added'])} connection(s)."
+                ),
+                data={
+                    **merged_summary,
+                    "total_devices": len(topo.model.devices),
+                    "total_connections": len(topo.model.connections),
+                },
+                state_level=lvl,
+                execution_backend=backend,
+                warnings=warnings,
+                evidence=evidence,
+            )
+
+        return runtime.execute("topology_merge", PermissionTier.PLANNING, params, _run)
+
+    def topology_diff(
+        other_topology: dict[str, Any] | None = None,
+        other_project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute structural device, interface, and link differences against another topology."""
+        params = {
+            "has_other_topology": other_topology is not None,
+            "other_project_id": other_project_id,
+        }
+
+        def _run() -> OperationResult:
+            from agenticnet.topology.models import TopologyModel
+
+            _, topo, _, _ = runtime.manager.require_active()
+            if other_topology is not None:
+                target_model = TopologyModel.model_validate(other_topology)
+            elif other_project_id is not None:
+                other_bundle = runtime.manager.store.load_bundle(other_project_id)
+                target_model = other_bundle.topology
+            else:
+                raise ValidationError(
+                    "Provide either other_topology (TopologyModel dict) or other_project_id."
+                )
+            diff = topo.diff_topology(target_model)
+            msg = (
+                "Topologies are structurally identical."
+                if diff["identical"]
+                else (
+                    f"Topology diff: +{len(diff['devices_added'])}/-{len(diff['devices_removed'])} "
+                    f"device(s), +{len(diff['links_added'])}/-{len(diff['links_removed'])} link(s)."
+                )
+            )
+            return OperationResult.ok(
+                "topology_diff",
+                msg,
+                data=diff,
+                state_level=StateLevel.PLANNED,
+                evidence=["Computed structural diff via TopologyEngine.diff_topology."],
+            )
+
+        return runtime.execute("topology_diff", PermissionTier.READ_ONLY, params, _run)
+
     specs = [
         (
             "topology_create",
@@ -271,6 +479,22 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             topology_create.__doc__ or "",
             topology_create,
             False,
+            False,
+        ),
+        (
+            "topology_merge",
+            PermissionTier.PLANNING,
+            topology_merge.__doc__ or "",
+            topology_merge,
+            False,
+            False,
+        ),
+        (
+            "topology_diff",
+            PermissionTier.READ_ONLY,
+            topology_diff.__doc__ or "",
+            topology_diff,
+            True,
             False,
         ),
         (

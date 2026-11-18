@@ -6,8 +6,9 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
+from agenticnet.adapters.router import transport_to_execution_backend
 from agenticnet.core.enums import PermissionTier, StateLevel
-from agenticnet.core.models import OperationResult
+from agenticnet.core.models import ExecutionBackend, OperationResult
 from agenticnet.diagnostics.models import DiagnosticCategory
 from agenticnet.mcp.registry import AgenticNetRuntime
 
@@ -15,12 +16,29 @@ from agenticnet.mcp.registry import AgenticNetRuntime
 def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
     """Register intelligent network diagnostics and self-repair tools."""
 
-    def network_diagnose() -> dict[str, Any]:
+    def network_diagnose(live: bool = False) -> dict[str, Any]:
         """Run a full diagnostic audit across addressing, interfaces, VLANs, and routing."""
 
         def _run() -> OperationResult:
             _, topo, ipam, _ = runtime.manager.require_active()
             report = runtime.diagnostics.run_diagnostics(topology=topo, ipam=ipam)
+            backend: ExecutionBackend = "offline_model"
+            if live:
+                live_report = runtime.diagnostics.run_live_diagnostics(topology=topo, ipam=ipam)
+                if live_report.state_level == StateLevel.VERIFIED:
+                    merged_findings = [*report.findings, *live_report.findings]
+                    merged_repairs = [*report.proposed_repairs, *live_report.proposed_repairs]
+                    report = report.model_copy(
+                        update={
+                            "state_level": StateLevel.VERIFIED,
+                            "findings": merged_findings,
+                            "proposed_repairs": merged_repairs,
+                            "clean": len(merged_findings) == 0,
+                        }
+                    )
+                    backend = transport_to_execution_backend(
+                        runtime.console.transport.transport_name
+                    )
             finding_count = len(report.findings)
             summary = (
                 "Diagnostic audit clean: no configuration errors detected."
@@ -32,6 +50,7 @@ def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) ->
                 summary,
                 data=report.model_dump(mode="json"),
                 state_level=report.state_level,
+                execution_backend=backend,
                 warnings=[f"{f.code}: {f.summary}" for f in report.findings],
                 evidence=[f"Evaluated {finding_count} diagnostic findings."],
             )
@@ -39,7 +58,7 @@ def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) ->
         return runtime.execute(
             "network_diagnose",
             PermissionTier.READ_ONLY,
-            {},
+            {"live": live},
             _run,
         )
 
@@ -57,11 +76,18 @@ def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) ->
                         "routes": runtime.simulation.inspect_routing_table(d),
                         "ospf": runtime.simulation.inspect_ospf_neighbors(d),
                     }
+            live_console = runtime.console.transport.is_available() and bool(routing_data)
+            backend: ExecutionBackend = (
+                transport_to_execution_backend(runtime.console.transport.transport_name)
+                if live_console
+                else "offline_model"
+            )
             return OperationResult.ok(
                 "routing_diagnose",
                 f"Diagnosed routing tables and adjacencies for {len(routing_data)} router(s).",
                 data=routing_data,
-                state_level=StateLevel.VERIFIED if routing_data else StateLevel.PLANNED,
+                state_level=StateLevel.VERIFIED if live_console else StateLevel.PLANNED,
+                execution_backend=backend,
                 evidence=[f"Queried routing status on {list(routing_data.keys())}."],
             )
 
@@ -120,25 +146,34 @@ def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) ->
             _run,
         )
 
-    def network_repair_propose() -> dict[str, Any]:
+    def network_repair_propose(live: bool = False) -> dict[str, Any]:
         """Generate safe, ranked self-repair proposals for all detected network findings."""
 
         def _run() -> OperationResult:
             _, topo, ipam, _ = runtime.manager.require_active()
             report = runtime.diagnostics.run_diagnostics(topology=topo, ipam=ipam)
-            proposals = report.proposed_repairs
+            proposals = list(report.proposed_repairs)
+            backend: ExecutionBackend = "offline_model"
+            if live:
+                live_report = runtime.diagnostics.run_live_diagnostics(topology=topo, ipam=ipam)
+                proposals.extend(live_report.proposed_repairs)
+                if live_report.state_level == StateLevel.VERIFIED:
+                    backend = transport_to_execution_backend(
+                        runtime.console.transport.transport_name
+                    )
             return OperationResult.ok(
                 "network_repair_propose",
                 f"Generated {len(proposals)} repair proposal(s) with concrete CLI commands.",
                 data={"proposals": [p.model_dump(mode="json") for p in proposals]},
                 state_level=StateLevel.PLANNED,
+                execution_backend=backend,
                 evidence=[f"{p.proposal_id}: {p.summary}" for p in proposals],
             )
 
         return runtime.execute(
             "network_repair_propose",
             PermissionTier.PLANNING,
-            {},
+            {"live": live},
             _run,
         )
 
@@ -153,11 +188,28 @@ def register_diagnostics_tools(server: MCPServer, runtime: AgenticNetRuntime) ->
                 topology=topo,
             )
             lvl = StateLevel(res.get("state_level", StateLevel.EXECUTED.value))
+            details = res.get("details")
+            used_live = bool(
+                runtime.console.transport.is_available()
+                and isinstance(details, list)
+                and details
+                and not all(
+                    isinstance(item, dict) and item.get("offline_simulated") for item in details
+                )
+            )
+            raw_backend = res.get("execution_backend")
+            if raw_backend in {"offline_model", "script_backend", "gui_backend", "hybrid"}:
+                backend: ExecutionBackend = raw_backend
+            elif used_live:
+                backend = transport_to_execution_backend(runtime.console.transport.transport_name)
+            else:
+                backend = "offline_model"
             return OperationResult.ok(
                 "network_repair_execute",
                 f"Executed repair proposal {proposal_id} (actions={res.get('actions_executed')}).",
                 data=res,
                 state_level=lvl,
+                execution_backend=backend,
                 evidence=[f"Executed repair proposal {proposal_id}."],
             )
 

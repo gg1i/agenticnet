@@ -19,6 +19,10 @@ class NullGuiBackend(GuiBackend):
     def __init__(self, settings: AgenticNetSettings) -> None:
         self.settings = settings
 
+    def is_available(self) -> bool:
+        """Return False on non-Windows platforms where live GUI automation is unsupported."""
+        return False
+
     def backend_status(self) -> BackendStatus:
         """Report unsupported desktop automation on non-Windows OS."""
         return BackendStatus(
