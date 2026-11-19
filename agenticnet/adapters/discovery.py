@@ -13,7 +13,7 @@ import time
 from collections.abc import Sequence
 from contextlib import suppress
 from ctypes import wintypes
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from agenticnet.core.exceptions import AdapterUnavailableError, ValidationError
@@ -311,6 +311,7 @@ _PT_BINARY_NAME_RE = re.compile(
     r"^(?:packettracer(?:\d+)?(?:\.exe)?|cisco packet tracer[^/\\]*\.app)$",
     re.IGNORECASE,
 )
+_WINDOWS_DRIVE_OR_UNC_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 _ALLOWED_LAB_SUFFIXES: frozenset[str] = frozenset({".pkt", ".pka", ".pksz"})
 
 
@@ -323,10 +324,12 @@ def validate_packet_tracer_binary_path(path: str | Path) -> Path:
             details={"executable_path": str(path)},
         )
     candidate = Path(raw).expanduser()
-    if not _PT_BINARY_NAME_RE.match(candidate.name):
+    # Extract the Windows basename when validating an explicit Windows path on POSIX hosts.
+    basename = PureWindowsPath(raw).name if _WINDOWS_DRIVE_OR_UNC_RE.match(raw) else candidate.name
+    if not _PT_BINARY_NAME_RE.match(basename):
         raise ValidationError(
             f"Refusing non-Packet-Tracer executable path {str(path)!r}.",
-            details={"executable_path": str(path), "basename": candidate.name},
+            details={"executable_path": str(path), "basename": basename},
             remediation="Provide the path to PacketTracer.exe (Windows) or packettracer (POSIX).",
         )
     return candidate

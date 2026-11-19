@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
@@ -192,7 +192,8 @@ def test_permission_profile_sync_and_fail_closed_env(
 @pytest.mark.unit
 def test_discovery_binary_and_lab_path_validation(tmp_path: Path) -> None:
     win_pt = r"C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe"
-    assert validate_packet_tracer_binary_path(win_pt).name == "PacketTracer.exe"
+    validated_win = validate_packet_tracer_binary_path(win_pt)
+    assert PureWindowsPath(str(validated_win)).name == "PacketTracer.exe"
     assert validate_packet_tracer_binary_path("/opt/pt/bin/PacketTracer7").name == "PacketTracer7"
 
     for bad_bin in ("cmd.exe", r"C:\Windows\System32\cmd.exe", "/bin/sh", "bad\x00PacketTracer"):
@@ -230,6 +231,31 @@ def test_discovery_binary_and_lab_path_validation(tmp_path: Path) -> None:
     assert out2["success"] is False
     assert out2["errors"][0]["error_code"] == "VALIDATION_ERROR"
     assert fake_gui.launched is False
+
+
+@pytest.mark.unit
+def test_validate_packet_tracer_binary_path_posix_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakePosixPath(PurePosixPath):
+        def expanduser(self) -> _FakePosixPath:
+            return self
+
+    monkeypatch.setattr("agenticnet.adapters.discovery.Path", _FakePosixPath)
+
+    win_pt = r"C:\Program Files\Cisco Packet Tracer 8.2.2\bin\PacketTracer.exe"
+    validated = validate_packet_tracer_binary_path(win_pt)
+    assert isinstance(validated, _FakePosixPath)
+    assert PureWindowsPath(str(validated)).name == "PacketTracer.exe"
+    assert validate_packet_tracer_binary_path("/opt/pt/bin/PacketTracer7").name == "PacketTracer7"
+
+    for bad_bin in (
+        r"C:\Windows\System32\cmd.exe",
+        r"C:\Program Files\PacketTracer.exe\cmd.exe",
+        "/bin/sh",
+    ):
+        with pytest.raises(ValidationError):
+            validate_packet_tracer_binary_path(bad_bin)
 
 
 @pytest.mark.unit
