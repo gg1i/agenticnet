@@ -75,26 +75,65 @@ def check_disabled_interfaces_with_ip(
     return results
 
 
+def _first_usable_ipv4(net: ipaddress.IPv4Network) -> ipaddress.IPv4Address | None:
+    """Return the first usable host address in an IPv4 network in O(1) time and memory."""
+    if net.prefixlen >= 31:
+        return net.network_address
+    return net.network_address + 1 if net.num_addresses > 2 else None
+
+
+def _last_usable_ipv4(net: ipaddress.IPv4Network) -> ipaddress.IPv4Address | None:
+    """Return the last usable host address in an IPv4 network in O(1) time and memory."""
+    if net.prefixlen >= 31:
+        return net.broadcast_address
+    return net.broadcast_address - 1 if net.num_addresses > 2 else None
+
+
+def _pick_distinct_ipv4(
+    net: ipaddress.IPv4Network,
+    existing_ip: ipaddress.IPv4Address | None,
+    *,
+    prefer_last: bool,
+) -> ipaddress.IPv4Address | None:
+    """Select an O(1) usable host IP in `net` that avoids colliding with `existing_ip`."""
+    first_ip = _first_usable_ipv4(net)
+    last_ip = _last_usable_ipv4(net)
+    candidates = (last_ip, first_ip) if prefer_last else (first_ip, last_ip)
+    for candidate in candidates:
+        if candidate is not None and candidate != existing_ip:
+            return candidate
+    return candidates[0] or candidates[1]
+
+
 def _suggest_gateway_for_host(
     ip_addr: str,
     subnet_mask: str | None,
     ipam: IPAMEngine | None,
 ) -> str:
     """Resolve the best default gateway suggestion from IPAM pools or host subnet."""
-    if ipam is not None:
+    try:
+        host_ip: ipaddress.IPv4Address | None = ipaddress.IPv4Address(ip_addr)
+    except ValueError:
+        host_ip = None
+
+    if ipam is not None and host_ip is not None:
         for pool in ipam.state.pools.values():
             try:
                 net = ipaddress.IPv4Network(pool.cidr, strict=False)
-                if ipaddress.IPv4Address(ip_addr) in net:
-                    return pool.default_gateway or str(list(net.hosts())[0])
+                if host_ip in net:
+                    if pool.default_gateway:
+                        return pool.default_gateway
+                    candidate = _pick_distinct_ipv4(net, host_ip, prefer_last=False)
+                    if candidate is not None:
+                        return str(candidate)
             except Exception:
                 continue
     if subnet_mask:
         try:
             net = ipaddress.IPv4Network(f"{ip_addr}/{subnet_mask}", strict=False)
-            hosts = list(net.hosts())
-            if hosts:
-                return str(hosts[0])
+            candidate = _pick_distinct_ipv4(net, host_ip, prefer_last=False)
+            if candidate is not None:
+                return str(candidate)
         except Exception:
             pass
     return "192.168.1.1"
@@ -277,6 +316,10 @@ def check_link_subnet_mismatch(
                             f"Align {conn.device_b} interface to {net_a} or re-address link."
                         ),
                     )
+                    ip_a_obj = ipaddress.IPv4Address(ip_a)
+                    suggested_peer_ip = (
+                        _pick_distinct_ipv4(net_a, ip_a_obj, prefer_last=True) or ip_a_obj
+                    )
                     repair = RepairProposal(
                         finding_id=finding.finding_id,
                         target_device=conn.device_b,
@@ -287,7 +330,7 @@ def check_link_subnet_mismatch(
                                 target_interface=conn.interface_b,
                                 command_sequence=[
                                     f"interface {conn.interface_b}",
-                                    f"ip address {list(net_a.hosts())[-1]} {mask_a}",
+                                    f"ip address {suggested_peer_ip} {mask_a}",
                                     "exit",
                                 ],
                                 description=(

@@ -284,3 +284,68 @@ def test_live_root_cause_diagnostics_and_state_level_honesty() -> None:
     trunk_prop = next(p for p in live_rep.proposed_repairs if "native VLAN" in p.summary)
     engine.execute_repair(trunk_prop.proposal_id, topology=topo)
     assert topo.model.devices["SW-ACC"].interfaces["GigabitEthernet0/1"].native_vlan == 99
+
+
+@pytest.mark.unit
+def test_large_subnet_and_collision_safe_repair_suggestions() -> None:
+    import time
+
+    topo = TopologyEngine()
+    topo.add_device("R1", "2911")
+    topo.add_device("R2", "2911")
+    topo.add_device("R3", "2911")
+    topo.add_device("R4", "2911")
+    topo.add_device("PC1", "PC-PT")
+    topo.add_device("PC2", "PC-PT")
+
+    # 1. /8 subnet on link and host must evaluate in O(1) time without enumerating 16M+ hosts
+    topo.connect("R1", "GigabitEthernet0/0", "R2", "GigabitEthernet0/0")
+    topo.model.devices["R1"].interfaces["GigabitEthernet0/0"].ipv4_address = "10.0.0.1"
+    topo.model.devices["R1"].interfaces["GigabitEthernet0/0"].subnet_mask = "255.0.0.0"
+    topo.model.devices["R2"].interfaces["GigabitEthernet0/0"].ipv4_address = "192.168.10.2"
+    topo.model.devices["R2"].interfaces["GigabitEthernet0/0"].subnet_mask = "255.255.255.0"
+
+    # 2. /30 link where device_a already uses the last usable host (.2) must suggest .1
+    topo.connect("R3", "GigabitEthernet0/0", "R4", "GigabitEthernet0/0")
+    topo.model.devices["R3"].interfaces["GigabitEthernet0/0"].ipv4_address = "172.16.0.2"
+    topo.model.devices["R3"].interfaces["GigabitEthernet0/0"].subnet_mask = "255.255.255.252"
+    topo.model.devices["R4"].interfaces["GigabitEthernet0/0"].ipv4_address = "192.168.20.2"
+    topo.model.devices["R4"].interfaces["GigabitEthernet0/0"].subnet_mask = "255.255.255.0"
+
+    # 3. Host on /8 missing gateway and host holding .1 with no IPAM default_gateway
+    pc1_if = topo.model.devices["PC1"].interfaces["FastEthernet0"]
+    pc1_if.ipv4_address = "10.0.0.50"
+    pc1_if.subnet_mask = "255.0.0.0"
+    pc1_if.default_gateway = None
+
+    pc2_if = topo.model.devices["PC2"].interfaces["FastEthernet0"]
+    pc2_if.ipv4_address = "192.168.50.1"
+    pc2_if.subnet_mask = "255.255.255.0"
+    pc2_if.default_gateway = None
+
+    ipam = IPAMEngine()
+    ipam.register_pool("CORP_CLASS_A", "10.0.0.0/8")
+
+    started = time.perf_counter()
+    report = DiagnosticsEngine().run_diagnostics(topology=topo, ipam=ipam)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0
+
+    r2_repair = next(
+        p for p in report.proposed_repairs if p.target_device == "R2" and "Re-address" in p.summary
+    )
+    assert "ip address 10.255.255.254 255.0.0.0" in r2_repair.actions[0].command_sequence
+
+    r4_repair = next(
+        p for p in report.proposed_repairs if p.target_device == "R4" and "Re-address" in p.summary
+    )
+    assert "ip address 172.16.0.1 255.255.255.252" in r4_repair.actions[0].command_sequence
+
+    pc1_repair = next(p for p in report.proposed_repairs if p.target_device == "PC1")
+    assert pc1_repair.actions[0].command_sequence == ["ipconfig 10.0.0.50 255.0.0.0 10.0.0.1"]
+
+    pc2_repair = next(p for p in report.proposed_repairs if p.target_device == "PC2")
+    assert pc2_repair.actions[0].command_sequence == [
+        "ipconfig 192.168.50.1 255.255.255.0 192.168.50.254"
+    ]
+
