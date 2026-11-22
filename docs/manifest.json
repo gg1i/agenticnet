@@ -1,6 +1,6 @@
 {
   "name": "agenticnet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "schema_version": "1.0.0",
   "disclaimer": "AgenticNet is an independent open-source project and is not affiliated with or endorsed by Cisco Systems, Inc.",
   "transports": {

@@ -1,0 +1,62 @@
+name: Release AgenticNet
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install build, lint, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev] build twine
+
+      - name: Lint with Ruff
+        run: ruff check agenticnet netforge tests scripts
+
+      - name: Run offline unit & MCP protocol tests
+        run: pytest -m "not packet_tracer"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m build
+          twine check dist/*
+
+      - name: Upload distribution assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
+  publish-pypi:
+    needs: build-and-release
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Publish to PyPI via Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

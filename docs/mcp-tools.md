@@ -1,6 +1,6 @@
 # AgenticNet Tool & Capability Ecosystem
 
-AgenticNet (`v0.1.0`, schema `1.0.0`) exposes **94 specialized MCP tools** (`26` enabled in default `solve_lab` profile; all `94` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
+AgenticNet (`v0.1.1`, schema `1.0.0`) exposes **94 specialized MCP tools** (`26` enabled in default `solve_lab` profile; all `94` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
 
 <!-- Generated counts and tables below are synced by scripts/generate_manifest.py -->
 

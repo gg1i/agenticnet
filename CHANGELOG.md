@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-22
+
 ### Changed
 - **Project Identity Renamed to AgenticNet**: Renamed the package, CLI, MCP server (`agenticnet` / `agenticnet-mcp`), `AGENTICNET_*` environment variables, `agenticnet://` resource URIs, `agenticnet.sqlite`, and copy-on-write suffix `*_agenticnet.pkt` under the **AgenticNet** brand (*Agentic Networking Platform — "Networks. Understood. Engineered. Automated."*).
 - **Backward-Compatibility Preserved**: Retained legacy `netforge` / `netforge-mcp` CLI entry points, `netforge.*` import shims (`NetForgeSettings`, `NetForgeError`, `NetForgeRuntime`), `NETFORGE_*` environment variable fallbacks, `X-NetForge-Token` header acceptance, and `%LOCALAPPDATA%/netforge/bridge_session.json` mirroring for the compiled `netforge_bridge.pts` (`com.netforge.bridge`) Packet Tracer Script Module.
@@ -25,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HTTP Bridge Overhead & Context Bloat**: Added `Access-Control-Max-Age: 86400` in `script_bridge.py` to eliminate redundant CORS `OPTIONS` preflights, added `_split_batch_output()` fallback in `console/engine.py` to stop N× transcript duplication, and switched `console_execute` parallel dispatch to call `ensure_live_script()`.
 - **Cable Type Alias Crashes**: Added `parse_cable_type()` and `PT_CONNECT_TYPES` aliases (`copper_straight`, `copper_cross`, `straight`, `cross`, etc.) so common cable names normalize cleanly instead of failing with `INTERNAL_ERROR`.
 - **IPAM Default Gateway Suggestion**: Fixed `check_missing_default_gateways` iterating over `ipam.state.pools` dict keys instead of `.values()`, restoring accurate pool gateway lookups.
+- **Diagnostics O(1) Host Selection & IP Collision Avoidance**: Replaced `list(net.hosts())` materialization in `agenticnet/diagnostics/rules.py` with O(1) IPv4 boundary helpers and avoided proposing duplicate IPs on `/30` links or `.1` hosts.
+- **Short Interface Section Filtering (`parse_running_config_sections`)**: Fixed `section="Gi0/0.20"` queries (without the `"interface "` prefix) to canonicalize and match `interface GigabitEthernet0/0.20` sections.
+- **Cisco IOS `ip address` Validation**: Updated `validate_raw_commands` to flag incomplete `ip address <ip>` commands missing a subnet mask and CIDR slash syntax (`ip address 10.0.0.1/24`) while preserving `dhcp`, `negotiated`, and `pool` forms.
 
 ## [0.1.0] - 2026-11-16
 
