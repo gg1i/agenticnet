@@ -524,21 +524,23 @@ def parse_running_config_sections(
 
     if section is not None:
         target = section.strip().lower()
-        target_canon = canonicalize_interface_name(target)
+        target_iface_canon = (
+            canonicalize_interface_name(target[10:])
+            if target.startswith("interface ")
+            else canonicalize_interface_name(target)
+        )
         matched: list[ParsedConfigSection] = []
         for sec in sections:
             hdr_low = sec.header.lower()
-            hdr_canon = hdr_low
-            if hdr_low.startswith("interface "):
-                hdr_canon = f"interface {canonicalize_interface_name(hdr_low[10:])}"
+            hdr_iface_canon = (
+                canonicalize_interface_name(hdr_low[10:])
+                if hdr_low.startswith("interface ")
+                else None
+            )
             if (
                 hdr_low == target
                 or hdr_low.startswith(target)
-                or hdr_canon == target_canon
-                or (
-                    target.startswith("interface ")
-                    and hdr_canon == f"interface {canonicalize_interface_name(target[10:])}"
-                )
+                or (hdr_iface_canon is not None and hdr_iface_canon == target_iface_canon)
             ):
                 matched.append(sec)
         return matched

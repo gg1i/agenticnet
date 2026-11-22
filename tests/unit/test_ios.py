@@ -281,9 +281,19 @@ def test_validate_raw_commands_extended_checks() -> None:
             "ip address dhcp",
             "interface Gi0/1",
             "ip address 10.0.0.1 255.0.255.0",
+            "interface Gi0/2",
+            "ip address 10.0.0.1",
+            "ip address 10.0.0.1/24",
+            "ip address",
+            "ip address pool MYPOOL",
         ],
     )
-    assert [d.code for d in ip_diags] == ["INVALID_IP_OR_MASK"]
+    assert [d.code for d in ip_diags] == [
+        "INVALID_IP_OR_MASK",
+        "INVALID_IP_OR_MASK",
+        "INVALID_IP_OR_MASK",
+        "INVALID_IP_OR_MASK",
+    ]
 
 
 @pytest.mark.unit

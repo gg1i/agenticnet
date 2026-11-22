@@ -200,6 +200,9 @@ def test_parsers_handle_pt_ios_quirks() -> None:
     gi_sec = parse_running_config_sections(cfg_raw, section="interface Gi0/0.20")
     assert len(gi_sec) == 1
     assert "encapsulation dot1Q 20" in gi_sec[0].text
+    short_sec = parse_running_config_sections(cfg_raw, section="Gi0/0.20")
+    assert len(short_sec) == 1
+    assert short_sec[0].header == "interface GigabitEthernet0/0.20"
 
     tel_ok = parse_show_telephony_service(
         "CONFIG (Version=8.6)\n"

@@ -355,10 +355,44 @@ def validate_raw_commands(profile: DeviceProfile, commands: list[str]) -> list[C
                 )
             )
 
-        if lower.startswith("ip address "):
+        if lower == "ip address" or lower.startswith("ip address "):
             parts = cmd.split()
-            if len(parts) >= 4 and parts[2].lower() not in {"dhcp", "negotiated"}:
+            arg1 = parts[2].lower() if len(parts) >= 3 else ""
+            if len(parts) < 3:
+                diagnostics.append(
+                    CLIDiagnostic(
+                        line_number=idx,
+                        command=cmd,
+                        severity="error",
+                        code="INVALID_IP_OR_MASK",
+                        message="Incomplete 'ip address' command: missing IPv4 address and mask.",
+                    )
+                )
+            elif arg1 in {"dhcp", "negotiated"} or (arg1 == "pool" and len(parts) >= 4):
+                pass
+            elif len(parts) == 3:
+                err_msg = (
+                    "Cisco IOS 'ip address' requires a dotted-decimal subnet mask "
+                    "(CIDR slash notation is not accepted)."
+                    if "/" in parts[2]
+                    else f"Missing subnet mask for IPv4 address {parts[2]!r}."
+                )
+                diagnostics.append(
+                    CLIDiagnostic(
+                        line_number=idx,
+                        command=cmd,
+                        severity="error",
+                        code="INVALID_IP_OR_MASK",
+                        message=err_msg,
+                    )
+                )
+            else:
                 try:
+                    if "/" in parts[2]:
+                        raise IOSConfigError(
+                            "Cisco IOS 'ip address' requires a dotted-decimal subnet mask "
+                            "(CIDR slash notation is not accepted)."
+                        )
                     parse_ipv4_and_mask(parts[2], parts[3])
                 except IOSConfigError as exc:
                     diagnostics.append(
