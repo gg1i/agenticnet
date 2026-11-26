@@ -69,7 +69,7 @@ def test_mcp_stdio_subprocess_handshake(tmp_path: Path) -> None:
             assert client.server_info.name == "agenticnet"
             tools_res = await client.list_tools()
             tool_names = {t.name for t in tools_res.tools}
-            assert len(tool_names) == 26
+            assert len(tool_names) == 27
             assert {
                 "lab_start",
                 "lab_open",

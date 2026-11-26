@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import ipaddress
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from typing import Any
 
 from agenticnet.adapters.router import BackendRouter
 from agenticnet.adapters.script_bridge import HttpScriptBridgeBackend
+from agenticnet.console.engine import _split_batch_output
 from agenticnet.core.enums import StateLevel
 from agenticnet.core.exceptions import AgenticNetError
 from agenticnet.core.models import ExecutionBackend
@@ -568,10 +570,104 @@ def _build_task_coverage(
     }
 
 
+_TELEPHONY_FALLBACK_COMMAND = (
+    "show telephony-service -> fallback: show running-config (telephony-service section)"
+)
+_DETERMINISTIC_BRIDGE_ERR_TOKENS: tuple[str, ...] = (
+    "device not found",
+    "has no terminalline",
+    "disallowed script opcode",
+    "unsupported opcode",
+    "live packet tracer scriptbackend is not connected",
+)
+_UNSUPPORTED_CLI_ERR_TOKENS: tuple[str, ...] = (
+    "% invalid",
+    "% unrecognized",
+    "% unknown",
+    "% incomplete",
+    "% ambiguous",
+)
+_SLOW_CONVERGE_TYPES = (
+    EphoneRegisteredRequirement,
+    StpRootRequirement,
+    DhcpBindingRequirement,
+    HostIpconfigRequirement,
+)
+_PC_DEVICE_TYPES: frozenset[str] = frozenset({"pc", "laptop", "server"})
+_PC_MODEL_PREFIXES: tuple[str, ...] = ("pc", "laptop", "server")
+
+
+def _is_deterministic_bridge_error(message: str) -> bool:
+    low = message.lower()
+    return any(tok in low for tok in _DETERMINISTIC_BRIDGE_ERR_TOKENS)
+
+
+def _is_unsupported_cli_error(message: str | None) -> bool:
+    if not message:
+        return False
+    low = message.lower()
+    return any(tok in low for tok in _UNSUPPORTED_CLI_ERR_TOKENS)
+
+
+def _is_convergeable_failure(req: LabRequirement, outcome: _CliReadOutcome) -> bool:
+    """Return True only when waiting/re-polling in Packet Tracer can realistically resolve it."""
+    if outcome.error is not None:
+        if _is_deterministic_bridge_error(outcome.error):
+            return False
+        err_low = outcome.error.lower()
+        if _is_unsupported_cli_error(outcome.error) or "non-zero ios status" in err_low:
+            return False
+        return not outcome.timed_out
+    # Static running-config text will not change while verify_lab sleeps.
+    return not isinstance(req, ConfigContainsRequirement)
+
+
+def _resolve_device_snapshot_info(
+    router: BackendRouter, device_name: str, pt_dev_name: str
+) -> tuple[str | None, str | None]:
+    """Return `(model_lower, type_lower)` from router snapshots if known."""
+    snaps = (getattr(router, "latest_snapshot", None), getattr(router, "initial_snapshot", None))
+    for snap in snaps:
+        if not isinstance(snap, dict):
+            continue
+        for dev in snap.get("devices", []):
+            if not isinstance(dev, dict):
+                continue
+            d_name = str(dev.get("name") or "")
+            d_host = str(dev.get("hostname") or "")
+            if d_name in {pt_dev_name, device_name} or d_host in {pt_dev_name, device_name}:
+                model = str(dev.get("model") or "").strip().lower() or None
+                dtype = str(dev.get("type") or "").strip().lower() or None
+                return model, dtype
+    return None, None
+
+
+def _is_pt_desktop_host(router: BackendRouter, device_name: str, pt_dev_name: str) -> bool:
+    model, dtype = _resolve_device_snapshot_info(router, device_name, pt_dev_name)
+    if dtype in _PC_DEVICE_TYPES:
+        return True
+    return bool(model and model.startswith(_PC_MODEL_PREFIXES))
+
+
+def _get_router_unsupported_cache(router: BackendRouter) -> set[tuple[str, str, str]]:
+    """Return session-scoped `(pt_dev_name, model, cmd)` unsupported command cache on `router`."""
+    sig = (
+        getattr(router, "active_original_path", None),
+        getattr(router, "active_working_path", None),
+    )
+    prev_sig = getattr(router, "_verifier_unsupported_sig", None)
+    cache = getattr(router, "_verifier_unsupported_cli", None)
+    if not isinstance(cache, set) or prev_sig != sig:
+        cache = set()
+        router._verifier_unsupported_cli = cache  # type: ignore[attr-defined]
+        router._verifier_unsupported_sig = sig  # type: ignore[attr-defined]
+    return cache
+
+
 class PacedDeviceCliQueue:
     """Serializes and paces CLI requests per device with bounded retries."""
 
-    def __init__(self, pacing_seconds: float = 0.25, max_retries: int = 2) -> None:
+    def __init__(self, pacing_seconds: float = 0.25, max_retries: int = 1) -> None:
         self.pacing_seconds = max(0.0, float(pacing_seconds))
         self.max_retries = max(0, int(max_retries))
         self._last_call: dict[str, float] = {}
@@ -596,17 +692,75 @@ class LabVerifier:
         router: BackendRouter,
         *,
         cli_pacing_seconds: float | None = None,
-        max_cli_retries: int = 2,
+        max_cli_retries: int = 1,
     ) -> None:
         self.router = router
-        effective_pacing = (
-            (0.02 if isinstance(router.script_backend, HttpScriptBridgeBackend) else 0.0)
-            if cli_pacing_seconds is None
-            else float(cli_pacing_seconds)
-        )
+        effective_pacing = 0.0 if cli_pacing_seconds is None else float(cli_pacing_seconds)
         self.cli_queue = PacedDeviceCliQueue(
             pacing_seconds=effective_pacing,
             max_retries=max_cli_retries,
+        )
+        self._unsupported_commands: set[tuple[str, str]] = set()
+
+    def _is_command_unsupported(self, pt_dev_name: str, command: str) -> bool:
+        cmd_norm = command.strip().lower()
+        if (pt_dev_name, cmd_norm) in self._unsupported_commands:
+            return True
+        router_check = getattr(self.router, "is_cli_command_unsupported", None)
+        if callable(router_check) and router_check(pt_dev_name, cmd_norm):
+            return True
+        model, _ = _resolve_device_snapshot_info(self.router, pt_dev_name, pt_dev_name)
+        cache = _get_router_unsupported_cache(self.router)
+        return (pt_dev_name, model or "", cmd_norm) in cache
+
+    def _mark_command_unsupported(self, pt_dev_name: str, command: str) -> None:
+        cmd_norm = command.strip().lower()
+        self._unsupported_commands.add((pt_dev_name, cmd_norm))
+        router_mark = getattr(self.router, "mark_cli_command_unsupported", None)
+        if callable(router_mark):
+            router_mark(pt_dev_name, cmd_norm)
+        model, _ = _resolve_device_snapshot_info(self.router, pt_dev_name, pt_dev_name)
+        cache = _get_router_unsupported_cache(self.router)
+        cache.add((pt_dev_name, model or "", cmd_norm))
+
+    def _build_outcome_from_output(
+        self,
+        *,
+        command: str,
+        raw_out: str,
+        prompt: str,
+        cmd_failed: bool,
+        pt_name: str,
+    ) -> tuple[_CliReadOutcome, bool]:
+        """Convert raw CLI output + status into `_CliReadOutcome` and `needs_mode_norm`."""
+        redacted = redact_cli_text(raw_out)
+        err_msg = detect_cli_read_error(raw_out)
+        # Distinguish clean prompt return with empty table (e.g. 0 DHCP bindings/ephones)
+        # from genuinely empty output: preserve raw redacted prompt output as evidence.
+        if (
+            err_msg == "Empty CLI output received from device."
+            and prompt
+            and not cmd_failed
+            and raw_out.strip()
+        ):
+            err_msg = None
+
+        if cmd_failed and err_msg is None:
+            err_msg = f"Command '{command}' returned non-zero IOS status on '{pt_name}'."
+
+        needs_norm = bool(
+            (err_msg is not None or cmd_failed)
+            and not prompt.lower().startswith("c:")
+            and (prompt.endswith(">") or ("(" in prompt and prompt.endswith("#")))
+        )
+        return (
+            _CliReadOutcome(
+                command=command,
+                raw_evidence=redacted,
+                error=err_msg,
+                timed_out=False,
+            ),
+            needs_norm,
         )
 
     def _read_cli(
@@ -626,9 +780,11 @@ class LabVerifier:
 
         pt_name = self.router.resolve_pt_device_name(device_name)
         retries = self.cli_queue.max_retries if max_retries is None else max_retries
-        retry_sleep = (
-            0.15 if isinstance(self.router.script_backend, HttpScriptBridgeBackend) else 0.0
-        )
+        is_http = isinstance(self.router.script_backend, HttpScriptBridgeBackend)
+        retry_sleep = 0.05 if is_http else 0.0
+        cmd_low = command.strip().lower()
+        min_timeout = 12.0 if cmd_low.startswith(("ping ", "traceroute ", "tracert ")) else 8.0
+        effective_timeout = max(float(timeout_seconds), min_timeout)
         attempts = 0
         last_outcome: _CliReadOutcome | None = None
         mode_normalized = False
@@ -640,14 +796,17 @@ class LabVerifier:
                 res = self.router.script_backend.execute_cli(
                     pt_name,
                     [command],
-                    timeout_seconds=max(float(timeout_seconds), 25.0),
+                    timeout_seconds=effective_timeout,
                 )
             except AgenticNetError as exc:
+                err_text = f"CLI execution error on '{pt_name}': {exc.message}"
                 last_outcome = _CliReadOutcome(
                     command=command,
                     raw_evidence=redact_cli_text(str(exc.message)),
-                    error=f"CLI execution error on '{pt_name}': {exc.message}",
+                    error=err_text,
                 )
+                if _is_deterministic_bridge_error(str(exc.message)):
+                    return last_outcome
                 if attempts <= retries:
                     if retry_sleep > 0:
                         time.sleep(retry_sleep)
@@ -677,11 +836,12 @@ class LabVerifier:
                     error=f"Timed out executing '{command}' on '{pt_name}'.",
                     timed_out=True,
                 )
-                if attempts <= retries:
-                    if retry_sleep > 0:
-                        time.sleep(retry_sleep)
-                    continue
-                return last_outcome
+                # Do not burn repeated full-timeout waits on an already-long read timeout.
+                if effective_timeout >= 15.0 or attempts > retries:
+                    return last_outcome
+                if retry_sleep > 0:
+                    time.sleep(retry_sleep)
+                continue
 
             statuses = res.get("command_statuses", [])
             cmd_failed = False
@@ -689,34 +849,23 @@ class LabVerifier:
                 for entry in statuses:
                     if (
                         isinstance(entry, dict)
-                        and entry.get("command", "").strip().lower() == command.strip().lower()
+                        and entry.get("command", "").strip().lower() == cmd_low
                         and int(entry.get("status", 0)) != 0
                     ):
                         cmd_failed = True
                         break
 
-            err_msg = detect_cli_read_error(raw_out)
-            # Distinguish clean prompt return with empty table (e.g. 0 DHCP bindings/ephones)
-            # from genuinely empty output: preserve raw redacted prompt output as evidence.
-            if (
-                err_msg == "Empty CLI output received from device."
-                and prompt
-                and not cmd_failed
-                and raw_out.strip()
-            ):
-                err_msg = None
-
-            if cmd_failed and err_msg is None:
-                err_msg = f"Command '{command}' returned non-zero IOS status on '{pt_name}'."
+            outcome, needs_norm = self._build_outcome_from_output(
+                command=command,
+                raw_out=raw_out,
+                prompt=prompt,
+                cmd_failed=cmd_failed,
+                pt_name=pt_name,
+            )
 
             # Auto-normalize IOS Exec mode once (e.g., User Exec '>' -> 'enable' after PT
             # file reopen, or config submode '(config)#' -> 'end') and re-read cleanly.
-            if (
-                (err_msg is not None or cmd_failed)
-                and not mode_normalized
-                and not prompt.lower().startswith("c:")
-                and (prompt.endswith(">") or ("(" in prompt and prompt.endswith("#")))
-            ):
+            if needs_norm and not mode_normalized:
                 mode_normalized = True
                 mode_cmd = "enable" if prompt.endswith(">") else "end"
                 self.cli_queue.pace(pt_name)
@@ -731,17 +880,264 @@ class LabVerifier:
                 except Exception:
                     pass
 
-            return _CliReadOutcome(
-                command=command,
-                raw_evidence=redacted,
-                error=err_msg,
-                timed_out=False,
-            )
+            return outcome
 
         return last_outcome or _CliReadOutcome(
             command=command,
             raw_evidence="",
             error=f"Failed executing '{command}' on '{pt_name}' after {retries} retries.",
+        )
+
+    def _read_cli_batch(
+        self,
+        device_name: str,
+        commands: list[str],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, _CliReadOutcome]:
+        """Execute multiple commands on one device in a single bridge round-trip."""
+        unique_cmds = list(dict.fromkeys(commands))
+        if not unique_cmds:
+            return {}
+        if len(unique_cmds) == 1:
+            cmd0 = unique_cmds[0]
+            return {cmd0: self._read_cli(device_name, cmd0, timeout_seconds=timeout_seconds)}
+
+        if not self.router.has_live_script() or self.router.script_backend is None:
+            err = _CliReadOutcome(
+                command=unique_cmds[0],
+                raw_evidence="",
+                error="Live Packet Tracer ScriptBackend is not connected.",
+            )
+            return {
+                c: _CliReadOutcome(command=c, raw_evidence="", error=err.error)
+                for c in unique_cmds
+            }
+
+        pt_name = self.router.resolve_pt_device_name(device_name)
+        slow_cmds = sum(
+            1
+            for c in unique_cmds
+            if c.strip().lower().startswith(("ping ", "traceroute ", "tracert "))
+        )
+        batch_timeout = (
+            max(float(timeout_seconds), 10.0) + slow_cmds * 6.0 + len(unique_cmds) * 0.25
+        )
+
+        exec_fn = self.router.script_backend.execute_cli
+        exec_kwargs: dict[str, Any] = {"timeout_seconds": batch_timeout}
+        try:
+            if "stop_on_error" in inspect.signature(exec_fn).parameters:
+                exec_kwargs["stop_on_error"] = False
+        except (TypeError, ValueError):
+            pass
+
+        self.cli_queue.pace(pt_name)
+        try:
+            res = exec_fn(pt_name, unique_cmds, **exec_kwargs)
+        except AgenticNetError as exc:
+            err_text = f"CLI execution error on '{pt_name}': {exc.message}"
+            if _is_deterministic_bridge_error(str(exc.message)):
+                redacted_err = redact_cli_text(str(exc.message))
+                return {
+                    c: _CliReadOutcome(command=c, raw_evidence=redacted_err, error=err_text)
+                    for c in unique_cmds
+                }
+            return {
+                c: self._read_cli(device_name, c, timeout_seconds=timeout_seconds)
+                for c in unique_cmds
+            }
+        except Exception:
+            return {
+                c: self._read_cli(device_name, c, timeout_seconds=timeout_seconds)
+                for c in unique_cmds
+            }
+
+        cmd_outputs = res.get("command_outputs")
+        raw_out = str(res.get("raw_output", ""))
+        prompt = str(res.get("prompt", "")).strip()
+        timed_out = bool(res.get("timed_out", False))
+        statuses = res.get("command_statuses", [])
+        status_list = (
+            [e for e in statuses if isinstance(e, dict)] if isinstance(statuses, list) else []
+        )
+
+        slices: list[str] | None = None
+        if isinstance(cmd_outputs, list) and len(cmd_outputs) > 0:
+            slices = [str(x) for x in cmd_outputs]
+        elif raw_out.strip() and not timed_out:
+            candidate_slices = _split_batch_output(raw_out, unique_cmds)
+            if all(bool(s.strip()) for s in candidate_slices):
+                slices = candidate_slices
+
+        if slices is None:
+            if timed_out and not raw_out.strip():
+                return {
+                    c: _CliReadOutcome(
+                        command=c,
+                        raw_evidence="",
+                        error=f"Timed out executing '{c}' on '{pt_name}'.",
+                        timed_out=True,
+                    )
+                    for c in unique_cmds
+                }
+            # Fallback to single-command reads if mock HTTP backend omitted command_outputs.
+            return {
+                c: self._read_cli(device_name, c, timeout_seconds=timeout_seconds)
+                for c in unique_cmds
+            }
+
+        outcomes: dict[str, _CliReadOutcome] = {}
+        retry_for_mode: list[str] = []
+        s_cursor = 0
+        for idx, cmd in enumerate(unique_cmds):
+            cmd_low = cmd.strip().lower()
+            cmd_failed = False
+            for probe in range(s_cursor, len(status_list)):
+                if str(status_list[probe].get("command", "")).strip().lower() == cmd_low:
+                    cmd_failed = int(status_list[probe].get("status", 0)) != 0 and not bool(
+                        status_list[probe].get("non_fatal", False)
+                    )
+                    s_cursor = probe + 1
+                    break
+
+            if idx < len(slices):
+                outcome, needs_norm = self._build_outcome_from_output(
+                    command=cmd,
+                    raw_out=slices[idx],
+                    prompt=prompt,
+                    cmd_failed=cmd_failed,
+                    pt_name=pt_name,
+                )
+                outcomes[cmd] = outcome
+                if needs_norm:
+                    retry_for_mode.append(cmd)
+            elif timed_out:
+                outcomes[cmd] = _CliReadOutcome(
+                    command=cmd,
+                    raw_evidence="",
+                    error=f"Timed out executing '{cmd}' on '{pt_name}'.",
+                    timed_out=True,
+                )
+            else:
+                outcomes[cmd] = self._read_cli(device_name, cmd, timeout_seconds=timeout_seconds)
+
+        if retry_for_mode and prompt and not prompt.lower().startswith("c:"):
+            mode_cmd = "enable" if prompt.endswith(">") else "end"
+            self.cli_queue.pace(pt_name)
+            try:
+                self.router.script_backend.execute_cli(
+                    pt_name,
+                    [mode_cmd],
+                    timeout_seconds=max(float(timeout_seconds), 10.0),
+                )
+                if len(retry_for_mode) == 1:
+                    c0 = retry_for_mode[0]
+                    outcomes[c0] = self._read_cli(
+                        device_name, c0, timeout_seconds=timeout_seconds, max_retries=0
+                    )
+                else:
+                    retried = self._read_cli_batch_once(
+                        device_name,
+                        pt_name,
+                        retry_for_mode,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    outcomes.update(retried)
+            except Exception:
+                pass
+
+        return outcomes
+
+    def _read_cli_batch_once(
+        self,
+        device_name: str,
+        pt_name: str,
+        commands: list[str],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, _CliReadOutcome]:
+        """Run one mode-normalized retry batch without recursive mode normalization."""
+        slow_cmds = sum(
+            1
+            for c in commands
+            if c.strip().lower().startswith(("ping ", "traceroute ", "tracert "))
+        )
+        batch_timeout = max(float(timeout_seconds), 10.0) + slow_cmds * 6.0 + len(commands) * 0.25
+        exec_fn = self.router.script_backend.execute_cli  # type: ignore[union-attr]
+        exec_kwargs: dict[str, Any] = {"timeout_seconds": batch_timeout}
+        try:
+            if "stop_on_error" in inspect.signature(exec_fn).parameters:
+                exec_kwargs["stop_on_error"] = False
+        except (TypeError, ValueError):
+            pass
+        self.cli_queue.pace(pt_name)
+        res = exec_fn(pt_name, commands, **exec_kwargs)
+        cmd_outputs = res.get("command_outputs")
+        prompt = str(res.get("prompt", "")).strip()
+        statuses = res.get("command_statuses", [])
+        status_list = (
+            [e for e in statuses if isinstance(e, dict)] if isinstance(statuses, list) else []
+        )
+        if not isinstance(cmd_outputs, list) or len(cmd_outputs) == 0:
+            return {
+                c: self._read_cli(device_name, c, timeout_seconds=timeout_seconds, max_retries=0)
+                for c in commands
+            }
+        out: dict[str, _CliReadOutcome] = {}
+        for idx, cmd in enumerate(commands):
+            cmd_failed = (
+                idx < len(status_list)
+                and int(status_list[idx].get("status", 0)) != 0
+                and not bool(status_list[idx].get("non_fatal", False))
+            )
+            if idx < len(cmd_outputs):
+                outcome, _ = self._build_outcome_from_output(
+                    command=cmd,
+                    raw_out=str(cmd_outputs[idx]),
+                    prompt=prompt,
+                    cmd_failed=cmd_failed,
+                    pt_name=pt_name,
+                )
+                out[cmd] = outcome
+            else:
+                out[cmd] = _CliReadOutcome(
+                    command=cmd,
+                    raw_evidence="",
+                    error=f"Timed out executing '{cmd}' on '{pt_name}'.",
+                    timed_out=bool(res.get("timed_out", False)),
+                )
+        return out
+
+    def _telephony_fallback_outcome(
+        self,
+        dev_name: str,
+        pt_dev_name: str,
+        *,
+        cache: dict[tuple[str, str], _CliReadOutcome],
+        timeout_seconds: float,
+    ) -> _CliReadOutcome | None:
+        """Read `telephony-service` section from `show running-config` with caching."""
+        cfg_key = (pt_dev_name, "show running-config")
+        cfg_outcome = cache.get(cfg_key)
+        if cfg_outcome is None:
+            cfg_outcome = self._read_cli(
+                dev_name,
+                "show running-config",
+                timeout_seconds=timeout_seconds,
+            )
+            if cfg_outcome.error is None:
+                cache[cfg_key] = cfg_outcome
+        if cfg_outcome.error is not None:
+            return None
+        sections = parse_running_config_sections(
+            cfg_outcome.raw_evidence,
+            section="telephony-service",
+        )
+        sec_text = sections[0].text if sections else "% Telephony-service is not configured"
+        return _CliReadOutcome(
+            command=_TELEPHONY_FALLBACK_COMMAND,
+            raw_evidence=(sec_text if sections else cfg_outcome.raw_evidence),
         )
 
     def verify(
@@ -750,15 +1146,16 @@ class LabVerifier:
         *,
         timeout_seconds: float = 25.0,
         poll_wait_seconds: float | None = None,
-        poll_interval_seconds: float = 0.8,
+        poll_interval_seconds: float | None = None,
         include_activity_grade: bool = True,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run live CLI verification across all declared requirements and keep raw evidence.
 
-        When ``poll_wait_seconds`` is ``None`` (default), sweeps and polls failing requirements
-        under a shared ``45.0``-second convergence deadline when connected to a real
-        ``HttpScriptBridgeBackend`` (live PT), and ``0.0`` seconds for offline/mock backends.
+        When ``poll_wait_seconds`` is ``None`` (default), sweeps and polls convergeable failing
+        requirements under an adaptive convergence deadline (``8.0``-``15.0``s on a live
+        ``HttpScriptBridgeBackend``, ``0.0``s for offline/mock backends), while failing fast on
+        deterministic CLI/device errors and static config mismatches.
         """
         spec = normalize_requirements_payload(requirements)
         expected_tasks = task_ids if task_ids is not None else spec.task_ids
@@ -770,126 +1167,163 @@ class LabVerifier:
             and has_script
             and isinstance(self.router.script_backend, HttpScriptBridgeBackend)
         )
-        if poll_wait_seconds is None:
-            effective_poll_wait = 45.0 if is_real_http_bridge else 0.0
-        else:
+        explicit_poll_wait = poll_wait_seconds is not None
+        if explicit_poll_wait:
             effective_poll_wait = max(0.0, float(poll_wait_seconds)) if has_script else 0.0
+        else:
+            effective_poll_wait = 15.0 if is_real_http_bridge else 0.0
 
         req_meta = [_command_for_requirement(req) for req in spec.requirements]
         cache: dict[tuple[str, str], _CliReadOutcome] = {}
         results_by_idx: list[dict[str, Any] | None] = [None] * len(spec.requirements)
         pending_indices = list(range(len(spec.requirements)))
         start_time = time.monotonic()
-        deadline = start_time + effective_poll_wait
+        deadline: float | None = (
+            start_time + effective_poll_wait if explicit_poll_wait else None
+        )
+        poll_cycle = 0
 
         while pending_indices:
             next_pending: list[int] = []
+            convergeable_pending: list[int] = []
             keys_to_invalidate: set[tuple[str, str]] = set()
             prefetched_by_key: dict[tuple[str, str], _CliReadOutcome] = {}
-            prefetched_by_idx: dict[int, _CliReadOutcome] = {}
 
-            if is_real_http_bridge and len(pending_indices) > 1:
-                tasks_by_device: dict[str, list[tuple[int, str, str, tuple[str, str], bool]]] = {}
-                seen_cache_keys: set[tuple[str, str]] = set()
-                for idx in pending_indices:
-                    dev_name, command, cacheable = req_meta[idx]
-                    pt_dev_name = self.router.resolve_pt_device_name(dev_name)
-                    key = (pt_dev_name, command)
-                    if cacheable:
-                        if key in cache or key in seen_cache_keys:
-                            continue
-                        seen_cache_keys.add(key)
-                    tasks_by_device.setdefault(pt_dev_name, []).append(
-                        (idx, dev_name, command, key, cacheable)
-                    )
-
-                if len(tasks_by_device) > 1:
-
-                    def _run_device_reads(
-                        items: list[tuple[int, str, str, tuple[str, str], bool]],
-                    ) -> list[tuple[int, tuple[str, str], bool, _CliReadOutcome]]:
-                        out: list[tuple[int, tuple[str, str], bool, _CliReadOutcome]] = []
-                        for item_idx, dev_name, command, key, cacheable in items:
-                            res_outcome = self._read_cli(
-                                dev_name, command, timeout_seconds=timeout_seconds
-                            )
-                            out.append((item_idx, key, cacheable, res_outcome))
-                        return out
-
-                    with ThreadPoolExecutor(max_workers=min(len(tasks_by_device), 6)) as pool:
-                        futures = [
-                            pool.submit(_run_device_reads, dev_items)
-                            for dev_items in tasks_by_device.values()
-                        ]
-                        for fut in futures:
-                            for item_idx, key, cacheable, res_outcome in fut.result():
-                                if cacheable:
-                                    prefetched_by_key[key] = res_outcome
-                                    if res_outcome.error is None:
-                                        cache[key] = res_outcome
-                                else:
-                                    prefetched_by_idx[item_idx] = res_outcome
-
+            # Resolve actual commands per requirement (handling remembered unsupported
+            # `show telephony-service` and concise PC `ping -n`).
+            resolved_for_idx: dict[int, tuple[str, str, str, bool, bool]] = {}
             for idx in pending_indices:
                 req = spec.requirements[idx]
                 dev_name, command, cacheable = req_meta[idx]
                 pt_dev_name = self.router.resolve_pt_device_name(dev_name)
+                telephony_via_cfg = False
+                if (
+                    isinstance(req, TelephonyServiceRequirement)
+                    and self._is_command_unsupported(pt_dev_name, "show telephony-service")
+                ):
+                    command = "show running-config"
+                    telephony_via_cfg = True
+                elif (
+                    isinstance(req, ReachableRequirement)
+                    and is_real_http_bridge
+                    and _is_pt_desktop_host(self.router, dev_name, pt_dev_name)
+                ):
+                    ping_cnt = max(2, req.min_received)
+                    command = (
+                        f"ping -n {ping_cnt} {req.target}"
+                        if ping_cnt != 4
+                        else f"ping {req.target}"
+                    )
+                resolved_for_idx[idx] = (
+                    dev_name,
+                    pt_dev_name,
+                    command,
+                    cacheable,
+                    telephony_via_cfg,
+                )
+
+            if is_real_http_bridge:
+                cmds_by_device: dict[str, tuple[str, list[str]]] = {}
+                for idx in pending_indices:
+                    dev_name, pt_dev_name, command, cacheable, _ = resolved_for_idx[idx]
+                    key = (pt_dev_name, command)
+                    if cacheable and key in cache:
+                        continue
+                    if pt_dev_name not in cmds_by_device:
+                        cmds_by_device[pt_dev_name] = (dev_name, [])
+                    dev_cmds = cmds_by_device[pt_dev_name][1]
+                    if command not in dev_cmds:
+                        dev_cmds.append(command)
+
+                def _fetch_device_batch(
+                    item: tuple[str, str, list[str]],
+                ) -> tuple[str, dict[str, _CliReadOutcome]]:
+                    pt_dev, raw_dev, cmds = item
+                    return pt_dev, self._read_cli_batch(
+                        raw_dev, cmds, timeout_seconds=timeout_seconds
+                    )
+
+                if len(cmds_by_device) == 1:
+                    pt_dev, (raw_dev, cmds) = next(iter(cmds_by_device.items()))
+                    batch_outcomes = self._read_cli_batch(
+                        raw_dev, cmds, timeout_seconds=timeout_seconds
+                    )
+                    for cmd_str, res_outcome in batch_outcomes.items():
+                        key = (pt_dev, cmd_str)
+                        prefetched_by_key[key] = res_outcome
+                        if res_outcome.error is None and not cmd_str.startswith(
+                            ("ping ", "traceroute ")
+                        ):
+                            cache[key] = res_outcome
+                elif len(cmds_by_device) > 1:
+                    batch_inputs = [
+                        (pt_dev, raw_dev, cmds)
+                        for pt_dev, (raw_dev, cmds) in cmds_by_device.items()
+                    ]
+                    with ThreadPoolExecutor(max_workers=min(len(batch_inputs), 6)) as pool:
+                        for pt_dev, batch_outcomes in pool.map(_fetch_device_batch, batch_inputs):
+                            for cmd_str, res_outcome in batch_outcomes.items():
+                                key = (pt_dev, cmd_str)
+                                prefetched_by_key[key] = res_outcome
+                                if res_outcome.error is None and not cmd_str.startswith(
+                                    ("ping ", "traceroute ")
+                                ):
+                                    cache[key] = res_outcome
+
+            for idx in pending_indices:
+                req = spec.requirements[idx]
+                dev_name, pt_dev_name, command, cacheable, telephony_via_cfg = resolved_for_idx[
+                    idx
+                ]
                 key = (pt_dev_name, command)
 
                 if cacheable and key in cache:
                     outcome = cache[key]
-                elif cacheable and key in prefetched_by_key:
+                elif key in prefetched_by_key:
                     outcome = prefetched_by_key[key]
-                elif idx in prefetched_by_idx:
-                    outcome = prefetched_by_idx[idx]
                 else:
                     outcome = self._read_cli(dev_name, command, timeout_seconds=timeout_seconds)
                     if cacheable and outcome.error is None:
                         cache[key] = outcome
 
-                if (
+                if telephony_via_cfg and outcome.error is None:
+                    sections = parse_running_config_sections(
+                        outcome.raw_evidence,
+                        section="telephony-service",
+                    )
+                    sec_text = (
+                        sections[0].text
+                        if sections
+                        else "% Telephony-service is not configured"
+                    )
+                    outcome = _CliReadOutcome(
+                        command=_TELEPHONY_FALLBACK_COMMAND,
+                        raw_evidence=(sec_text if sections else outcome.raw_evidence),
+                    )
+                elif (
                     isinstance(req, TelephonyServiceRequirement)
                     and outcome.error is not None
-                    and any(
-                        tok in outcome.error.lower()
-                        for tok in ("% invalid", "% unrecognized", "% unknown")
-                    )
+                    and _is_unsupported_cli_error(outcome.error)
                 ):
-                    cfg_key = (pt_dev_name, "show running-config")
-                    cfg_outcome = cache.get(cfg_key)
-                    if cfg_outcome is None:
-                        cfg_outcome = self._read_cli(
-                            dev_name,
-                            "show running-config",
-                            timeout_seconds=timeout_seconds,
-                        )
-                        if cfg_outcome.error is None:
-                            cache[cfg_key] = cfg_outcome
-                    if cfg_outcome.error is None:
-                        sections = parse_running_config_sections(
-                            cfg_outcome.raw_evidence,
-                            section="telephony-service",
-                        )
-                        sec_text = (
-                            sections[0].text
-                            if sections
-                            else "% Telephony-service is not configured"
-                        )
-                        outcome = _CliReadOutcome(
-                            command=(
-                                "show telephony-service -> fallback: show running-config "
-                                "(telephony-service section)"
-                            ),
-                            raw_evidence=(sec_text if sections else cfg_outcome.raw_evidence),
-                        )
+                    self._mark_command_unsupported(pt_dev_name, "show telephony-service")
+                    fallback_outcome = self._telephony_fallback_outcome(
+                        dev_name,
+                        pt_dev_name,
+                        cache=cache,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    if fallback_outcome is not None:
+                        outcome = fallback_outcome
                         if cacheable:
-                            cache[key] = outcome
+                            cache[(pt_dev_name, "show telephony-service")] = fallback_outcome
 
                 evaluated = _evaluate_requirement(req, outcome)
                 evaluated["index"] = idx + 1
                 results_by_idx[idx] = evaluated
                 if evaluated["status"] != "pass":
                     next_pending.append(idx)
+                    if _is_convergeable_failure(req, outcome):
+                        convergeable_pending.append(idx)
                     if cacheable:
                         keys_to_invalidate.add(key)
                         if isinstance(req, TelephonyServiceRequirement):
@@ -897,13 +1331,33 @@ class LabVerifier:
 
             if not next_pending or not has_script or effective_poll_wait <= 0:
                 break
-            now = time.monotonic()
-            if now >= deadline:
+            if not convergeable_pending:
                 break
+
+            if deadline is None:
+                needs_slow_window = any(
+                    isinstance(spec.requirements[i], _SLOW_CONVERGE_TYPES)
+                    for i in convergeable_pending
+                )
+                effective_poll_wait = 15.0 if needs_slow_window else 8.0
+                deadline = start_time + effective_poll_wait
+
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0.05:
+                break
+
             for stale_key in keys_to_invalidate:
                 cache.pop(stale_key, None)
-            time.sleep(min(poll_interval_seconds, max(0.05, deadline - now)))
-            pending_indices = next_pending
+
+            if poll_interval_seconds is not None:
+                sleep_step = float(poll_interval_seconds)
+            else:
+                adaptive_steps = (0.25, 0.4, 0.6, 0.8)
+                sleep_step = adaptive_steps[min(poll_cycle, len(adaptive_steps) - 1)]
+            poll_cycle += 1
+            time.sleep(min(sleep_step, max(0.05, remaining)))
+            pending_indices = convergeable_pending
 
         results = [r for r in results_by_idx if r is not None]
 
@@ -944,6 +1398,12 @@ class LabVerifier:
             else:
                 # Optional extra evidence only; never overrides CLI verification results.
                 activity_grade = self.router.read_activity_status()
+                if (
+                    getattr(self.router, "active_is_activity", None) is None
+                    and isinstance(activity_grade, dict)
+                    and activity_grade.get("is_activity_file") is False
+                ):
+                    self.router.active_is_activity = False
 
         return {
             "lab_name": spec.lab_name,

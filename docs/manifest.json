@@ -186,7 +186,7 @@
       "name": "topology_create",
       "category": "topology",
       "permission_tier": "planning",
-      "description": "Build a multi-device topology; set apply_live=True to push to PT in 1 batch.",
+      "description": "Build a multi-device topology and push devices, links, and host configs in 1 batch.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -627,7 +627,7 @@
       "name": "console_execute",
       "category": "cli",
       "permission_tier": "configuration",
-      "description": "Execute CLI commands on one or many devices in parallel.\n\n        Prefer `batch_configs={device: [cmds...]}` to configure or inspect multiple devices in a\n        single parallel round-trip instead of sequential 1-command calls. In Packet Tracer IOS,\n        avoid unsupported commands like `show run interface X` (use `show running-config`) and\n        `ip ospf <pid> area` (use `network ... area ...` under `router ospf`), and never leave\n        `debug` commands enabled.",
+      "description": "Execute CLI commands on one or many devices in parallel.\n\n        Fast path: pass `batch_configs={device: [cmds...]}` and `target_mode=\"global_config\"`\n        (for IOS devices) to push configs across all routers/switches concurrently in 1 turn.\n        Keep `capture_before_after=False` and omit `verification_commands` during bulk pushes\n        when following with `verify_lab` to avoid redundant reads. In Packet Tracer IOS, avoid\n        `show run interface X` (use `show running-config`) and `ip ospf <pid> area` (use\n        `network ... area ...` under `router ospf`), and never leave `debug` enabled.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -789,7 +789,7 @@
       "name": "connectivity_test",
       "category": "simulation",
       "permission_tier": "read_only",
-      "description": "Run one or multiple (parallel) connectivity ping checks via live PT CLI or topology.\n\n        Pass `checks=[{\"source_device\": \"PC-A1\", \"destination_ip\": \"10.10.20.11\"}, ...]` to run\n        an entire ping verification matrix in parallel in a single round-trip.",
+      "description": "Run one or multiple (parallel) connectivity ping checks via live PT CLI or topology.\n\n        Pass `checks=[{\"source_device\": \"PC-A1\", \"destination_ip\": \"10.10.20.11\"}, ...]` to run\n        an entire ping verification matrix in parallel across devices (and batched per device)\n        in a single round-trip.",
       "status": "stable",
       "read_only": true,
       "destructive": false
@@ -870,7 +870,7 @@
       "name": "verify_lab",
       "category": "diagnostics",
       "permission_tier": "read_only",
-      "description": "Verify live Packet Tracer lab state against declarative requirements with evidence.\n\n        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge\n        (0.0s in offline/mock runs) unless overridden explicitly.",
+      "description": "Verify live Packet Tracer lab state against declarative requirements with evidence.\n\n        Pass ``poll_wait_seconds=0.0`` for instant single-pass verification once configs have\n        settled, or a short deadline (e.g., ``10.0``) when waiting for DHCP/OSPF/CME convergence.",
       "status": "stable",
       "read_only": true,
       "destructive": false
@@ -888,7 +888,7 @@
       "name": "lab_start",
       "category": "diagnostics",
       "permission_tier": "configuration",
-      "description": "One-command live start for a `.pkt`/`.pka` file, `.md`/`.txt`/`.pdf` doc, or idea.",
+      "description": "One-command live start for `.pkt`/`.pka` files, docs, or specs.\n\n        Fast path: pass `auto_approve=True` with full `devices`, `links`, and `configs`\n        (`{device: [cli_cmds]}`) to attach PT, place all devices/links in 1 `batch_ops` call,\n        and push multi-device IOS configs in parallel in a single turn.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -906,7 +906,7 @@
       "name": "lab_save",
       "category": "diagnostics",
       "permission_tier": "configuration",
-      "description": "Save the active Packet Tracer lab via bridge (`fileSave` or `fileSaveAsNoPrompt`).",
+      "description": "Save active PT lab; pass `include_diff=False` to skip post-save snapshot.",
       "status": "stable",
       "read_only": false,
       "destructive": false
@@ -915,7 +915,7 @@
       "name": "lab_status",
       "category": "diagnostics",
       "permission_tier": "read_only",
-      "description": "Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.\n\n        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge\n        (0.0s in offline/mock runs) unless overridden explicitly.",
+      "description": "Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.\n\n        Pass ``poll_wait_seconds=0.0`` for instant single-pass verification or a short deadline\n        (e.g., ``10.0``) when waiting for protocol convergence.",
       "status": "stable",
       "read_only": true,
       "destructive": false

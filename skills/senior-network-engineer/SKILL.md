@@ -42,7 +42,7 @@ Operate as a methodical Cisco network engineer and technical lead using AgenticN
 
 ## 2. Profile & Tool Discipline
 
-- **Default `solve_lab` (`26` tools):** `project_create`, `project_save`, `project_status`, `device_capabilities`, `device_add`, `host_configure`, `device_inspect`, `connection_create`, `interface_status`, `topology_inspect`, `subnet_calculate`, `configuration_backup`, `console_execute`, `console_capture`, `connectivity_test`, `verify_requirements_schema`, `verify_lab`, `grade_lab`, `lab_start`, `lab_open`, `lab_save`, `lab_status`, `list_devices`, `lab_snapshot`, `lab_diff`, `gui_attach_ip_phone_power`.
+- **Default `solve_lab` (`27` tools):** `project_create`, `project_save`, `project_status`, `device_capabilities`, `device_add`, `host_configure`, `device_inspect`, `connection_create`, `interface_status`, `topology_inspect`, `subnet_calculate`, `configuration_backup`, `console_execute`, `console_capture`, `connectivity_test`, `verify_requirements_schema`, `verify_lab`, `grade_lab`, `lab_start`, `lab_open`, `lab_save`, `lab_status`, `list_devices`, `lab_snapshot`, `lab_diff`, `gui_attach_ip_phone_power`.
 - **Full `advanced` (`94` tools):** Adds `vlsm_plan`, `address_*`, `ipam_report`, `topology_create`/`validate`/`analyze`/`visualize`, `configure_*`, `command_validate`, `network_diagnose`, `network_repair_*`, `simulation_*`, and raw `gui_*`.
 - Never invent tool names or parameters not present in the mounted profile.
 

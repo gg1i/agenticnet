@@ -1,6 +1,6 @@
 # AgenticNet Tool & Capability Ecosystem
 
-AgenticNet (`v0.1.1`, schema `1.0.0`) exposes **94 specialized MCP tools** (`26` enabled in default `solve_lab` profile; all `94` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
+AgenticNet (`v0.1.1`, schema `1.0.0`) exposes **94 specialized MCP tools** (`27` enabled in default `solve_lab` profile; all `94` in `advanced` profile) organized across 10 functional categories, **7 read-only resources**, and **6 guided AI agent prompts** over `stdio` and HTTP transports.
 
 <!-- Generated counts and tables below are synced by scripts/generate_manifest.py -->
 
@@ -8,7 +8,7 @@ Run `python -m agenticnet manifest` or read `agenticnet://manifest` for the live
 
 ---
 
-## 1. Tool Categories (94 Tools Total / 26 Default `solve_lab`)
+## 1. Tool Categories (94 Tools Total / 27 Default `solve_lab`)
 
 | Category | Count | Tools | Primary Permission Tier(s) |
 |---|---|---|---|
@@ -28,7 +28,7 @@ Run `python -m agenticnet manifest` or read `agenticnet://manifest` for the live
 ## 2. Resources (7)
 
 - `agenticnet://manifest` — Machine-readable manifest of all 94 tools, tiers, transports, and 30 supported device models.
-- `agenticnet://workflows/solve_lab` — Canonical closed-loop `solve_lab` workflow contract (26 default profile tools).
+- `agenticnet://workflows/solve_lab` — Canonical closed-loop `solve_lab` workflow contract (27 default profile tools).
 - `agenticnet://project/current` — Active project summary and Planned vs. Executed vs. Verified state counts.
 - `agenticnet://project/topology` — Current normalized topology JSON export.
 - `agenticnet://project/ipam` — IPAM pools, allocations, and utilization JSON report.

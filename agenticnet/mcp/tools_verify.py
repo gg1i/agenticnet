@@ -309,8 +309,8 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
     ) -> dict[str, Any]:
         """Verify live Packet Tracer lab state against declarative requirements with evidence.
 
-        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
-        (0.0s in offline/mock runs) unless overridden explicitly.
+        Pass ``poll_wait_seconds=0.0`` for instant single-pass verification once configs have
+        settled, or a short deadline (e.g., ``10.0``) when waiting for DHCP/OSPF/CME convergence.
         """
 
         def _run() -> OperationResult:
@@ -424,7 +424,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         input_target: str,
         auto_approve: bool = False,
         watch_mode: bool = True,
-        watch_pace_seconds: float = 0.15,
+        watch_pace_seconds: float = 0.0,
         copy_on_write: bool = True,
         working_copy_path: str | None = None,
         overwrite_original: bool = False,
@@ -435,7 +435,12 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         links: list[dict[str, Any]] | None = None,
         configs: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
-        """One-command live start for a `.pkt`/`.pka` file, `.md`/`.txt`/`.pdf` doc, or idea."""
+        """One-command live start for `.pkt`/`.pka` files, docs, or specs.
+
+        Fast path: pass `auto_approve=True` with full `devices`, `links`, and `configs`
+        (`{device: [cli_cmds]}`) to attach PT, place all devices/links in 1 `batch_ops` call,
+        and push multi-device IOS configs in parallel in a single turn.
+        """
 
         def _run() -> OperationResult:
             out = start_lab_session(
@@ -641,7 +646,7 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
         include_diff: bool = True,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Save the active Packet Tracer lab via bridge (`fileSave` or `fileSaveAsNoPrompt`)."""
+        """Save active PT lab; pass `include_diff=False` to skip post-save snapshot."""
 
         def _run() -> OperationResult:
             cleaned = str(path).strip() if path is not None else None
@@ -771,8 +776,8 @@ def register_verify_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None
     ) -> dict[str, Any]:
         """Combine `verify_lab`, `grade_lab`, and task coverage, listing what is left.
 
-        ``poll_wait_seconds`` defaults to 45.0s per requirement on a live Packet Tracer bridge
-        (0.0s in offline/mock runs) unless overridden explicitly.
+        Pass ``poll_wait_seconds=0.0`` for instant single-pass verification or a short deadline
+        (e.g., ``10.0``) when waiting for protocol convergence.
         """
 
         def _run() -> OperationResult:

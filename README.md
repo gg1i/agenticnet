@@ -45,7 +45,7 @@ An open-source agentic networking platform (**current development focus: Cisco P
 - **Native Packet Tracer Script Bridge:** Uses an authenticated `127.0.0.1` HTTP bridge inside Packet Tracer (`com.netforge.bridge`, shipped as `netforge_bridge.pts`) for reliable `add_device`, `create_link`, `configure_host`, `batch_ops`, `HWIC-2T` module attachment, `7960` IP phone powering, IOS CLI execution, and `.pkt`/`.pka` open/save (desktop mouse/keyboard GUI automation stays fallback-only).
 - **Non-Destructive Copy-on-Write + Diffs:** Original `.pkt`/`.pka` files stay untouched by default (`*_agenticnet.pkt`), with before/after snapshots (`lab_snapshot`) and readable change summaries (`lab_diff`).
 - **Evidence-First Verification (`planned` vs. `executed` vs. `verified`):** Never claims success without proof — `verify_lab` and `lab_status` inspect real `show ip interface brief`, `show ip route`, `show vlan brief`, `show telephony-service`, and live `ping` outputs.
-- **Clean Default Profile + Power-User Mode:** Exposes **26** focused tools in the default `solve_lab` profile (reducing prompt clutter for agents) or all **94** engineering, IPAM, IOS, simulation, and GUI tools via `AGENTICNET_TOOL_PROFILE=advanced`.
+- **Clean Default Profile + Power-User Mode:** Exposes **27** focused tools in the default `solve_lab` profile (reducing prompt clutter for agents) or all **94** engineering, IPAM, IOS, simulation, and GUI tools via `AGENTICNET_TOOL_PROFILE=advanced`.
 
 > **Platform Support:** Planning, VLSM IPAM, IOS generation/validation, SQLite persistence, and all unit/protocol tests run natively on **Windows, Linux, and macOS**. Live Cisco Packet Tracer automation runs on **Windows 10/11 + Cisco Packet Tracer 8.2.2+** on an unlocked interactive desktop session.
 
@@ -105,7 +105,7 @@ agenticnet serve --transport streamable-http --host 127.0.0.1 --port 8765
 
 ## Features & Architecture
 
-AgenticNet exposes **94 MCP tools (26 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **30 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
+AgenticNet exposes **94 MCP tools (27 in default `solve_lab` profile)**, **7 resources, 6 prompts**, and verified device profiles across **30 models** (`2911`, `1941`, `2811`, `4321`, `Router-PT`, `2960-24TT`, `Switch-PT`, `3560-24PS`, `3650-24PS`, `PC-PT`, `Laptop-PT`, `Server-PT`, `Printer-PT`, `7960` IP Phone, `Home-VoIP-PT`, `WRT300N`, `AccessPoint-PT`):
 
 ```mermaid
 flowchart LR
@@ -132,7 +132,7 @@ agenticnet/
 ├── console/      # Device console state-machine, prompt handling, paging cleanup, paced CLI queue
 ├── simulation/   # Simulation/realtime controls, PDU specs, show/ping/ephone CLI parsers
 ├── diagnostics/  # Root-cause rules, ranked repair proposals, LabRunner, LabVerifier, ActivityGrader
-└── mcp/          # Official Python MCP SDK server, 94 tools (26 default), 7 resources, 6 prompts, manifest
+└── mcp/          # Official Python MCP SDK server, 94 tools (27 default), 7 resources, 6 prompts, manifest
 netforge/         # Legacy Python/CLI compatibility shim redirecting cleanly to agenticnet
 promo/            # Standalone 30s interactive GSAP promo (`index.html`, opens directly via file://)
 promo-pro/        # 3D overlapping-null Canvas source & rendered 1080p MP4 (`render/agenticnet-pro-promo.mp4`)
@@ -147,7 +147,7 @@ All `AGENTICNET_*` variables fall back to legacy `NETFORGE_*` names so existing 
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENTICNET_TOOL_PROFILE` | `solve_lab` | `solve_lab` (`26` focused lab tools) or `advanced` (all `94` tools) |
+| `AGENTICNET_TOOL_PROFILE` | `solve_lab` | `solve_lab` (`27` focused lab tools) or `advanced` (all `94` tools) |
 | `AGENTICNET_PERMISSION_PROFILE` | `standard` | One of `read-only`, `planning`, `configuration`, `standard` |
 | `AGENTICNET_REQUIRE_CONFIRM` | `true` | Require explicit `confirm=True` for destructive actions |
 | `AGENTICNET_DATA_DIR` | `%LOCALAPPDATA%\agenticnet` (Win) / `~/.local/share/agenticnet` | Directory storing SQLite DB and backups (mirrors `bridge_session.json` to `%LOCALAPPDATA%\netforge` for `.pts` discovery) |

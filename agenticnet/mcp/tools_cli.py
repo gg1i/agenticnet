@@ -45,18 +45,30 @@ def _capture_snapshot_outputs(
     model: str,
     snap_commands: list[str],
 ) -> dict[str, str]:
-    """Run read-only verification commands on `device_name` and return `{cmd: output}`."""
+    """Run read-only verification commands on `device_name` in 1 batch as `{cmd: output}`."""
+    if not snap_commands:
+        return {}
+    rep = runtime.console.execute_commands(
+        device_name,
+        list(snap_commands),
+        model=model,
+        target_mode="privileged_exec",
+        stop_on_error=False,
+    )
+    transcripts = rep.get("transcripts", [])
     snapshots: dict[str, str] = {}
+    if len(transcripts) >= len(snap_commands):
+        # Match tail transcripts corresponding to snap_commands (skipping any prep commands).
+        tail = transcripts[-len(snap_commands) :]
+        for scmd, entry in zip(snap_commands, tail, strict=True):
+            snapshots[scmd] = redact_cli_text(str(entry.get("raw_output", "")))
+        return snapshots
     for scmd in snap_commands:
-        rep = runtime.console.execute_commands(
-            device_name,
-            [scmd],
-            model=model,
-            target_mode="privileged_exec",
-            stop_on_error=False,
+        matched = next(
+            (t for t in transcripts if str(t.get("command", "")).strip() == scmd.strip()),
+            None,
         )
-        transcripts = rep.get("transcripts", [])
-        out_text = str(transcripts[-1].get("raw_output", "")) if transcripts else ""
+        out_text = str(matched.get("raw_output", "")) if matched else ""
         snapshots[scmd] = redact_cli_text(out_text)
     return snapshots
 
@@ -154,11 +166,12 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
     ) -> dict[str, Any]:
         """Execute CLI commands on one or many devices in parallel.
 
-        Prefer `batch_configs={device: [cmds...]}` to configure or inspect multiple devices in a
-        single parallel round-trip instead of sequential 1-command calls. In Packet Tracer IOS,
-        avoid unsupported commands like `show run interface X` (use `show running-config`) and
-        `ip ospf <pid> area` (use `network ... area ...` under `router ospf`), and never leave
-        `debug` commands enabled.
+        Fast path: pass `batch_configs={device: [cmds...]}` and `target_mode="global_config"`
+        (for IOS devices) to push configs across all routers/switches concurrently in 1 turn.
+        Keep `capture_before_after=False` and omit `verification_commands` during bulk pushes
+        when following with `verify_lab` to avoid redundant reads. In Packet Tracer IOS, avoid
+        `show run interface X` (use `show running-config`) and `ip ospf <pid> area` (use
+        `network ... area ...` under `router ospf`), and never leave `debug` enabled.
         """
         normalized_batch: dict[str, list[str]] = (
             {str(dev): list(cmds) for dev, cmds in batch_configs.items()}
@@ -218,9 +231,13 @@ def register_cli_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
                 )
 
             snap_cmds = (
-                list(verification_commands)
-                if verification_commands
-                else ["show ip interface brief"]
+                (
+                    list(verification_commands)
+                    if verification_commands
+                    else ["show ip interface brief"]
+                )
+                if (capture_before_after and not dry_run)
+                else []
             )
 
             if batch_configs is not None:

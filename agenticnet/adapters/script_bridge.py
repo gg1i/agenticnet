@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -238,10 +239,12 @@ class HttpScriptBridgeServer:
 
         self._cond = threading.Condition()
         self._descriptor_lock = threading.Lock()
-        self._queue: list[_PendingCommand] = []
+        self._queue: deque[_PendingCommand] = deque()
         self._inflight: dict[str, _PendingCommand] = {}
         self._last_seen_monotonic: float | None = None
         self._last_origin: str | None = None
+        self._connect_waiters: int = 0
+        self._active_pollers: int = 0
         self._stopped = False
         self._session_id: str | None = None
         self._created_at_ms: int | None = None
@@ -275,6 +278,8 @@ class HttpScriptBridgeServer:
             return
         with self._cond:
             self._stopped = False
+            self._last_seen_monotonic = None
+            self._active_pollers = 0
         self._session_id = f"sess_{uuid4().hex[:16]}"
         self._created_at_ms = int(time.time() * 1000)
         self._heartbeat_stop.clear()
@@ -508,6 +513,7 @@ class HttpScriptBridgeServer:
         self._heartbeat_stop.set()
         with self._cond:
             self._stopped = True
+            self._active_pollers = 0
             for pending in list(self._queue) + list(self._inflight.values()):
                 pending.result_payload = {
                     "request_id": pending.request_id,
@@ -540,9 +546,32 @@ class HttpScriptBridgeServer:
             max_idle_seconds if max_idle_seconds is not None else self.connection_ttl_seconds
         )
         with self._cond:
+            if max_idle_seconds is None and self._active_pollers > 0:
+                return True
             if self._last_seen_monotonic is None:
                 return False
             return (time.monotonic() - self._last_seen_monotonic) <= limit
+
+    def wait_until_connected(self, timeout_seconds: float = 15.0) -> bool:
+        """Wait using a condition variable until a PT Script Module connects or timeout expires."""
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+        with self._cond:
+            self._connect_waiters += 1
+            try:
+                while not self._stopped and self._httpd is not None:
+                    if self._active_pollers > 0 or (
+                        self._last_seen_monotonic is not None
+                        and (time.monotonic() - self._last_seen_monotonic)
+                        <= self.connection_ttl_seconds
+                    ):
+                        return True
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._cond.wait(timeout=remaining)
+                return False
+            finally:
+                self._connect_waiters -= 1
 
     def enqueue_command(
         self,
@@ -606,15 +635,21 @@ class HttpScriptBridgeServer:
             self._last_seen_monotonic = time.monotonic()
             if client_origin:
                 self._last_origin = client_origin
-            while not self._queue and not self._stopped:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+            self._active_pollers += 1
+            if self._connect_waiters > 0:
+                self._cond.notify_all()
+            try:
+                while not self._queue and not self._stopped:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self._cond.wait(timeout=remaining)
+                if self._stopped or not self._queue:
                     return None
-                self._cond.wait(timeout=remaining)
-            if self._stopped or not self._queue:
-                return None
-            self._last_seen_monotonic = time.monotonic()
-            return self._queue.pop(0)
+                return self._queue.popleft()
+            finally:
+                self._active_pollers = max(0, self._active_pollers - 1)
+                self._last_seen_monotonic = time.monotonic()
 
     def _complete_command(
         self,
@@ -627,6 +662,8 @@ class HttpScriptBridgeServer:
             self._last_seen_monotonic = time.monotonic()
             if client_origin:
                 self._last_origin = client_origin
+            if self._connect_waiters > 0:
+                self._cond.notify_all()
             pending = self._inflight.pop(request_id, None)
             if pending is None:
                 return False
@@ -726,7 +763,11 @@ class HttpScriptBridgeBackend(ScriptBackend):
             expected_bytes = asset.read_bytes()
             dest = self.server.session_file.parent / "netforge_bridge.pts"
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if not dest.exists() or dest.read_bytes() != expected_bytes:
+            if (
+                not dest.exists()
+                or dest.stat().st_size != len(expected_bytes)
+                or dest.read_bytes() != expected_bytes
+            ):
                 dest.write_bytes(expected_bytes)
         except OSError:
             return
@@ -745,16 +786,19 @@ class HttpScriptBridgeBackend(ScriptBackend):
         return self.server.is_connected()
 
     def wait_for_connection(self, *, timeout_seconds: float = 15.0) -> bool:
-        """Poll until an already-running Packet Tracer bridge attaches without spawning PT."""
+        """Wait until an already-running Packet Tracer bridge attaches without spawning PT."""
         if self.is_connected():
             return True
         if self.server._httpd is None:
             return False
+        wait_until = getattr(self.server, "wait_until_connected", None)
+        if callable(wait_until):
+            return bool(wait_until(timeout_seconds=max(float(timeout_seconds), 0.0)))
         deadline = time.monotonic() + max(timeout_seconds, 0.2)
         while time.monotonic() < deadline:
             if self.is_connected():
                 return True
-            time.sleep(0.15)
+            time.sleep(0.02)
         return self.is_connected()
 
     def ensure_connected(self, *, timeout_seconds: float = 40.0) -> bool:
@@ -772,12 +816,7 @@ class HttpScriptBridgeBackend(ScriptBackend):
                 return True
             if not is_packet_tracer_running():
                 subprocess.Popen([str(pt_exe)])
-            deadline = time.monotonic() + max(timeout_seconds, 1.0)
-            while time.monotonic() < deadline:
-                if self.is_connected():
-                    return True
-                time.sleep(0.15)
-        return self.is_connected()
+            return self.wait_for_connection(timeout_seconds=max(timeout_seconds, 1.0))
 
     def ping(self) -> dict[str, Any]:
         """Run an authenticated end-to-end ping through Packet Tracer's Script Module."""
@@ -881,6 +920,8 @@ class HttpScriptBridgeBackend(ScriptBackend):
         wait_for_prompt: bool = True,
         stop_on_error: bool = False,
         timeout_seconds: float | None = None,
+        enable_password: str | None = None,
+        strict_timeout: bool = False,
     ) -> dict[str, Any]:
         """Run IOS CLI commands via PT TerminalLine and return captured raw output."""
         dev = _require_non_empty(device_name, "device_name")
@@ -901,6 +942,10 @@ class HttpScriptBridgeBackend(ScriptBackend):
         }
         if stop_on_error:
             cli_params["stop_on_error"] = True
+        if enable_password:
+            cli_params["enable_password"] = str(enable_password)
+        if strict_timeout:
+            cli_params["strict_timeout"] = True
         data = self.server.enqueue_command(
             "cli_exec",
             cli_params,

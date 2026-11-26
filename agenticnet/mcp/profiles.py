@@ -21,8 +21,8 @@ RAW_GUI_INPUT_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Curated 26-tool default profile for client agents solving and building labs cleanly:
-# keeps purpose-built GUI actions (`gui_attach_ip_phone_power`) and excludes raw GUI input tools.
+# Curated 27-tool default profile for client agents solving and building labs cleanly:
+# includes one-shot `topology_create` batching + `gui_attach_ip_phone_power`, excludes raw GUI.
 SOLVE_LAB_TOOLS: frozenset[str] = frozenset(
     {
         "lab_start",
@@ -41,6 +41,7 @@ SOLVE_LAB_TOOLS: frozenset[str] = frozenset(
         "device_inspect",
         "connection_create",
         "interface_status",
+        "topology_create",
         "topology_inspect",
         "subnet_calculate",
         "console_execute",

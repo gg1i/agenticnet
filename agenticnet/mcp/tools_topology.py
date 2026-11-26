@@ -14,13 +14,19 @@ from agenticnet.mcp.registry import AgenticNetRuntime
 
 
 class TopologyDeviceSpec(BaseModel):
-    """Device entry inside a batch topology_create call."""
+    """Device entry inside a batch topology_create call (with optional host IP/DHCP config)."""
 
     name: str
     model: str
     role: str = ""
     x: float | None = None
     y: float | None = None
+    port: str = "FastEthernet0"
+    dhcp: bool = False
+    ip_address: str | None = None
+    subnet_mask: str | None = None
+    default_gateway: str | None = None
+    dns_server: str | None = None
 
 
 class TopologyLinkSpec(BaseModel):
@@ -34,6 +40,57 @@ class TopologyLinkSpec(BaseModel):
     clock_rate: int | None = None
 
 
+def _resolve_pt_device_type(model: str, category: Any) -> int:
+    """Resolve Packet Tracer DeviceType integer accurately for special models like 7960/3650."""
+    from agenticnet.adapters.script_bridge import resolve_device_type
+
+    cat_str = category.value if hasattr(category, "value") else str(category)
+    model_key = str(model).strip().lower()
+    if model_key in {"7960", "ip_phone", "cisco ip phone", "ip phone", "ipphone"}:
+        cat_str = "ip_phone"
+    elif model_key.startswith("3650"):
+        cat_str = "switch_3650"
+    elif model_key in {"lap-pt", "lap", "3702i", "air-cap3702i", "cap3702i", "lightweight_ap"}:
+        cat_str = "lap"
+    elif model_key in {
+        "5505",
+        "asa 5505",
+        "asa5505",
+        "5506",
+        "5506-x",
+        "asa 5506",
+        "asa5506",
+        "asa 5506-x",
+    }:
+        cat_str = "asa"
+    elif model_key in {"2504", "3504"} or model_key.startswith("wlc"):
+        cat_str = "wlc"
+    elif model_key.startswith("cloud"):
+        cat_str = "cloud"
+    elif model_key == "ata" or model_key.startswith(("home-voip", "home_voip", "home voip")):
+        cat_str = "home_voip"
+    elif model_key.startswith(("analog-phone", "analog_phone", "analog phone")):
+        cat_str = "analog_phone"
+    elif model_key.startswith("laptop"):
+        cat_str = "laptop"
+    elif model_key.startswith("tablet"):
+        cat_str = "tablet_pc"
+    elif model_key.startswith("smartphone"):
+        cat_str = "smartphone"
+    elif model_key == "dlc100" or model_key.startswith(
+        ("homegateway", "home-gateway", "home_gateway", "home gateway")
+    ):
+        cat_str = "home_gateway"
+    elif model_key.startswith("server"):
+        cat_str = "server"
+    elif model_key.startswith("printer"):
+        cat_str = "printer"
+    try:
+        return resolve_device_type(cat_str)
+    except Exception:
+        return 0
+
+
 def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> None:
     """Register topology_* tools onto the MCPServer."""
 
@@ -44,9 +101,10 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
         layout_strategy: Literal["hierarchical", "grid"] = "hierarchical",
         replace_existing: bool = False,
         confirm: bool = False,
-        apply_live: bool = False,
+        apply_live: bool = True,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Build a multi-device topology; set apply_live=True to push to PT in 1 batch."""
+        """Build a multi-device topology and push devices, links, and host configs in 1 batch."""
         params = {
             "device_count": len(devices),
             "connection_count": len(connections),
@@ -55,10 +113,28 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             "replace_existing": replace_existing,
             "confirm": confirm,
             "apply_live": apply_live,
+            "dry_run": dry_run,
         }
-        tier = PermissionTier.DESTRUCTIVE if replace_existing else PermissionTier.PLANNING
+        has_existing_items = False
+        if replace_existing and runtime.manager.has_active_project:
+            _, current_topo, _, _ = runtime.manager.require_active()
+            has_existing_items = bool(
+                current_topo.model.devices or current_topo.model.connections
+            )
+        tier = (
+            PermissionTier.DESTRUCTIVE
+            if (replace_existing and has_existing_items)
+            else PermissionTier.PLANNING
+        )
 
         def _run() -> OperationResult:
+            from contextlib import suppress
+
+            from agenticnet.core.enums import DeviceCategory
+            from agenticnet.ipam.engine import IPAMEngine
+            from agenticnet.topology.engine import TopologyEngine
+            from agenticnet.topology.models import TopologyModel
+
             _, topo, ipam, _ = runtime.manager.require_active()
             total_devices = len(devices) + (0 if replace_existing else len(topo.model.devices))
             if total_devices > runtime.settings.max_devices_per_project:
@@ -66,19 +142,80 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                     "Topology would exceed max_devices_per_project "
                     f"({runtime.settings.max_devices_per_project})."
                 )
-
-            # Build in a staged copy so failed links never leave partial corrupt state
-            from agenticnet.topology.engine import TopologyEngine
-            from agenticnet.topology.models import TopologyModel
-
-            staged = TopologyEngine(
-                model=TopologyModel() if replace_existing else topo.model,
-                catalog=runtime.catalog,
+            total_links = len(connections) + (
+                0 if replace_existing else len(topo.model.connections)
             )
+            if total_links > runtime.settings.max_links_per_project:
+                raise ValidationError(
+                    "Topology would exceed max_links_per_project "
+                    f"({runtime.settings.max_links_per_project})."
+                )
+
+            staged_model = (
+                TopologyModel() if replace_existing else topo.model.model_copy(deep=True)
+            )
+            staged = TopologyEngine(model=staged_model, catalog=runtime.catalog)
+            staged_ipam = IPAMEngine(
+                state=ipam.state.model_copy(deep=True) if not replace_existing else None
+            )
+            if replace_existing:
+                for dev_name in list(topo.model.devices):
+                    staged_ipam.remove_device_allocations(dev_name)
+
+            explicit_positions: dict[str, tuple[float, float]] = {}
             added_dev_names: list[str] = []
+            host_specs: dict[str, tuple[TopologyDeviceSpec, str]] = {}
+            host_categories = {
+                DeviceCategory.PC,
+                DeviceCategory.LAPTOP,
+                DeviceCategory.SERVER,
+                DeviceCategory.PRINTER,
+            }
+
             for dev in devices:
-                staged.add_device(dev.name, dev.model, x=dev.x, y=dev.y, role=dev.role)
-                added_dev_names.append(dev.name)
+                node = staged.add_device(dev.name, dev.model, x=dev.x, y=dev.y, role=dev.role)
+                added_dev_names.append(node.name)
+                if dev.x is not None and dev.y is not None:
+                    explicit_positions[node.name] = (float(dev.x), float(dev.y))
+
+                has_host_cfg = bool(
+                    dev.dhcp
+                    or dev.ip_address
+                    or dev.subnet_mask
+                    or dev.default_gateway
+                    or dev.dns_server
+                )
+                if has_host_cfg:
+                    if node.category not in host_categories or node.model == "7960":
+                        raise ValidationError(
+                            f"Inline host IP/DHCP fields on '{node.name}' ({node.model}) are only "
+                            "supported on PC/Laptop/Server/Printer end devices."
+                        )
+                    if not dev.dhcp and (not dev.ip_address or not dev.subnet_mask):
+                        raise ValidationError(
+                            f"Host '{node.name}' requires dhcp=True or both ip_address and "
+                            "subnet_mask."
+                        )
+                    canon_port = runtime.catalog.normalize_interface_name(node.model, dev.port)
+                    if not dev.dhcp and dev.ip_address and dev.subnet_mask:
+                        alloc = staged_ipam.allocate_address(
+                            node.name,
+                            canon_port,
+                            dev.ip_address,
+                            subnet_mask=dev.subnet_mask,
+                            gateway=dev.default_gateway,
+                            allocation_type="static",
+                        )
+                        if canon_port in node.interfaces:
+                            node.interfaces[canon_port].ip_address = alloc.ip_address
+                            node.interfaces[canon_port].subnet_mask = alloc.subnet_mask
+                            node.interfaces[canon_port].default_gateway = dev.default_gateway
+                    elif dev.dhcp and canon_port in node.interfaces:
+                        node.interfaces[canon_port].default_gateway = (
+                            dev.default_gateway or node.interfaces[canon_port].default_gateway
+                        )
+                    host_specs[node.name] = (dev, canon_port)
+
             added_links = []
             for link in connections:
                 edge = staged.connect(
@@ -90,15 +227,18 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                     clock_rate=link.clock_rate,
                 )
                 added_links.append(edge)
+
             if auto_layout:
                 staged.auto_layout(strategy=layout_strategy)
+                for dev_name, (ex, ey) in explicit_positions.items():
+                    staged.move_device(dev_name, ex, ey)
 
-            # Commit staged topology
+            # Commit staged topology + IPAM atomically
             if replace_existing:
-                for dev_name in list(topo.model.devices):
-                    ipam.remove_device_allocations(dev_name)
+                runtime.router.clear_aliases()
             topo.model = staged.model
             topo._rebuild_graph()
+            ipam.state = staged_ipam.state
             issues = topo.validate()
 
             live_backend_name = "offline_model"
@@ -106,33 +246,32 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             live_ev: list[str] = []
             live_warnings = [i.message for i in issues if i.severity == "warning"]
             live_payload: dict[str, Any] = {}
+            batch_errors: list[str] = []
 
-            if apply_live and runtime.router.ensure_live_script():
-                from agenticnet.adapters.script_bridge import (
-                    resolve_connect_type,
-                    resolve_device_type,
-                )
+            if apply_live and not dry_run and runtime.router.ensure_live_script():
+                from agenticnet.adapters.script_bridge import resolve_connect_type
 
                 ops: list[dict[str, Any]] = []
+                op_meta: list[tuple[str, str]] = []
+
                 for d_name in added_dev_names:
                     node = topo.model.devices[d_name]
-                    try:
-                        dtype = resolve_device_type(node.category.value)
-                    except Exception:
-                        dtype = 0
+                    dtype = _resolve_pt_device_type(node.model, node.category)
                     ops.append(
                         {
                             "op": "add_device",
+                            "alias": node.name,
                             "params": {
                                 "model": node.model,
                                 "device_type": dtype,
-                                "x": node.position.x,
-                                "y": node.position.y,
+                                "x": float(node.position.x),
+                                "y": float(node.position.y),
                                 "display_name": node.name,
-                                "alias": node.name,
                             },
                         }
                     )
+                    op_meta.append(("dev", node.name))
+
                 for edge in added_links:
                     try:
                         ctype = resolve_connect_type(edge.cable_type.value)
@@ -154,21 +293,105 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                             },
                         }
                     )
+                    op_meta.append(("link", edge.connection_id))
 
-                batch_res = runtime.router.batch_ops(ops)
+                for h_name, (h_spec, canon_port) in host_specs.items():
+                    ops.append(
+                        {
+                            "op": "configure_host",
+                            "params": {
+                                "device_name": h_name,
+                                "port": canon_port,
+                                "dhcp": bool(h_spec.dhcp),
+                                "ip": h_spec.ip_address or "",
+                                "subnet_mask": h_spec.subnet_mask or "",
+                                "default_gateway": h_spec.default_gateway or "",
+                                "dns_server": h_spec.dns_server or "",
+                            },
+                        }
+                    )
+                    op_meta.append(("host", h_name))
+
+                batch_res = runtime.router.batch_ops(
+                    ops,
+                    timeout_seconds=max(25.0, len(ops) * 1.5),
+                )
                 if batch_res is not None:
                     live_backend_name = "script_backend"
                     live_state = StateLevel.EXECUTED
                     live_payload = batch_res
+                    raw_results = batch_res.get("results")
+                    failed_devs: set[str] = set()
+                    if isinstance(raw_results, list):
+                        for idx, (kind_tag, item_id) in enumerate(op_meta):
+                            res_item = raw_results[idx] if idx < len(raw_results) else {}
+                            if not isinstance(res_item, dict):
+                                continue
+                            if kind_tag == "dev":
+                                res_data = (
+                                    res_item.get("data")
+                                    if isinstance(res_item.get("data"), dict)
+                                    else {}
+                                )
+                                pt_name = str(
+                                    res_item.get("device_name")
+                                    or res_data.get("device_name")
+                                    or ""
+                                ).strip()
+                                if res_item.get("ok") is False or not pt_name:
+                                    failed_devs.add(item_id)
+                                    err = str(
+                                        res_item.get("error")
+                                        or f"Packet Tracer failed to create device '{item_id}'."
+                                    )
+                                    batch_errors.append(err)
+                                    with suppress(Exception):
+                                        topo.remove_device(item_id)
+                                        ipam.remove_device_allocations(item_id)
+                            elif kind_tag == "link":
+                                lnk = topo.model.connections.get(item_id)
+                                if lnk is None or (
+                                    lnk.source_device in failed_devs
+                                    or lnk.target_device in failed_devs
+                                ):
+                                    with suppress(Exception):
+                                        topo.remove_connection(item_id)
+                                elif res_item.get("ok") is False:
+                                    err = str(
+                                        res_item.get("error")
+                                        or f"Packet Tracer rejected link '{item_id}'."
+                                    )
+                                    batch_errors.append(err)
+                                    with suppress(Exception):
+                                        topo.remove_connection(item_id)
+                            elif kind_tag == "host" and res_item.get("ok") is False:
+                                err = str(
+                                    res_item.get("error")
+                                    or f"Packet Tracer failed host config on '{item_id}'."
+                                )
+                                live_warnings.append(err)
+
                     live_ev.append(
-                        f"Deployed {len(added_dev_names)} device(s) and {len(added_links)} link(s) "
+                        f"Deployed {len(added_dev_names) - len(failed_devs)} device(s), "
+                        f"{len(topo.model.connections)} link(s), and {len(host_specs)} host(s) "
                         "to Packet Tracer in 1 batch_ops round-trip."
                     )
+                    if runtime.router.watch_mode:
+                        runtime.router.record_watch_action(
+                            "topology_create",
+                            (
+                                f"Batch-created {len(added_dev_names)} device(s) and "
+                                f"{len(added_links)} link(s)."
+                            ),
+                            data=live_payload,
+                            evidence=live_ev,
+                        )
                 else:
                     # Fallback when running an older bridge without batch_ops
+                    failed_devs = set()
                     for d_name in added_dev_names:
                         node = topo.model.devices[d_name]
-                        b, _, ev, w = runtime.router.add_device(
+                        b, add_res, ev, w = runtime.router.add_device(
                             node.name,
                             node.model,
                             category=node.category,
@@ -178,15 +401,54 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
                         if b == "script_backend":
                             live_backend_name = "script_backend"
                             live_state = StateLevel.EXECUTED
+                        if add_res.get("ok") is False or (
+                            b == "script_backend"
+                            and not str(add_res.get("device_name", "")).strip()
+                        ):
+                            failed_devs.add(d_name)
+                            batch_errors.append(
+                                str(add_res.get("error") or f"Failed to add '{d_name}' in PT.")
+                            )
+                            with suppress(Exception):
+                                topo.remove_device(d_name)
+                                ipam.remove_device_allocations(d_name)
                         live_ev.extend(ev)
                         live_warnings.extend(w)
                     for edge in added_links:
-                        b, _, ev, w = runtime.router.create_link(
+                        if edge.source_device in failed_devs or edge.target_device in failed_devs:
+                            with suppress(Exception):
+                                topo.remove_connection(edge.connection_id)
+                            continue
+                        b, lnk_res, ev, w = runtime.router.create_link(
                             edge.source_device,
                             edge.source_interface,
                             edge.target_device,
                             edge.target_interface,
                             cable_type=edge.cable_type.value,
+                        )
+                        if lnk_res.get("ok") is False:
+                            batch_errors.append(
+                                str(
+                                    lnk_res.get("error")
+                                    or f"Failed link '{edge.connection_id}' in PT."
+                                )
+                            )
+                            with suppress(Exception):
+                                topo.remove_connection(edge.connection_id)
+                        live_ev.extend(ev)
+                        live_warnings.extend(w)
+                    for h_name, (h_spec, canon_port) in host_specs.items():
+                        if h_name in failed_devs:
+                            continue
+                        _, _, ev, w = runtime.router.configure_host(
+                            h_name,
+                            port=canon_port,
+                            dhcp=bool(h_spec.dhcp),
+                            ip=h_spec.ip_address,
+                            subnet_mask=h_spec.subnet_mask,
+                            default_gateway=h_spec.default_gateway,
+                            dns_server=h_spec.dns_server,
+                            console_engine=runtime.console,
                         )
                         live_ev.extend(ev)
                         live_warnings.extend(w)
@@ -200,6 +462,20 @@ def register_topology_tools(server: MCPServer, runtime: AgenticNetRuntime) -> No
             }
             if live_payload:
                 out_data["live_backend"] = live_payload
+
+            if batch_errors:
+                return OperationResult.fail(
+                    "topology_create",
+                    f"Live batch topology deployment encountered {len(batch_errors)} error(s): "
+                    + "; ".join(batch_errors[:5]),
+                    error_code="PT_BATCH_FAILED",
+                    details=out_data,
+                    remediation=(
+                        "Verify device models, free port names, and PT readiness, then retry."
+                    ),
+                    state_level=live_state,
+                    execution_backend=live_backend_name,  # type: ignore[arg-type]
+                )
 
             return OperationResult.ok(
                 "topology_create",

@@ -20,6 +20,10 @@ class ConsoleTransport(ABC):
     def is_available(self) -> bool:
         """Return True if this transport can reach a live or simulated console."""
 
+    def can_batch(self) -> bool:
+        """Return True when this transport supports native multi-command batch execution."""
+        return False
+
     @abstractmethod
     def open_device(self, device_name: str, profile: DeviceConsoleProfile) -> str:
         """Focus or attach to `device_name`'s console and return current buffer."""
@@ -105,14 +109,26 @@ class WindowsGuiConsoleTransport(ConsoleTransport):
         import win32con  # type: ignore[import-untyped]
         import win32gui  # type: ignore[import-untyped]
 
-        if win32gui.IsIconic(hwnd):
+        is_iconic = bool(win32gui.IsIconic(hwnd))
+        if is_iconic:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             time.sleep(0.15)
+        elif win32gui.GetForegroundWindow() == hwnd:
+            return
         try:
             win32gui.SetForegroundWindow(hwnd)
         except Exception:
             win32gui.BringWindowToTop(hwnd)
         time.sleep(0.12)
+
+    def _resolve_cached_hwnd(self, device_name: str) -> int:
+        import win32gui  # type: ignore[import-untyped]
+
+        hwnd = self._device_hwnds.get(device_name)
+        if hwnd and win32gui.IsWindow(hwnd):
+            return hwnd
+        self._device_hwnds.pop(device_name, None)
+        return self._find_device_hwnd(device_name)
 
     def open_device(self, device_name: str, profile: DeviceConsoleProfile) -> str:
         """Focus the PT subwindow for `device_name` and snapshot its terminal buffer."""
@@ -122,7 +138,7 @@ class WindowsGuiConsoleTransport(ConsoleTransport):
 
     def send_line(self, device_name: str, line: str, *, timeout_s: float = 5.0) -> str:
         """Send a line + Enter into the device CLI window and return trailing output."""
-        hwnd = self._device_hwnds.get(device_name) or self._find_device_hwnd(device_name)
+        hwnd = self._resolve_cached_hwnd(device_name)
         self._focus_device_hwnd(hwnd)
         before = self.gui.capture_text_from_focused_window()
         self.gui.paste_lines_to_focused_window([line], delay_s=min(0.25, max(0.06, timeout_s / 40)))
@@ -134,7 +150,7 @@ class WindowsGuiConsoleTransport(ConsoleTransport):
 
     def read_buffer(self, device_name: str) -> str:
         """Focus `device_name` window and capture terminal buffer via clipboard."""
-        hwnd = self._device_hwnds.get(device_name) or self._find_device_hwnd(device_name)
+        hwnd = self._resolve_cached_hwnd(device_name)
         self._focus_device_hwnd(hwnd)
         return self.gui.capture_text_from_focused_window()
 

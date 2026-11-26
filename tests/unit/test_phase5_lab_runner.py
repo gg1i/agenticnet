@@ -394,7 +394,7 @@ def test_tool_profiles_solve_lab_default_vs_advanced(tmp_path: Path) -> None:
     default_names = {t.name for t in asyncio.run(srv_default.list_tools())}
     assert default_names == SOLVE_LAB_TOOLS
     assert len(default_names) == len(SOLVE_LAB_TOOLS)
-    assert len(default_names) == 26
+    assert len(default_names) == 27
     assert rt_default.build_manifest()["tool_profile"] == "solve_lab"
     assert "configure_ospf" not in default_names
 

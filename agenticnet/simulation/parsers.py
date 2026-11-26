@@ -791,6 +791,34 @@ def parse_ipconfig_all(raw_text: str) -> list[ParsedHostIpconfig]:
 
     _hdr_re = re.compile(r"^([A-Za-z0-9/_-]+)\s+Connection\s*:", re.IGNORECASE)
     _kv_re = re.compile(r"^([A-Za-z0-9 /-]+?)\.*:\s*(.*)$")
+    _ip_tok_re = re.compile(r"^[0-9a-fA-F:.%]+$")
+    last_key: str | None = None
+
+    def _append_server(target: list[str], raw_items: str) -> None:
+        for item in re.split(r"[,\s]+", raw_items):
+            if not item or not _ip_tok_re.match(item):
+                continue
+            if item not in {"::", "0.0.0.0"}:
+                target[:] = [existing for existing in target if existing not in {"::", "0.0.0.0"}]
+            elif any(existing not in {"::", "0.0.0.0"} for existing in target):
+                continue
+            if item not in target:
+                target.append(item)
+
+    def _set_gateway(target: ParsedHostIpconfig, candidate: str) -> None:
+        if not candidate:
+            return
+        if target.default_gateway is None:
+            target.default_gateway = candidate
+            return
+        if candidate in {"::", "0.0.0.0"}:
+            return
+        # Prefer a real IPv4 gateway over PT's leading "::" (or link-local IPv6) placeholder.
+        is_cand_ipv4 = "." in candidate and ":" not in candidate
+        if target.default_gateway in {"::", "0.0.0.0"} or (
+            is_cand_ipv4 and ":" in target.default_gateway
+        ):
+            target.default_gateway = candidate
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -802,13 +830,27 @@ def parse_ipconfig_all(raw_text: str) -> list[ParsedHostIpconfig]:
         if hdr_m:
             current = ParsedHostIpconfig(adapter=hdr_m.group(1).strip())
             adapters.append(current)
+            last_key = None
             continue
 
         kv_m = _kv_re.match(line)
         if not kv_m:
+            # PT 8.2.2 outputs "::" on the Default Gateway / DNS Servers line and the
+            # IPv4 address indented on the following continuation line.
+            if raw_line[:1].isspace() and current is not None and last_key is not None:
+                if last_key == "default gateway":
+                    _set_gateway(current, line.split()[0])
+                elif last_key in {"dns servers", "dns server"}:
+                    _append_server(current.dns_servers, line)
+                elif last_key in {"dhcp servers", "dhcp server"}:
+                    _append_server(current.dhcp_servers, line)
+            else:
+                last_key = None
             continue
+
         key = kv_m.group(1).strip().lower()
         val = kv_m.group(2).strip()
+        last_key = key
         if not val:
             continue
 
@@ -821,7 +863,7 @@ def parse_ipconfig_all(raw_text: str) -> list[ParsedHostIpconfig]:
         elif key == "subnet mask":
             current.subnet_mask = val
         elif key == "default gateway":
-            current.default_gateway = val
+            _set_gateway(current, val)
         elif key == "physical address":
             current.mac_address = val
         elif key == "ipv6 address" or (
@@ -829,13 +871,9 @@ def parse_ipconfig_all(raw_text: str) -> list[ParsedHostIpconfig]:
         ):
             current.ipv6_address = val
         elif key in {"dns servers", "dns server"}:
-            for item in re.split(r"[,\s]+", val):
-                if item and item not in current.dns_servers:
-                    current.dns_servers.append(item)
+            _append_server(current.dns_servers, val)
         elif key in {"dhcp servers", "dhcp server"}:
-            for item in re.split(r"[,\s]+", val):
-                if item and item not in current.dhcp_servers:
-                    current.dhcp_servers.append(item)
+            _append_server(current.dhcp_servers, val)
 
     return adapters
 

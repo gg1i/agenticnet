@@ -62,7 +62,7 @@
             if (!polling || gen !== generation || !cfg.url || !cfg.token) {
                 return;
             }
-            fetch(cfg.url + "/v1/commands/next?wait_ms=1500", {
+            fetch(cfg.url + "/v1/commands/next?wait_ms=2000", {
                 method: "GET",
                 headers: {
                     "X-AgenticNet-Token": cfg.token,
@@ -73,7 +73,7 @@
                 if (gen !== generation || !polling) { return; }
                 if (resp.status === 204) {
                     recordSuccess();
-                    setTimeout(function () { pollOnce(gen); }, 10);
+                    setTimeout(function () { pollOnce(gen); }, 0);
                     return;
                 }
                 if (!resp.ok) {
@@ -88,7 +88,7 @@
                         setStatus("exec:" + c.opcode);
                         window.$se("netforgeOnCommand", c.request_id, c.opcode, JSON.stringify(c.params || {}));
                     }
-                    setTimeout(function () { pollOnce(gen); }, 5);
+                    setTimeout(function () { pollOnce(gen); }, 0);
                 });
             })
             .catch(function (err) {
@@ -139,12 +139,16 @@
         }
     };
 
-    var iv = setInterval(function () {
-        if (typeof window.$se === "function") {
-            clearInterval(iv);
-            window.netforgePingReady();
-        }
-    }, 100);
+    if (typeof window.$se === "function") {
+        window.netforgePingReady();
+    } else {
+        var iv = setInterval(function () {
+            if (typeof window.$se === "function") {
+                clearInterval(iv);
+                window.netforgePingReady();
+            }
+        }, 25);
+    }
 })();
 </script>
 </body>

@@ -20,6 +20,6 @@ Load only the skills needed for the active task:
 
 ## Profile Awareness
 
-- Default `solve_lab` profile exposes **26** focused tools (`lab_*`, `project_create`, `project_save`, `project_status`, `device_*`, `connection_create`, `interface_status`, `host_configure`, `subnet_calculate`, `console_*`, `configuration_backup`, `connectivity_test`, `verify_*`, `grade_lab`, `gui_attach_ip_phone_power`).
+- Default `solve_lab` profile exposes **27** focused tools (`lab_*`, `project_create`, `project_save`, `project_status`, `device_*`, `connection_create`, `interface_status`, `host_configure`, `subnet_calculate`, `console_*`, `configuration_backup`, `connectivity_test`, `verify_*`, `grade_lab`, `gui_attach_ip_phone_power`).
 - `AGENTICNET_TOOL_PROFILE=advanced` unlocks all **94** tools (including `vlsm_plan`, `address_*`, `topology_create`/`validate`/`analyze`/`visualize`, `configure_*`, `command_validate`, `network_diagnose`, `network_repair_*`, `simulation_*`, and `gui_*`).
 - Every skill explicitly distinguishes tools available in both profiles from `advanced`-only tools.

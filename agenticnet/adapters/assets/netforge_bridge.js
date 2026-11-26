@@ -382,6 +382,10 @@ function handleCliExec(requestId, params) {
     var lastCmdSentAt = 0;
     var lastOutputAt = Date.now();
     var finished = false;
+    var stepping = false;
+    var enableRetried = false;
+    var doneAt = 0;
+    var lastDoneLen = -1;
     var iv = null;
 
     var sendSingleCommand = function (cmdText) {
@@ -417,7 +421,7 @@ function handleCliExec(requestId, params) {
     var advancePagerOnce = function () {
         var nowMs = Date.now();
         var curLen = chunks.join("").length;
-        if (curLen === lastMoreChunkLen || (nowMs - lastMoreSentAt) < 80) {
+        if (curLen === lastMoreChunkLen || (nowMs - lastMoreSentAt) < 40) {
             return;
         }
         lastMoreChunkLen = curLen;
@@ -453,6 +457,9 @@ function handleCliExec(requestId, params) {
         if (stopOnError && !isNonFatal && (st !== 0 || hasSliceError(cmdSlice))) {
             stoppedOnError = true;
         }
+        if (!finished && !stepping && typeof stepCli === "function") {
+            stepCli();
+        }
     };
     var onMore = function () {
         advancePagerOnce();
@@ -483,12 +490,18 @@ function handleCliExec(requestId, params) {
 
     var startedAt = Date.now();
     var stepCli = function () {
+        if (stepping) {
+            return;
+        }
+        stepping = true;
         try {
             if (finished) {
                 if (iv !== null) { clearInterval(iv); iv = null; }
+                stepping = false;
                 return;
             }
-            var elapsed = Date.now() - startedAt;
+            var nowTick = Date.now();
+            var elapsed = nowTick - startedAt;
             var rawNow = chunks.join("");
             var promptNow = String(term.getPrompt() || "");
             var trimmedPrompt = promptNow.replace(/^\s+|\s+$/g, "");
@@ -498,20 +511,21 @@ function handleCliExec(requestId, params) {
                 : timeoutMs;
 
             if (stage === "check_boot") {
+                var isDecompressing = /#|booting|decompress/i.test(rawNow) && !hasCliPrompt;
                 if (hasCliPrompt) {
                     stage = "send";
                 } else if (!yesNoHandled && rawNow.indexOf("[yes/no]") !== -1) {
                     yesNoHandled = true;
                     term.enterCommand("no");
                     stage = "wait_prompt";
-                } else if (rawNow.indexOf("Press RETURN") !== -1 && (Date.now() - pressReturnSentAt > 600)) {
+                } else if (rawNow.indexOf("Press RETURN") !== -1 && (Date.now() - pressReturnSentAt > 300)) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
                     stage = "wait_prompt";
-                } else if (elapsed > 1200 && !pressReturnSentAt) {
+                } else if (elapsed > 350 && !pressReturnSentAt && !isDecompressing) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
-                } else if (rawNow.length > 0 && elapsed > 3500) {
+                } else if (rawNow.length > 0 && !isDecompressing && elapsed > 1800) {
                     stage = "send";
                 } else if (elapsed > Math.min(effectiveTimeoutMs * 0.75, 16000)) {
                     stage = "send";
@@ -519,10 +533,10 @@ function handleCliExec(requestId, params) {
             } else if (stage === "wait_prompt") {
                 if (hasCliPrompt) {
                     stage = "send";
-                } else if (rawNow.indexOf("Press RETURN") !== -1 && (Date.now() - pressReturnSentAt > 600)) {
+                } else if (rawNow.indexOf("Press RETURN") !== -1 && (Date.now() - pressReturnSentAt > 300)) {
                     pressReturnSentAt = Date.now();
                     term.enterCommand("");
-                } else if (rawNow.length > 0 && elapsed > 4500) {
+                } else if (rawNow.length > 0 && elapsed > 2000) {
                     stage = "send";
                 } else if (elapsed > Math.min(effectiveTimeoutMs * 0.8, 17000)) {
                     stage = "send";
@@ -547,6 +561,7 @@ function handleCliExec(requestId, params) {
                         stopped_on_error: false,
                         timed_out: false
                     }, null);
+                    stepping = false;
                     return;
                 }
                 if (execCommands.length > 0) {
@@ -561,9 +576,11 @@ function handleCliExec(requestId, params) {
                 }
                 sent = true;
                 nextIdx = 1;
-                sendSingleCommand(execCommands.length > 0 ? String(execCommands[0]) : "");
                 stage = "wait_done";
-            } else if (stage === "wait_done") {
+                sendSingleCommand(execCommands.length > 0 ? String(execCommands[0]) : "");
+                rawNow = chunks.join("");
+            }
+            if (stage === "wait_done") {
                 var tail = rawNow.slice(-64);
                 var atMore = (
                     tail.indexOf("--More--") !== -1
@@ -591,10 +608,9 @@ function handleCliExec(requestId, params) {
                 }
                 // Recover if PT drops a `commandEnded` event while output has settled
                 // and the CLI prompt is already back.
-                var nowTick = Date.now();
                 var cmdElapsed = lastCmdSentAt > 0 ? (nowTick - lastCmdSentAt) : 0;
                 var outputIdle = lastOutputAt > 0 ? (nowTick - lastOutputAt) : cmdElapsed;
-                if (statuses.length < nextIdx && hasCliPrompt && !atMore && cmdElapsed > 400) {
+                if (statuses.length < nextIdx && hasCliPrompt && !atMore && cmdElapsed > 200) {
                     var pendingCmd = String(execCommands[statuses.length] || "");
                     var pendingLow = pendingCmd.replace(/^\s+|\s+$/g, "").toLowerCase();
                     var isSlowNetCmd = (
@@ -605,11 +621,11 @@ function handleCliExec(requestId, params) {
                     var synthSlice = rawNow.slice(cmdStartLen);
                     var canSynth = false;
                     if (isSlowNetCmd) {
-                        canSynth = hasPingOrTraceFinished(synthSlice) && outputIdle >= 350;
+                        canSynth = hasPingOrTraceFinished(synthSlice) && outputIdle >= 150;
                     } else {
-                        canSynth = outputIdle >= 400 && (
+                        canSynth = outputIdle >= 200 && (
                             /([>#])\s*$/.test(rawNow)
-                            || (synthSlice.length === 0 && cmdElapsed >= 600)
+                            || (synthSlice.length === 0 && cmdElapsed >= 350)
                         );
                     }
                     if (canSynth) {
@@ -628,17 +644,39 @@ function handleCliExec(requestId, params) {
                         lastOutputAt = nowTick;
                     }
                 }
+                // Recover if `Press RETURN to get started.` swallowed the initial `enable`
+                // while Packet Tracer's `getPrompt()` already reported `>`.
+                if (
+                    !stoppedOnError
+                    && !enableRetried
+                    && nextIdx > 0
+                    && statuses.length >= nextIdx
+                    && !atMore
+                ) {
+                    var prevCmdLow = String(execCommands[nextIdx - 1] || "")
+                        .replace(/^\s+|\s+$/g, "")
+                        .toLowerCase();
+                    if (
+                        (prevCmdLow === "enable" || prevCmdLow === "en")
+                        && trimmedPrompt.slice(-1) === ">"
+                        && !/Password:\s*$/i.test(tail)
+                    ) {
+                        enableRetried = true;
+                        execCommands.splice(nextIdx, 0, "enable");
+                    }
+                }
                 // Send commands one at a time: queued keystrokes typed while a
                 // --More-- pager is active get swallowed (observed: "ping" -> "ing").
                 if (!stoppedOnError && nextIdx < execCommands.length && statuses.length >= nextIdx && !atMore) {
-                    sendSingleCommand(String(execCommands[nextIdx]));
+                    var nextCmdStr = String(execCommands[nextIdx]);
                     nextIdx += 1;
+                    sendSingleCommand(nextCmdStr);
                 }
                 var doneByCount = (
                     (stoppedOnError && !atMore)
                     || (statuses.length >= execCommands.length && !atMore)
                 );
-                if (!waitForPrompt || doneByCount || elapsed >= effectiveTimeoutMs) {
+                if (!waitForPrompt || (!doneByCount && elapsed >= effectiveTimeoutMs)) {
                     finishCli(true, {
                         device_name: devName,
                         prompt: String(term.getPrompt() || ""),
@@ -651,6 +689,39 @@ function handleCliExec(requestId, params) {
                         stopped_on_error: stoppedOnError,
                         timed_out: !doneByCount && waitForPrompt
                     }, null);
+                } else if (doneByCount) {
+                    // Wait one brief settle tick after `commandEnded` so trailing
+                    // `outputWritten` (e.g. `Switch0#` / `[OK]`) and `getPrompt()` arrive.
+                    if (doneAt === 0) {
+                        doneAt = nowTick;
+                        lastDoneLen = rawNow.length;
+                    } else if (rawNow.length !== lastDoneLen && (nowTick - doneAt) < 40) {
+                        lastDoneLen = rawNow.length;
+                    } else if (
+                        (trimmedPrompt.length > 0 && (nowTick - doneAt) >= 12)
+                        || (nowTick - doneAt) >= 35
+                    ) {
+                        var trailingSlice = rawNow.slice(cmdStartLen);
+                        if (trailingSlice.length > 0 && commandOutputs.length > 0) {
+                            commandOutputs[commandOutputs.length - 1] += trailingSlice;
+                            cmdStartLen = rawNow.length;
+                        }
+                        finishCli(true, {
+                            device_name: devName,
+                            prompt: promptNow,
+                            mode: String(term.getMode() || ""),
+                            raw_output: rawNow,
+                            command_statuses: statuses,
+                            command_outputs: commandOutputs,
+                            non_fatal_commands: nonFatalCommands,
+                            more_pages_advanced: moreCount,
+                            stopped_on_error: stoppedOnError,
+                            timed_out: false
+                        }, null);
+                    }
+                } else {
+                    doneAt = 0;
+                    lastDoneLen = -1;
                 }
             } else if (elapsed >= effectiveTimeoutMs) {
                 finishCli(false, { raw_output: rawNow }, "CLI execution timed out.");
@@ -658,8 +729,9 @@ function handleCliExec(requestId, params) {
         } catch (err) {
             finishCli(false, {}, String(err));
         }
+        stepping = false;
     };
-    iv = setInterval(stepCli, 20);
+    iv = setInterval(stepCli, 10);
     stepCli();
     } catch (eOuterCli) {
         try { sendBridgeResult(requestId, false, {}, String(eOuterCli)); } catch (eSend) {}
@@ -1375,8 +1447,9 @@ function netforgeOnCommand(requestId, opcode, paramsJson) {
                     var itemRes = { ok: false, data: {}, error: "Unsupported batch op: " + opName };
                     if (opName === "add_device") {
                         itemRes = addDeviceSync(opParams);
-                        if (itemRes.ok && item.alias && itemRes.data.device_name) {
-                            aliasMap[String(item.alias)] = String(itemRes.data.device_name);
+                        var itemAlias = item.alias || opParams.alias || opParams.display_name;
+                        if (itemRes.ok && itemAlias && itemRes.data.device_name) {
+                            aliasMap[String(itemAlias)] = String(itemRes.data.device_name);
                         }
                     } else if (opName === "create_link") {
                         itemRes = createLinkSync(opParams, aliasMap);

@@ -37,7 +37,7 @@ def evaluate_lab_status(
     include_activity_grade: bool = True,
     timeout_seconds: float = 25.0,
     poll_wait_seconds: float | None = None,
-    poll_interval_seconds: float = 0.8,
+    poll_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Combine `verify_lab`, `grade_lab` (if available), and `task_ids` coverage into one view.
 
@@ -59,7 +59,37 @@ def evaluate_lab_status(
 
     grade_report: dict[str, Any] | None = None
     if include_activity_grade:
-        grade_report = grade_open_activity(router)
+        if getattr(router, "active_is_activity", None) is False:
+            grade_report = {
+                "state": "unavailable",
+                "raw_state": "not_activity",
+                "readable": False,
+                "is_activity_file": False,
+                "locked": False,
+                "percentage_complete": None,
+                "percentage_complete_score": None,
+                "items_count": None,
+                "correct_items_count": None,
+                "score_count": None,
+                "correct_score_count": None,
+                "met_items": [],
+                "unmet_items": [],
+                "total_leaves": 0,
+                "fallback": "cli_verification",
+                "reason": "Open Packet Tracer file is not a .pka activity file; use verify_lab.",
+                "state_level": StateLevel.VERIFIED.value,
+                "execution_backend": (
+                    "script_backend" if router.has_live_script() else "offline_model"
+                ),
+            }
+        else:
+            grade_report = grade_open_activity(router)
+            if (
+                getattr(router, "active_is_activity", None) is None
+                and isinstance(grade_report, dict)
+                and grade_report.get("is_activity_file") is False
+            ):
+                router.active_is_activity = False
 
     failing_requirements: list[dict[str, Any]] = []
     if verify_report is not None:
@@ -784,7 +814,12 @@ def _apply_batch_build(
         and isinstance(router.script_backend, HttpScriptBridgeBackend)
         and "batch_ops" in router.script_backend.backend_status().capabilities
     )
-    if is_http_bridge and (len(dev_entries) + len(link_list)) > 1:
+    host_cfg_count = sum(
+        1
+        for dev, _, _ in dev_entries
+        if dev.get("dhcp") or dev.get("ip") or dev.get("ip_address")
+    )
+    if is_http_bridge and (len(dev_entries) + len(link_list) + host_cfg_count) > 1:
         ops: list[dict[str, Any]] = []
         op_meta: list[tuple[str, int]] = []
         for idx, (dev, dev_node, _) in enumerate(dev_entries):
@@ -797,6 +832,7 @@ def _apply_batch_build(
                     "params": {
                         "device_type": _infer_dev_type_code(d_model, dev_node.category),
                         "model": d_model,
+                        "display_name": d_name,
                         "x": float(dev_node.position.x),
                         "y": float(dev_node.position.y),
                     },
@@ -804,21 +840,20 @@ def _apply_batch_build(
             )
             op_meta.append(("dev", idx))
             if dev.get("dhcp") or dev.get("ip") or dev.get("ip_address"):
-                ops.append(
-                    {
-                        "op": "configure_host",
-                        "params": {
-                            "device_name": d_name,
-                            "port": str(dev.get("port", "FastEthernet0")),
-                            "dhcp": bool(dev.get("dhcp", False)),
-                            "ip": str(dev.get("ip") or dev.get("ip_address") or ""),
-                            "subnet_mask": str(dev.get("subnet_mask", "")),
-                            "default_gateway": str(
-                                dev.get("default_gateway") or dev.get("gateway") or ""
-                            ),
-                        },
-                    }
-                )
+                host_params: dict[str, Any] = {
+                    "device_name": d_name,
+                    "port": str(dev.get("port", "FastEthernet0")),
+                    "dhcp": bool(dev.get("dhcp", False)),
+                    "ip": str(dev.get("ip") or dev.get("ip_address") or ""),
+                    "subnet_mask": str(dev.get("subnet_mask", "")),
+                    "default_gateway": str(
+                        dev.get("default_gateway") or dev.get("gateway") or ""
+                    ),
+                }
+                dns_val = str(dev.get("dns_server") or dev.get("dns") or "").strip()
+                if dns_val:
+                    host_params["dns_server"] = dns_val
+                ops.append({"op": "configure_host", "params": host_params})
                 op_meta.append(("host", idx))
 
         preconnected_links: dict[int, Any] = {}
@@ -901,6 +936,7 @@ def _apply_batch_build(
                         f"device(s) and {len(link_list)} link(s) in batch."
                     ),
                     data={"devices": len(dev_entries), "links": len(link_list)},
+                    pace=False,
                 )
 
             for lidx, link in enumerate(link_list):
@@ -1059,6 +1095,7 @@ def _apply_batch_build(
                             "console_execute",
                             f"Executed {len(cfg_map[dev_name])} CLI command(s) on '{dev_name}'.",
                             data=rep,
+                            pace=False,
                         )
                     config_reports[dev_name] = rep
         else:
@@ -1069,6 +1106,7 @@ def _apply_batch_build(
                         "console_execute",
                         f"Executed {len(cmds)} CLI command(s) on '{dev_name}'.",
                         data=rep,
+                        pace=False,
                     )
                 config_reports[dev_name] = rep
 
@@ -1079,13 +1117,26 @@ def _apply_batch_build(
     }
 
 
+def _mirror_session_descriptor(runtime: Any) -> None:
+    """Mirror `bridge_session.json` to `%LOCALAPPDATA%/netforge` for `netforge_bridge.pts`."""
+    settings = getattr(runtime, "settings", None)
+    if settings is None:
+        return
+    src_session = Path(settings.data_dir) / "bridge_session.json"
+    canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
+    if src_session.is_file() and src_session.resolve() != canonical_session.resolve():
+        with suppress(OSError):
+            canonical_session.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_session, canonical_session)
+
+
 def start_lab_session(
     runtime: Any,
     input_target: str,
     *,
     auto_approve: bool = False,
     watch_mode: bool = True,
-    watch_pace_seconds: float = 0.15,
+    watch_pace_seconds: float = 0.0,
     copy_on_write: bool = True,
     working_copy_path: str | None = None,
     overwrite_original: bool = False,
@@ -1103,6 +1154,12 @@ def start_lab_session(
     router.executed_cli_log = {}
     router.initial_snapshot = None
     router.latest_snapshot = None
+    if hasattr(router, "_verifier_unsupported_cli"):
+        router._verifier_unsupported_cli.clear()
+    if hasattr(router, "unsupported_cli_commands") and isinstance(
+        router.unsupported_cli_commands, dict
+    ):
+        router.unsupported_cli_commands.clear()
 
     runtime.manager.require_active()
     detected = detect_lab_input(input_target)
@@ -1151,58 +1208,18 @@ def start_lab_session(
                 ),
             }
 
-    # Check live Packet Tracer state before attempting any launch (single instance rule).
-    det = _safe_detect_gui(runtime.gui)
-    login_dialogs = _detect_login_wall(det)
-    if login_dialogs:
-        return {
-            "state": "waiting_for_login",
-            "ready": False,
-            "pt_status": "login_wall_detected",
-            "touched_gui_clicks": False,
-            "input": detected,
-            "plan": plan,
-            "dialogs": login_dialogs,
-            "watch_mode": router.watch_mode,
-            "message": (
-                "Packet Tracer is showing a Login / Guest screen. Sign in or accept Guest in the "
-                "PT window on your desktop, then re-run `lab_start` "
-                "(AgenticNet will not spam clicks)."
-            ),
-        }
+    # Mirror session descriptors before checking/launching PT so the bridge finds them immediately.
+    _mirror_session_descriptor(runtime)
 
     bridge_connected = router.has_live_script()
     if bridge_connected:
         pt_running = True
-    elif isinstance(det, dict) and "running" in det:
-        pt_running = bool(det.get("running"))
-    else:
-        pt_running = is_packet_tracer_running()
-
-    if pt_running:
         pt_status = "reused_running_instance"
     else:
-        try:
-            require_interactive_desktop_for_launch("lab_start")
-        except AdapterUnavailableError as exc:
-            return {
-                "state": "waiting_for_user_launch",
-                "ready": False,
-                "pt_status": "non_interactive_session",
-                "error_code": exc.error_code,
-                "input": detected,
-                "plan": plan,
-                "watch_mode": router.watch_mode,
-                "message": (
-                    "This MCP server is running in a non-interactive session and refuses hidden "
-                    "launches. Please open Cisco Packet Tracer visibly from your Start Menu / "
-                    "desktop, wait ~5 seconds, and call `lab_start` again."
-                ),
-            }
-
-        launch_out = _launch_pt_visibly(runtime.gui, wait_seconds=min(float(wait_seconds), 20.0))
-        launch_login = _detect_login_wall(launch_out.get("detection"))
-        if launch_login:
+        # Check live Packet Tracer GUI state only when bridge is not already connected.
+        det = _safe_detect_gui(runtime.gui)
+        login_dialogs = _detect_login_wall(det)
+        if login_dialogs:
             return {
                 "state": "waiting_for_login",
                 "ready": False,
@@ -1210,48 +1227,91 @@ def start_lab_session(
                 "touched_gui_clicks": False,
                 "input": detected,
                 "plan": plan,
-                "dialogs": launch_login,
+                "dialogs": login_dialogs,
                 "watch_mode": router.watch_mode,
                 "message": (
-                    "Packet Tracer opened onto a Login / Guest screen. Sign in on your desktop "
-                    "window, then re-run `lab_start`."
+                    "Packet Tracer is showing a Login / Guest screen. Sign in or accept Guest in "
+                    "the PT window on your desktop, then re-run `lab_start` "
+                    "(AgenticNet will not spam clicks)."
                 ),
             }
-        pt_status = (
-            "reused_running_instance" if launch_out.get("already_running") else "launched_visibly"
-        )
 
-    # Mirror session descriptors to %LOCALAPPDATA%\netforge so netforge_bridge.pts finds them.
-    settings = getattr(runtime, "settings", None)
-    if settings is not None:
-        src_session = Path(settings.data_dir) / "bridge_session.json"
-        canonical_session = canonical_pt_bridge_data_dir() / "bridge_session.json"
-        if src_session.is_file() and src_session.resolve() != canonical_session.resolve():
-            with suppress(OSError):
-                canonical_session.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src_session, canonical_session)
+        if isinstance(det, dict) and "running" in det:
+            pt_running = bool(det.get("running"))
+        else:
+            pt_running = is_packet_tracer_running()
 
-    # Wait for the live Script Module bridge to connect (with login-wall awareness).
+        if pt_running:
+            pt_status = "reused_running_instance"
+        else:
+            try:
+                require_interactive_desktop_for_launch("lab_start")
+            except AdapterUnavailableError as exc:
+                return {
+                    "state": "waiting_for_user_launch",
+                    "ready": False,
+                    "pt_status": "non_interactive_session",
+                    "error_code": exc.error_code,
+                    "input": detected,
+                    "plan": plan,
+                    "watch_mode": router.watch_mode,
+                    "message": (
+                        "This MCP server is running in a non-interactive session and refuses "
+                        "hidden launches. Please open Cisco Packet Tracer visibly from your Start "
+                        "Menu / desktop, wait ~5 seconds, and call `lab_start` again."
+                    ),
+                }
+
+            launch_out = _launch_pt_visibly(
+                runtime.gui, wait_seconds=min(float(wait_seconds), 20.0)
+            )
+            launch_login = _detect_login_wall(launch_out.get("detection"))
+            if launch_login:
+                return {
+                    "state": "waiting_for_login",
+                    "ready": False,
+                    "pt_status": "login_wall_detected",
+                    "touched_gui_clicks": False,
+                    "input": detected,
+                    "plan": plan,
+                    "dialogs": launch_login,
+                    "watch_mode": router.watch_mode,
+                    "message": (
+                        "Packet Tracer opened onto a Login / Guest screen. Sign in on your desktop "
+                        "window, then re-run `lab_start`."
+                    ),
+                }
+            pt_status = (
+                "reused_running_instance"
+                if launch_out.get("already_running")
+                else "launched_visibly"
+            )
+
+    # Wait for the live Script Module bridge to connect (with throttled login-wall checks).
     deadline = time.monotonic() + max(float(wait_seconds), 0.05)
+    last_gui_check = time.monotonic()
     while not router.has_live_script():
-        det_poll = _safe_detect_gui(runtime.gui)
-        login_poll = _detect_login_wall(det_poll)
-        if login_poll:
-            return {
-                "state": "waiting_for_login",
-                "ready": False,
-                "pt_status": "login_wall_detected",
-                "touched_gui_clicks": False,
-                "input": detected,
-                "plan": plan,
-                "dialogs": login_poll,
-                "watch_mode": router.watch_mode,
-                "message": (
-                    "Packet Tracer is waiting on a Login / Guest screen. Complete login on your "
-                    "desktop, then re-run `lab_start`."
-                ),
-            }
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if (now - last_gui_check) >= 0.8 or now >= deadline:
+            last_gui_check = now
+            det_poll = _safe_detect_gui(runtime.gui)
+            login_poll = _detect_login_wall(det_poll)
+            if login_poll:
+                return {
+                    "state": "waiting_for_login",
+                    "ready": False,
+                    "pt_status": "login_wall_detected",
+                    "touched_gui_clicks": False,
+                    "input": detected,
+                    "plan": plan,
+                    "dialogs": login_poll,
+                    "watch_mode": router.watch_mode,
+                    "message": (
+                        "Packet Tracer is waiting on a Login / Guest screen. Complete login on "
+                        "your desktop, then re-run `lab_start`."
+                    ),
+                }
+        if now >= deadline:
             return {
                 "state": "bridge_timeout",
                 "ready": False,
@@ -1260,12 +1320,12 @@ def start_lab_session(
                 "plan": plan,
                 "watch_mode": router.watch_mode,
                 "message": (
-                    f"Timed out after {wait_seconds:.1f}s waiting for the AgenticNet Script Module "
-                    "bridge to connect. Verify `netforge_bridge.pts` (com.netforge.bridge) is "
-                    "enabled 'On Startup' in Packet Tracer -> Extensions -> Scripting."
+                    f"Timed out after {wait_seconds:.1f}s waiting for the AgenticNet Script "
+                    "Module bridge to connect. Verify `netforge_bridge.pts` (com.netforge.bridge) "
+                    "is enabled 'On Startup' in Packet Tracer -> Extensions -> Scripting."
                 ),
             }
-        time.sleep(min(0.25, max(0.05, deadline - time.monotonic())))
+        time.sleep(min(0.1, max(0.02, deadline - time.monotonic())))
 
     original_path: str | None = None
     active_working_path: str | None = None
@@ -1461,12 +1521,44 @@ def run_failure_drill(
     outage_verify_ms = 0.0
     fix_ms = 0.0
 
-    try:
-        tb = time.monotonic()
-        for dev_name, cmds in break_ops:
+    def _run_drill_ops(ops: list[tuple[str, list[str]]]) -> list[dict[str, Any]]:
+        assert router.script_backend is not None
+        if len(ops) > 1 and isinstance(router.script_backend, HttpScriptBridgeBackend):
+            grouped: dict[str, list[tuple[int, str, str, list[str]]]] = {}
+            for idx, (dev_name, cmds) in enumerate(ops):
+                pt_dev = router.resolve_pt_device_name(dev_name)
+                grouped.setdefault(pt_dev, []).append((idx, dev_name, pt_dev, cmds))
+
+            def _exec_group(
+                items: list[tuple[int, str, str, list[str]]],
+            ) -> list[tuple[int, dict[str, Any]]]:
+                out_items: list[tuple[int, dict[str, Any]]] = []
+                for idx, dev_name, pt_dev, cmds in items:
+                    res = router.script_backend.execute_cli(  # type: ignore[union-attr]
+                        pt_dev, cmds, timeout_seconds=timeout_seconds
+                    )
+                    out_items.append(
+                        (idx, {"device": dev_name, "pt_device": pt_dev, "result": res})
+                    )
+                return out_items
+
+            ordered: list[dict[str, Any] | None] = [None] * len(ops)
+            with ThreadPoolExecutor(max_workers=min(len(grouped), 6)) as pool:
+                for chunk in pool.map(_exec_group, grouped.values()):
+                    for idx, rec in chunk:
+                        ordered[idx] = rec
+            return [r for r in ordered if r is not None]
+
+        out: list[dict[str, Any]] = []
+        for dev_name, cmds in ops:
             pt_dev = router.resolve_pt_device_name(dev_name)
             res = router.script_backend.execute_cli(pt_dev, cmds, timeout_seconds=timeout_seconds)
-            break_transcripts.append({"device": dev_name, "pt_device": pt_dev, "result": res})
+            out.append({"device": dev_name, "pt_device": pt_dev, "result": res})
+        return out
+
+    try:
+        tb = time.monotonic()
+        break_transcripts = _run_drill_ops(break_ops)
         break_ms = round((time.monotonic() - tb) * 1000.0, 2)
 
         to = time.monotonic()
@@ -1481,10 +1573,7 @@ def run_failure_drill(
         outage_verify_ms = round((time.monotonic() - to) * 1000.0, 2)
     finally:
         tf = time.monotonic()
-        for dev_name, cmds in fix_ops:
-            pt_dev = router.resolve_pt_device_name(dev_name)
-            res = router.script_backend.execute_cli(pt_dev, cmds, timeout_seconds=timeout_seconds)
-            fix_transcripts.append({"device": dev_name, "pt_device": pt_dev, "result": res})
+        fix_transcripts = _run_drill_ops(fix_ops)
         settle_s = float(resolved_fix.get("settle_seconds", 0.0)) * max(0.0, float(settle_scale))
         if settle_s > 0:
             time.sleep(settle_s)

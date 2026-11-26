@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import threading
 import time
@@ -11,11 +12,13 @@ from typing import TYPE_CHECKING, Any
 from agenticnet.adapters.base import GuiBackend, ScriptBackend
 from agenticnet.adapters.discovery import is_packet_tracer_running
 from agenticnet.adapters.script_bridge import (
+    HttpScriptBridgeBackend,
     ScriptBridgeError,
     resolve_connect_type,
     resolve_device_type,
 )
-from agenticnet.console.models import DeviceConsoleProfile
+from agenticnet.console.models import CLIPromptMode, DeviceConsoleProfile
+from agenticnet.console.state_machine import PromptDetector
 from agenticnet.console.transport import ConsoleTransport, UnavailableConsoleTransport
 from agenticnet.core.enums import DeviceCategory
 from agenticnet.core.exceptions import AdapterUnavailableError, ValidationError
@@ -33,6 +36,41 @@ def transport_to_execution_backend(transport_name: str) -> ExecutionBackend:
     if transport_name in {"windows_gui", "windows_pt_gui_clipboard"}:
         return "gui_backend"
     return "offline_model"
+
+
+@functools.lru_cache(maxsize=128)
+def _func_accepts_kwarg(func_obj: Any, kwarg: str) -> bool:
+    try:
+        return kwarg in inspect.signature(func_obj).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _callable_accepts_kwarg(fn: Any, kwarg: str) -> bool:
+    """Check whether callable `fn` accepts `kwarg`, caching per underlying function object."""
+    func_obj = getattr(fn, "__func__", fn)
+    try:
+        return _func_accepts_kwarg(func_obj, kwarg)
+    except TypeError:
+        try:
+            return kwarg in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+
+
+def _merge_cli_output_and_prompt(res: dict[str, Any]) -> str:
+    """Ensure recognized terminal prompt text is preserved alongside non-empty raw output."""
+    raw = str(res.get("raw_output") or "")
+    prompt = str(res.get("prompt") or "").strip()
+    if not raw.strip():
+        return prompt
+    if (
+        prompt
+        and PromptDetector.parse(raw).mode == CLIPromptMode.UNKNOWN
+        and PromptDetector.parse(prompt).mode != CLIPromptMode.UNKNOWN
+    ):
+        return f"{raw.rstrip()}\n{prompt}"
+    return raw
 
 
 class RoutedConsoleTransport(ConsoleTransport):
@@ -66,17 +104,21 @@ class RoutedConsoleTransport(ConsoleTransport):
                     [""],
                     timeout_seconds=25.0,
                 )
-                text = str(res.get("raw_output") or res.get("prompt") or "")
-                self._last_output[device_name] = text
-                self.last_execution_backend = "script_backend"
+                text = _merge_cli_output_and_prompt(res)
+                with self.router._state_lock:
+                    self._last_output[device_name] = text
+                    self.last_execution_backend = "script_backend"
                 return text
             except AdapterUnavailableError:
                 if not self.fallback.is_available():
                     raise
 
         text = self.fallback.open_device(device_name, profile)
-        self._last_output[device_name] = text
-        self.last_execution_backend = transport_to_execution_backend(self.fallback.transport_name)
+        with self.router._state_lock:
+            self._last_output[device_name] = text
+            self.last_execution_backend = transport_to_execution_backend(
+                self.fallback.transport_name
+            )
         return text
 
     def send_line(self, device_name: str, line: str, *, timeout_s: float = 5.0) -> str:
@@ -88,7 +130,7 @@ class RoutedConsoleTransport(ConsoleTransport):
                     [line],
                     timeout_seconds=max(timeout_s, 20.0),
                 )
-                text = str(res.get("raw_output") or res.get("prompt") or "")
+                text = _merge_cli_output_and_prompt(res)
                 with self.router._state_lock:
                     self._last_output[device_name] = text
                     self.last_execution_backend = "script_backend"
@@ -101,8 +143,11 @@ class RoutedConsoleTransport(ConsoleTransport):
                     raise
 
         text = self.fallback.send_line(device_name, line, timeout_s=timeout_s)
-        self._last_output[device_name] = text
-        self.last_execution_backend = transport_to_execution_backend(self.fallback.transport_name)
+        with self.router._state_lock:
+            self._last_output[device_name] = text
+            self.last_execution_backend = transport_to_execution_backend(
+                self.fallback.transport_name
+            )
         return text
 
     def can_batch(self) -> bool:
@@ -116,21 +161,23 @@ class RoutedConsoleTransport(ConsoleTransport):
         *,
         stop_on_error: bool = True,
         timeout_s: float = 25.0,
+        enable_password: str | None = None,
     ) -> dict[str, Any]:
         """Execute all CLI lines in one live ScriptBackend round-trip."""
         if not lines:
             return {"ok": True, "raw_output": "", "prompt": "", "command_statuses": []}
         if self.router.ensure_live_script() and self.router.script_backend is not None:
             pt_name = self.router.resolve_pt_device_name(device_name)
-            exec_fn = self.router.script_backend.execute_cli
-            kwargs: dict[str, Any] = {"timeout_seconds": max(timeout_s, 20.0)}
-            try:
-                if "stop_on_error" in inspect.signature(exec_fn).parameters:
-                    kwargs["stop_on_error"] = bool(stop_on_error)
-            except (TypeError, ValueError):
-                pass
+            sb = self.router.script_backend
+            exec_fn = sb.execute_cli
+            kwargs: dict[str, Any] = {"timeout_seconds": max(timeout_s, 10.0)}
+            is_http = isinstance(sb, HttpScriptBridgeBackend)
+            if is_http or _callable_accepts_kwarg(exec_fn, "stop_on_error"):
+                kwargs["stop_on_error"] = bool(stop_on_error)
+            if enable_password and (is_http or _callable_accepts_kwarg(exec_fn, "enable_password")):
+                kwargs["enable_password"] = enable_password
             res = dict(exec_fn(pt_name, lines, **kwargs))
-            text = str(res.get("raw_output") or res.get("prompt") or "")
+            text = _merge_cli_output_and_prompt(res)
             with self.router._state_lock:
                 self._last_output[device_name] = text
                 self.last_execution_backend = "script_backend"
@@ -144,9 +191,11 @@ class RoutedConsoleTransport(ConsoleTransport):
 
     def read_buffer(self, device_name: str) -> str:
         if self.router.ensure_live_script() and self.router.script_backend is not None:
-            if device_name in self._last_output:
+            with self.router._state_lock:
+                cached = self._last_output.get(device_name)
+            if cached is not None:
                 self.last_execution_backend = "script_backend"
-                return self._last_output[device_name]
+                return cached
             pt_name = self.router.resolve_pt_device_name(device_name)
             try:
                 res = self.router.script_backend.execute_cli(
@@ -154,17 +203,21 @@ class RoutedConsoleTransport(ConsoleTransport):
                     [""],
                     timeout_seconds=25.0,
                 )
-                text = str(res.get("raw_output") or res.get("prompt") or "")
-                self._last_output[device_name] = text
-                self.last_execution_backend = "script_backend"
+                text = _merge_cli_output_and_prompt(res)
+                with self.router._state_lock:
+                    self._last_output[device_name] = text
+                    self.last_execution_backend = "script_backend"
                 return text
             except AdapterUnavailableError:
                 if not self.fallback.is_available():
                     raise
 
         text = self.fallback.read_buffer(device_name)
-        self._last_output[device_name] = text
-        self.last_execution_backend = transport_to_execution_backend(self.fallback.transport_name)
+        with self.router._state_lock:
+            self._last_output[device_name] = text
+            self.last_execution_backend = transport_to_execution_backend(
+                self.fallback.transport_name
+            )
         return text
 
 
@@ -177,18 +230,21 @@ class BackendRouter:
         script_backend: ScriptBackend | None = None,
         gui_backend: GuiBackend | None = None,
         fallback_console: ConsoleTransport | None = None,
-        add_device_retry_delays: Sequence[float] = (0.5, 1.0, 2.0),
+        add_device_retry_delays: Sequence[float] = (0.1, 0.25),
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
         self.script_backend = script_backend
         self.gui_backend = gui_backend
         self.console_transport = RoutedConsoleTransport(self, fallback=fallback_console)
         self._state_lock = threading.RLock()
+        self._connect_lock = threading.Lock()
+        self._last_connect_fail_monotonic: float | None = None
+        self.connect_retry_cooldown_seconds: float = 2.5
         self.device_aliases: dict[str, str] = {}
         self.add_device_retry_delays = tuple(float(d) for d in add_device_retry_delays)
         self._sleep = sleep_fn
         self.watch_mode: bool = False
-        self.watch_pace_seconds: float = 0.15
+        self.watch_pace_seconds: float = 0.0
         self.narration_log: list[str] = []
         self.executed_cli_log: dict[str, list[str]] = {}
         self.active_original_path: str | None = None
@@ -196,6 +252,7 @@ class BackendRouter:
         self.active_backup_path: str | None = None
         self.active_is_activity: bool | None = None
         self.paging_disabled_devices: set[str] = set()
+        self.unsupported_cli_commands: dict[str, set[str]] = {}
         self.initial_snapshot: dict[str, Any] | None = None
         self.latest_snapshot: dict[str, Any] | None = None
 
@@ -204,9 +261,26 @@ class BackendRouter:
         with self._state_lock:
             self.device_aliases.clear()
             self.paging_disabled_devices.clear()
+            self.unsupported_cli_commands.clear()
             self.console_transport._last_output.clear()
+            self._last_connect_fail_monotonic = None
 
-    def configure_watch_mode(self, *, enabled: bool = True, pace_seconds: float = 0.15) -> None:
+    def is_cli_command_unsupported(self, device_name: str, command: str) -> bool:
+        """Return True if `command` was previously flagged unsupported on `device_name`."""
+        pt_name = self.resolve_pt_device_name(device_name)
+        cmd_key = command.strip().lower()
+        with self._state_lock:
+            return cmd_key in self.unsupported_cli_commands.get(pt_name, ())
+
+    def mark_cli_command_unsupported(self, device_name: str, command: str) -> None:
+        """Remember that `command` is unsupported on `device_name` for the current lab session."""
+        pt_name = self.resolve_pt_device_name(device_name)
+        cmd_key = command.strip().lower()
+        if cmd_key:
+            with self._state_lock:
+                self.unsupported_cli_commands.setdefault(pt_name, set()).add(cmd_key)
+
+    def configure_watch_mode(self, *, enabled: bool = True, pace_seconds: float = 0.0) -> None:
         """Configure watch-mode pacing and narration for live interactive walkthroughs."""
         self.watch_mode = bool(enabled)
         self.watch_pace_seconds = max(0.0, float(pace_seconds))
@@ -242,18 +316,48 @@ class BackendRouter:
         """Return True if ScriptBackend is live, reconnecting or launching PT when configured."""
         if self.has_live_script():
             return True
-        if self.script_backend is not None:
-            wait_fn = getattr(self.script_backend, "wait_for_connection", None)
-            srv = getattr(self.script_backend, "server", None)
+        if self.script_backend is None:
+            return False
+        with self._connect_lock:
+            if self.has_live_script():
+                self._last_connect_fail_monotonic = None
+                return True
+            sb = self.script_backend
+            is_http = isinstance(sb, HttpScriptBridgeBackend)
+            srv = getattr(sb, "server", None)
             srv_started = srv is None or getattr(srv, "_httpd", None) is not None
-            if callable(wait_fn) and srv_started and is_packet_tracer_running():
-                wait_fn(timeout_seconds=6.0)
+            if is_http and not srv_started:
+                return False
+            if (
+                is_http
+                and self._last_connect_fail_monotonic is not None
+                and (time.monotonic() - self._last_connect_fail_monotonic)
+                < self.connect_retry_cooldown_seconds
+            ):
+                return False
+
+            wait_fn = getattr(sb, "wait_for_connection", None)
+            pt_running = is_packet_tracer_running()
+            if callable(wait_fn) and srv_started and pt_running:
+                wait_fn(timeout_seconds=8.5 if is_http else 6.0)
                 if self.has_live_script():
+                    self._last_connect_fail_monotonic = None
                     return True
-            ensure_fn = getattr(self.script_backend, "ensure_connected", None)
+                # PT is already running without an attached bridge; avoid a redundant 40s wait or
+                # desktop-launch check inside ensure_connected when using HttpScriptBridgeBackend.
+                if is_http:
+                    self._last_connect_fail_monotonic = time.monotonic()
+                    return False
+
+            ensure_fn = getattr(sb, "ensure_connected", None)
             if callable(ensure_fn):
                 ensure_fn()
-        return self.has_live_script()
+            if self.has_live_script():
+                self._last_connect_fail_monotonic = None
+                return True
+            if is_http:
+                self._last_connect_fail_monotonic = time.monotonic()
+            return False
 
     def has_live_gui(self) -> bool:
         """Return True when a live GuiBackend is available."""
@@ -332,11 +436,9 @@ class BackendRouter:
         except Exception:
             dev_type = 0
         add_fn = self.script_backend.add_device
-        supports_display_name = False
-        try:
-            supports_display_name = "display_name" in inspect.signature(add_fn).parameters
-        except (TypeError, ValueError):
-            supports_display_name = False
+        supports_display_name = isinstance(
+            self.script_backend, HttpScriptBridgeBackend
+        ) or _callable_accepts_kwarg(add_fn, "display_name")
         delays = (0.0, *self.add_device_retry_delays)
         attempts = 0
         last_res: dict[str, Any] = {}
@@ -502,6 +604,8 @@ class BackendRouter:
             self.device_aliases.pop(name, None)
             self.paging_disabled_devices.discard(name)
             self.paging_disabled_devices.discard(pt_name)
+            self.unsupported_cli_commands.pop(name, None)
+            self.unsupported_cli_commands.pop(pt_name, None)
             self.console_transport._last_output.pop(name, None)
             self.console_transport._last_output.pop(pt_name, None)
 
@@ -744,12 +848,11 @@ class BackendRouter:
                     "subnet_mask": subnet_mask,
                     "default_gateway": default_gateway,
                 }
-                if dns_server is not None:
-                    try:
-                        if "dns_server" in inspect.signature(cfg_fn).parameters:
-                            cfg_kwargs["dns_server"] = dns_server
-                    except (TypeError, ValueError):
-                        pass
+                if dns_server is not None and (
+                    isinstance(self.script_backend, HttpScriptBridgeBackend)
+                    or _callable_accepts_kwarg(cfg_fn, "dns_server")
+                ):
+                    cfg_kwargs["dns_server"] = dns_server
                 res = dict(cfg_fn(pt_name, **cfg_kwargs))
                 desc = "DHCP" if dhcp else f"{ip}/{subnet_mask}"
                 ev = [f"Configured host '{pt_name}' ({port}) via ScriptBackend ({desc})."]
@@ -796,21 +899,106 @@ class BackendRouter:
         batch_fn = getattr(self.script_backend, "batch_ops", None)
         if not callable(batch_fn):
             return None
+
+        in_batch_aliases: set[str] = set()
+        normalized_ops: list[dict[str, Any]] = []
+        with self._state_lock:
+            known_aliases = dict(self.device_aliases)
+
+        for item in ops:
+            op_name = str(item.get("op") or "")
+            params = dict(item.get("params") or {})
+            top_alias = item.get("alias") or params.get("alias")
+            if op_name == "add_device" and top_alias:
+                in_batch_aliases.add(str(top_alias))
+            for key in ("device_name", "device1", "device2"):
+                val = params.get(key)
+                if isinstance(val, str) and val and val not in in_batch_aliases:
+                    params[key] = known_aliases.get(val, val)
+            norm_item = {**item, "params": params}
+            if top_alias and not norm_item.get("alias"):
+                norm_item["alias"] = str(top_alias)
+            normalized_ops.append(norm_item)
+
         try:
-            res = dict(batch_fn(ops, timeout_seconds=timeout_seconds))
+            res = dict(batch_fn(normalized_ops, timeout_seconds=timeout_seconds))
         except ScriptBridgeError as exc:
             if "unsupported opcode" in str(exc).lower():
                 return None
             raise
         except AdapterUnavailableError:
             return None
-        aliases = res.get("aliases")
-        if isinstance(aliases, dict):
-            with self._state_lock:
+
+        with self._state_lock:
+            aliases = res.get("aliases")
+            if isinstance(aliases, dict):
                 for k, v in aliases.items():
                     if k and v:
                         self.device_aliases[str(k)] = str(v)
+            results = res.get("results")
+            if isinstance(results, list):
+                for idx, item in enumerate(normalized_ops):
+                    if idx >= len(results) or not isinstance(results[idx], dict):
+                        continue
+                    r_item = results[idx]
+                    if r_item.get("ok") is False:
+                        continue
+                    op_name = str(item.get("op") or "")
+                    params = item.get("params") or {}
+                    r_data = r_item.get("data") if isinstance(r_item.get("data"), dict) else {}
+                    if op_name == "add_device":
+                        logical = str(
+                            item.get("alias")
+                            or params.get("alias")
+                            or params.get("display_name")
+                            or ""
+                        ).strip()
+                        pt_dev = str(
+                            r_item.get("device_name") or r_data.get("device_name") or ""
+                        ).strip()
+                        if logical and pt_dev:
+                            self.device_aliases[logical] = pt_dev
+                    elif op_name == "remove_device":
+                        raw_dev = str(params.get("device_name") or "").strip()
+                        if raw_dev:
+                            pt_dev = self.device_aliases.pop(raw_dev, raw_dev)
+                            self.paging_disabled_devices.discard(raw_dev)
+                            self.paging_disabled_devices.discard(pt_dev)
+                            self.unsupported_cli_commands.pop(raw_dev, None)
+                            self.unsupported_cli_commands.pop(pt_dev, None)
         return res
+
+    def execute_cli_batch(
+        self,
+        device_name: str,
+        commands: list[str],
+        *,
+        timeout_seconds: float = 25.0,
+        stop_on_error: bool = False,
+    ) -> dict[str, Any]:
+        """Execute a CLI command batch on one live device via ScriptBackend with alias lookup."""
+        if not commands:
+            return {
+                "ok": True,
+                "device_name": device_name,
+                "commands": [],
+                "raw_output": "",
+                "prompt": "",
+                "command_statuses": [],
+                "command_outputs": [],
+                "timed_out": False,
+            }
+        if not self.ensure_live_script() or self.script_backend is None:
+            raise AdapterUnavailableError("No live ScriptBackend connected.")
+        pt_name = self.resolve_pt_device_name(device_name)
+        sb = self.script_backend
+        exec_fn = sb.execute_cli
+        kwargs: dict[str, Any] = {"timeout_seconds": float(timeout_seconds)}
+        if isinstance(sb, HttpScriptBridgeBackend) or _callable_accepts_kwarg(
+            exec_fn, "stop_on_error"
+        ):
+            kwargs["stop_on_error"] = bool(stop_on_error)
+        return dict(exec_fn(pt_name, list(commands), **kwargs))
 
     def read_show_output(
         self,
@@ -822,14 +1010,41 @@ class BackendRouter:
         """Read running-config or a show command live via ScriptBackend or console fallback."""
         pt_name = self.resolve_pt_device_name(device_name)
         if self.ensure_live_script() and self.script_backend is not None:
+            with self._state_lock:
+                paging_done = pt_name in self.paging_disabled_devices
+            cmds = [command] if paging_done else ["terminal length 0", command]
             res = self.script_backend.execute_cli(
                 pt_name,
-                ["terminal length 0", command],
+                cmds,
                 timeout_seconds=25.0,
             )
-            cleaned = redact_cli_text(str(res.get("raw_output", "")))
+            timed_out = bool(res.get("timed_out"))
+            if not paging_done and not timed_out:
+                non_fatal = {
+                    str(c).strip().lower() for c in res.get("non_fatal_commands", []) if c
+                }
+                statuses = res.get("command_statuses") or []
+                term_failed = "terminal length 0" in non_fatal or any(
+                    isinstance(s, dict)
+                    and str(s.get("command", "")).strip().lower() == "terminal length 0"
+                    and int(s.get("status", 0)) != 0
+                    for s in statuses
+                )
+                if not term_failed:
+                    with self._state_lock:
+                        self.paging_disabled_devices.add(pt_name)
+            cmd_outputs = res.get("command_outputs")
+            if (
+                isinstance(cmd_outputs, list)
+                and len(cmd_outputs) == len(cmds)
+                and str(cmd_outputs[-1]).strip()
+            ):
+                raw_text = str(cmd_outputs[-1])
+            else:
+                raw_text = str(res.get("raw_output", ""))
+            cleaned = redact_cli_text(raw_text)
             warnings: list[str] = []
-            if res.get("timed_out"):
+            if timed_out:
                 warnings.append(f"Timed out waiting for prompt after '{command}' on '{pt_name}'.")
             return (
                 "script_backend",
@@ -937,6 +1152,10 @@ class BackendRouter:
                     remediation="Update netforge_bridge.pts to expose the 'open_file' opcode.",
                 )
             data = dict(open_fn(cleaned, timeout_seconds=timeout_seconds))
+            with self._state_lock:
+                self.paging_disabled_devices.clear()
+                self.unsupported_cli_commands.clear()
+                self.console_transport._last_output.clear()
             evidence = [f"Opened '{cleaned}' inside Packet Tracer via script_backend (fileOpen)."]
             if self.watch_mode:
                 self.record_watch_action(

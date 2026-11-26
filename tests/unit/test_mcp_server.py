@@ -294,7 +294,8 @@ def test_dynamic_instructions_and_all_prompts_respect_solve_lab_profile(tmp_path
         f"solve_lab instructions leaked advanced tools: {inst_tokens & adv_only_tools}"
     )
     assert "project_save" in SOLVE_LAB_TOOLS
-    assert len(SOLVE_LAB_TOOLS) == 26
+    assert "topology_create" in SOLVE_LAB_TOOLS
+    assert len(SOLVE_LAB_TOOLS) == 27
 
     prompts = asyncio.run(solve_srv.list_prompts())
     assert len(prompts) == 6
